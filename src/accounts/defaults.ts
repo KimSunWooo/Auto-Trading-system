@@ -22,6 +22,14 @@ export const DEFAULT_ALLOCATIONS: Allocation[] = [
 
 export const KODEX_200 = "069500";
 export const SWING_TICKER = "005930";
+export const AGGRESSIVE_UNIVERSE = [
+  "005930",
+  "000660",
+  "035720",
+  "247540",
+  "259960",
+  "352820",
+];
 
 export function cashFromAllocations(allocations: Allocation[]): number {
   return allocations.reduce((sum, row) => sum + row.balance, 0);

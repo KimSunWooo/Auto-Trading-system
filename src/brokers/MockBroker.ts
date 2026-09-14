@@ -3,6 +3,7 @@ import type { StateBox } from "@/src/accounts/StateBox";
 import type { BrokerFill, BrokerQuote, IBroker } from "@/src/brokers/IBroker";
 import { canFillLimit } from "@/src/accounts/fills";
 import { findStock } from "@/lib/universe";
+import type { OrderSource } from "@/lib/types";
 
 /**
  * Local paper broker. Quotes come from the simulated book; fills go through
@@ -14,10 +15,16 @@ export class MockBroker implements IBroker {
   constructor(
     private readonly box: StateBox,
     private readonly strategyKey: string = "Level1_Stable",
+    private readonly source: OrderSource = "strategy",
+    private readonly sourceId?: string,
   ) {}
 
   forStrategy(strategyKey: string): MockBroker {
-    return new MockBroker(this.box, strategyKey);
+    return new MockBroker(this.box, strategyKey, this.source, this.sourceId);
+  }
+
+  withSource(source: OrderSource, sourceId?: string): MockBroker {
+    return new MockBroker(this.box, this.strategyKey, source, sourceId);
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
@@ -51,7 +58,10 @@ export class MockBroker implements IBroker {
   async buyMarket(ticker: string, amount: number): Promise<BrokerFill> {
     const price = await this.getCurrentPrice(ticker);
     const qty = Math.floor(amount / price);
-    return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price);
+    return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price, {
+      source: this.source,
+      sourceId: this.sourceId,
+    });
   }
 
   async buyLimit(ticker: string, price: number, amount: number): Promise<BrokerFill> {
@@ -69,11 +79,17 @@ export class MockBroker implements IBroker {
       };
     }
     const qty = Math.floor(amount / price);
-    return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price);
+    return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price, {
+      source: this.source,
+      sourceId: this.sourceId,
+    });
   }
 
   async sellMarket(ticker: string, qty: number): Promise<BrokerFill> {
     const price = await this.getCurrentPrice(ticker);
-    return new OrderManager(this.box).sell(this.strategyKey, ticker, qty, price);
+    return new OrderManager(this.box).sell(this.strategyKey, ticker, qty, price, {
+      source: this.source,
+      sourceId: this.sourceId,
+    });
   }
 }

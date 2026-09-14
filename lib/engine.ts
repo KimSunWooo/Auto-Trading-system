@@ -2,8 +2,18 @@ import { clampDailyLimit, roundToTick, tickSize } from "./tick-size";
 import type { AppState, AutoCondition, DcaPlan, Quote } from "./types";
 import { UNIVERSE } from "./universe";
 import { getMarketClock } from "./market-hours";
-import { applyFill, canFillLimit } from "@/src/accounts/fills";
-import { cashFromAllocations, DEFAULT_ALLOCATIONS, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
+import { canFillLimit } from "@/src/accounts/fills";
+import {
+  AGGRESSIVE_UNIVERSE,
+  cashFromAllocations,
+  DEFAULT_ALLOCATIONS,
+  KODEX_200,
+  SWING_TICKER,
+  TOTAL_DEPOSIT,
+} from "@/src/accounts/defaults";
+import type { StateBox } from "@/src/accounts/StateBox";
+import { createBroker, brokerDriver } from "@/src/brokers/index";
+import type { IBroker } from "@/src/brokers/IBroker";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 
 const HISTORY_LEN = 40;
@@ -41,7 +51,7 @@ export function createInitialState(): AppState {
     settings: {
       ignoreMarketHours: true,
       startingCash: TOTAL_DEPOSIT,
-      broker: "mock",
+      broker: brokerDriver(),
     },
     totalDeposit: TOTAL_DEPOSIT,
     allocations,
@@ -108,13 +118,37 @@ export function conditionMatches(cond: AutoCondition, quote: Quote): boolean {
     : quote.volume <= cond.volume;
 }
 
-export function evaluateConditions(state: AppState, nowIso: string): AppState {
-  let next = state;
+function watchedTickers(state: AppState): string[] {
+  const codes = new Set<string>([KODEX_200, SWING_TICKER, ...AGGRESSIVE_UNIVERSE]);
+  for (const seed of UNIVERSE) codes.add(seed.code);
+  for (const pos of state.positions) codes.add(pos.code);
+  for (const cond of state.conditions) {
+    if (cond.watching) codes.add(cond.code);
+  }
+  for (const plan of state.dcaPlans) {
+    if (plan.enabled) codes.add(plan.code);
+  }
+  return [...codes];
+}
+
+async function refreshLiveQuotes(box: StateBox, broker: IBroker) {
+  for (const code of watchedTickers(box.current)) {
+    try {
+      await broker.getQuote(code);
+    } catch {
+      // keep the last cached quote
+    }
+  }
+}
+
+export async function evaluateConditions(state: AppState, nowIso: string): Promise<AppState> {
+  const box: StateBox = { current: state };
+  const root = createBroker(box);
   const now = new Date(nowIso).getTime();
 
-  next = {
-    ...next,
-    conditions: next.conditions.map((cond) => {
+  box.current = {
+    ...box.current,
+    conditions: box.current.conditions.map((cond) => {
       if (cond.status === "watching" && now > new Date(cond.expiresAt).getTime()) {
         return {
           ...cond,
@@ -127,66 +161,62 @@ export function evaluateConditions(state: AppState, nowIso: string): AppState {
     }),
   };
 
-  for (const cond of next.conditions) {
+  for (const cond of box.current.conditions) {
     if (!cond.watching || cond.status !== "watching") continue;
-    const quote = next.quotes[cond.code];
+    const quote = box.current.quotes[cond.code];
     if (!quote) continue;
     if (!conditionMatches(cond, quote)) continue;
-
-    const fillPrice =
-      cond.orderPriceType === "limit" && cond.limitPrice
-        ? cond.limitPrice
-        : quote.price;
 
     if (cond.orderPriceType === "limit" && cond.limitPrice) {
       if (!canFillLimit(cond.side, quote.price, cond.limitPrice)) continue;
     }
 
-    const applied = applyFill(next, {
-      source: "condition",
-      sourceId: cond.id,
-      strategy: cond.strategy ?? "Level1_Stable",
-      code: cond.code,
-      name: cond.name,
-      side: cond.side,
-      qty: cond.qty,
-      price: fillPrice,
-    });
+    const broker = root
+      .forStrategy(cond.strategy ?? "Level1_Stable")
+      .withSource("condition", cond.id);
+    const fill =
+      cond.side === "sell"
+        ? await broker.sellMarket(cond.code, cond.qty)
+        : cond.orderPriceType === "limit" && cond.limitPrice
+          ? await broker.buyLimit(cond.code, cond.limitPrice, cond.qty * cond.limitPrice)
+          : await broker.buyMarket(cond.code, cond.qty * quote.price);
 
-    const updatedCond: AutoCondition =
-      applied.order.status === "filled"
-        ? {
-            ...cond,
-            watching: false,
-            status: "filled",
-            filledAt: applied.order.createdAt,
-            filledOrderId: applied.order.id,
-            message: `${cond.side === "buy" ? "매수" : "매도"} ${cond.qty}주 체결`,
-          }
-        : {
-            ...cond,
-            watching: false,
-            status: "rejected",
-            message: applied.order.reason,
-          };
+    if (!fill.ok && (fill.reason ?? "").includes("미체결")) continue;
 
-    next = {
-      ...applied.state,
-      conditions: applied.state.conditions.map((c) => (c.id === cond.id ? updatedCond : c)),
+    const updatedCond: AutoCondition = fill.ok
+      ? {
+          ...cond,
+          watching: false,
+          status: "filled",
+          filledAt: new Date().toISOString(),
+          filledOrderId: fill.orderId,
+          message: `${cond.side === "buy" ? "매수" : "매도"} ${fill.qty}주 체결`,
+        }
+      : {
+          ...cond,
+          watching: false,
+          status: "rejected",
+          message: fill.reason,
+        };
+
+    box.current = {
+      ...box.current,
+      conditions: box.current.conditions.map((c) => (c.id === cond.id ? updatedCond : c)),
     };
   }
 
-  return next;
+  return box.current;
 }
 
-export function evaluateDca(state: AppState, nowIso: string): AppState {
-  let next = state;
+export async function evaluateDca(state: AppState, nowIso: string): Promise<AppState> {
+  const box: StateBox = { current: state };
+  const root = createBroker(box);
   const now = new Date(nowIso).getTime();
 
-  for (const plan of next.dcaPlans) {
+  for (const plan of box.current.dcaPlans) {
     if (!plan.enabled) continue;
     if (new Date(plan.nextRunAt).getTime() > now) continue;
-    const quote = next.quotes[plan.code];
+    const quote = box.current.quotes[plan.code];
     if (!quote) continue;
 
     const qty = Math.floor(plan.amountKrw / quote.price);
@@ -197,9 +227,9 @@ export function evaluateDca(state: AppState, nowIso: string): AppState {
     };
 
     if (qty < 1) {
-      next = {
-        ...next,
-        dcaPlans: next.dcaPlans.map((p) =>
+      box.current = {
+        ...box.current,
+        dcaPlans: box.current.dcaPlans.map((p) =>
           p.id === plan.id
             ? { ...scheduled, lastMessage: "1주 미만이라 이번 회차는 건너뜁니다." }
             : p,
@@ -208,53 +238,54 @@ export function evaluateDca(state: AppState, nowIso: string): AppState {
       continue;
     }
 
-    const applied = applyFill(next, {
-      source: "dca",
-      sourceId: plan.id,
-      strategy: plan.strategy ?? "Level1_Stable",
-      code: plan.code,
-      name: plan.name,
-      side: "buy",
-      qty,
-      price: quote.price,
-    });
+    const fill = await root
+      .forStrategy(plan.strategy ?? "Level1_Stable")
+      .withSource("dca", plan.id)
+      .buyMarket(plan.code, plan.amountKrw);
 
     const updatedPlan: DcaPlan = {
       ...scheduled,
-      lastMessage:
-        applied.order.status === "filled"
-          ? `${qty}주 적립 매수`
-          : applied.order.reason,
+      lastMessage: fill.ok ? `${fill.qty}주 적립 매수` : fill.reason,
     };
 
-    next = {
-      ...applied.state,
-      dcaPlans: applied.state.dcaPlans.map((p) => (p.id === plan.id ? updatedPlan : p)),
+    box.current = {
+      ...box.current,
+      dcaPlans: box.current.dcaPlans.map((p) => (p.id === plan.id ? updatedPlan : p)),
     };
   }
 
-  return next;
+  return box.current;
 }
 
 export async function tickState(state: AppState, now = new Date()): Promise<AppState> {
   const clock = getMarketClock(now);
-  const withUniverse = ensureUniverseQuotes(state);
-  const quotes = advanceQuotes(withUniverse.quotes);
-  let next: AppState = {
-    ...withUniverse,
-    quotes,
-    tickCount: state.tickCount + 1,
-    updatedAt: clock.iso,
+  const box: StateBox = {
+    current: {
+      ...ensureUniverseQuotes(state),
+      tickCount: state.tickCount + 1,
+      updatedAt: clock.iso,
+      settings: {
+        ...state.settings,
+        broker: brokerDriver(),
+      },
+    },
   };
+  const root = createBroker(box);
 
-  const tradingAllowed = state.settings.ignoreMarketHours || clock.open;
-  if (tradingAllowed) {
-    next = evaluateConditions(next, clock.iso);
-    next = evaluateDca(next, clock.iso);
-    next = await QuantEngine.run(next);
+  if (root.driver === "kis") {
+    await refreshLiveQuotes(box, root);
+  } else {
+    box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };
   }
 
-  return next;
+  const tradingAllowed = box.current.settings.ignoreMarketHours || clock.open;
+  if (tradingAllowed) {
+    box.current = await evaluateConditions(box.current, clock.iso);
+    box.current = await evaluateDca(box.current, clock.iso);
+    box.current = await QuantEngine.run(box.current);
+  }
+
+  return box.current;
 }
 
 export function portfolioValue(state: AppState): number {

@@ -185,8 +185,8 @@ export function ConditionsPanel({
             <div>
               <CardTitle>서버자동주문</CardTitle>
               <CardDescription>
-                카이로스 0635와 같이 조건가격에 닿으면 한 번 주문을 냅니다. 감시 중인 조건은 삭제할 수
-                없습니다.
+                조건가격에 닿으면 한 번 주문을 냅니다. 브로커가 KIS이면 한국투자증권으로 나갑니다.
+                감시 중인 조건은 삭제할 수 없습니다.
               </CardDescription>
             </div>
             <Button

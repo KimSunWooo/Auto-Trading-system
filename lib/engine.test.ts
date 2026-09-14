@@ -58,7 +58,7 @@ test("sell rejects when quantity is missing", () => {
   assert.equal(result.order.status, "rejected");
 });
 
-test("price-below condition fires a market buy", () => {
+test("price-below condition fires a market buy", async () => {
   const state = createInitialState();
   const quote = state.quotes["005930"];
   const cond: AutoCondition = {
@@ -81,12 +81,13 @@ test("price-below condition fires a market buy", () => {
     createdAt: new Date().toISOString(),
   };
   assert.equal(conditionMatches(cond, quote), true);
-  const next = evaluateConditions({ ...state, conditions: [cond] }, new Date().toISOString());
+  const next = await evaluateConditions({ ...state, conditions: [cond] }, new Date().toISOString());
   assert.equal(next.conditions[0]?.status, "filled");
   assert.equal(next.orders[0]?.qty, 5);
+  assert.equal(next.orders[0]?.source, "condition");
 });
 
-test("DCA buys whole shares and schedules the next run", () => {
+test("DCA buys whole shares and schedules the next run", async () => {
   const state = createInitialState();
   const quote = state.quotes["035720"];
   const plan: DcaPlan = {
@@ -100,7 +101,7 @@ test("DCA buys whole shares and schedules the next run", () => {
     createdAt: new Date().toISOString(),
     runCount: 0,
   };
-  const next = evaluateDca({ ...state, dcaPlans: [plan] }, new Date().toISOString());
+  const next = await evaluateDca({ ...state, dcaPlans: [plan] }, new Date().toISOString());
   assert.equal(next.dcaPlans[0]?.runCount, 1);
   assert.equal(next.orders[0]?.source, "dca");
   assert.ok((next.dcaPlans[0]?.nextRunAt ?? "") > plan.nextRunAt);

@@ -1,6 +1,6 @@
-import { applyFill } from "@/lib/engine";
 import { findStock } from "@/lib/universe";
 import { mutateStore, toPublic } from "@/lib/store";
+import { createBroker } from "@/src/brokers/index";
 import type { Side } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -21,28 +21,33 @@ export async function POST(request: Request) {
     return Response.json({ error: "수량은 1주 이상이어야 합니다." }, { status: 400 });
   }
   const side = body.side === "sell" ? "sell" : "buy";
+  const strategy = body.strategy ?? "Level1_Stable";
 
   let rejected: string | undefined;
-  const state = await mutateStore((current) => {
-    const quote = current.quotes[stock.code];
-    if (!quote) {
+  const state = await mutateStore(async (current) => {
+    const box = { current };
+    const broker = createBroker(box).forStrategy(strategy).withSource("manual");
+    let price = current.quotes[stock.code]?.price ?? 0;
+    try {
+      price = await broker.getCurrentPrice(stock.code);
+    } catch (err) {
+      rejected = err instanceof Error ? err.message : "시세를 찾을 수 없습니다.";
+      return current;
+    }
+    if (price <= 0) {
       rejected = "시세를 찾을 수 없습니다.";
       return current;
     }
-    const applied = applyFill(current, {
-      source: "manual",
-      strategy: body.strategy ?? "Level1_Stable",
-      code: stock.code,
-      name: stock.name,
-      side,
-      qty,
-      price: quote.price,
-    });
-    if (applied.order.status === "rejected") {
-      rejected = applied.order.reason;
-      return applied.state;
+
+    const fill =
+      side === "sell"
+        ? await broker.sellMarket(stock.code, qty)
+        : await broker.buyMarket(stock.code, qty * price);
+
+    if (!fill.ok) {
+      rejected = fill.reason ?? "주문에 실패했습니다.";
     }
-    return applied.state;
+    return box.current;
   });
 
   if (rejected) {

@@ -16,9 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "미리매수 · 미래에셋 스타일 자동매수",
+  title: "미리매수 · 한국투자증권 자동매매",
   description:
-    "카이로스 서버자동주문 스타일의 국내주식 조건매수·적립매수 모의투자 프로그램",
+    "한국투자증권 Open API 기준 국내주식 조건매수·적립매수·퀀트 엔진. 로컬 모의와 KIS 모의·실전 주문을 지원합니다.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

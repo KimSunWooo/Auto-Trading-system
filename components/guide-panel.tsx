@@ -16,58 +16,71 @@ export function GuidePanel({
   onState: (next: PublicState) => void;
 }) {
   async function reset() {
-    if (!window.confirm("모의계좌를 초기화할까요? 잔고·조건·체결이 모두 지워집니다.")) return;
+    if (
+      !window.confirm(
+        "로컬 장부를 초기화할까요? 전략 버킷·조건·체결 기록이 지워집니다. 한국투자증권 계좌 잔고는 바뀌지 않습니다.",
+      )
+    ) {
+      return;
+    }
     onState(await api<PublicState>("/api/account/reset", { method: "POST" }));
-    toast.success("예수금 1,000만원으로 다시 시작했습니다.");
+    toast.success("예수금 1,000만원 버킷으로 다시 시작했습니다.");
   }
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader className="border-b">
-          <CardTitle>왜 모의투자인가</CardTitle>
+          <CardTitle>한국투자증권으로 주문하기</CardTitle>
           <CardDescription>
-            미래에셋증권은 개인 투자자용 매매 Open API를 제공하지 않습니다. 모바일 앱을 우회하거나
-            화면을 조작하는 방식은 약관 위반이자 계좌 보안에 위험이 됩니다.
+            조건·적립·퀀트·수동 매매는 모두 같은 브로커를 씁니다. 앱키를 넣으면 KIS 모의투자나 실전
+            현금 주문이 나갑니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 pt-4 text-sm leading-6">
           <p>
-            이 프로그램은 카이로스 <strong>0635 주식 서버자동주문</strong>과 같은 조건매수 엔진을
-            로컬 모의계좌에서 돌립니다. 전략을 검증한 뒤, 같은 조건을 실제 HTS에 옮기면 됩니다.
+            기본값은 로컬 페이퍼 북입니다. 실전 키를 넣기 전에는 주문이 증권사로 전달되지 않습니다.
           </p>
           <ol className="list-decimal space-y-2 pl-4">
-            <li>m.Stock 또는 카이로스에서 국내주식 자동주문시스템을 신청합니다.</li>
             <li>
-              주식특화주문 → 서버자동주문신청/해지에서 사용 계좌를 등록합니다.
+              <a
+                className="underline underline-offset-2"
+                href="https://apiportal.koreainvestment.com"
+                target="_blank"
+                rel="noreferrer"
+              >
+                한국투자증권 Open API
+              </a>
+              에서 앱키·앱시크릿을 발급합니다. 모의용과 실전용 키는 다릅니다.
             </li>
             <li>
-              카이로스 0635에서 감시기준(현재가/매수1/매도1), 조건가격, 수량, 주문호가를 이 화면과
-              동일하게 저장하고 감시를 켭니다.
+              `.env.local`에 `BROKER=kis`, `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_ACCOUNT_NO`(예:
+              12345678-01)를 넣습니다.
             </li>
-            <li>정규장은 09:00–15:30(KST)만 감시됩니다. PC를 꺼도 서버가 주문을 냅니다.</li>
+            <li>
+              모의투자는 `KIS_MODE=demo` 입니다. 실전은 `KIS_MODE=real` 과{" "}
+              <code className="rounded bg-muted px-1">KIS_LIVE_CONFIRM=I_UNDERSTAND</code> 가 있어야
+              주문이 열립니다.
+            </li>
+            <li>서버를 재시작한 뒤 상단 배지가 KIS 모의투자 또는 KIS 실전인지 확인합니다.</li>
           </ol>
-          <p className="text-muted-foreground">
-            퀀트 탭의 전략은 <strong>IBroker</strong>만 호출합니다. 기본값은 MockBroker(모의체결)이고,
-            한국투자증권 실연동은 KisBroker 골격에 Open API를 채운 뒤{" "}
-            <code className="rounded bg-muted px-1">BROKER=kis</code> 로 교체합니다.
-          </p>
+          <p className="text-muted-foreground">{state.broker?.message}</p>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader className="border-b">
-          <CardTitle>모의장 설정</CardTitle>
+          <CardTitle>장 운영 설정</CardTitle>
           <CardDescription>
-            기본값은 주말·야간에도 시세가 움직이도록 상시개장입니다. 끄면 실제 KRX 정규장에만
-            주문이 나갑니다.
+            로컬 모의는 주말·야간에도 시세를 움직입니다. KIS 실전은 정규장 외 주문이 거절될 수 있으니
+            끄는 것을 권장합니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
           <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3">
             <div>
-              <Label htmlFor="hours">정규장 외 모의매매</Label>
-              <p className="text-xs text-muted-foreground">끄면 09:00–15:30 KST 평일에만 체결</p>
+              <Label htmlFor="hours">정규장 외에도 주문</Label>
+              <p className="text-xs text-muted-foreground">끄면 09:00–15:30 KST 평일에만 엔진이 돕니다</p>
             </div>
             <Switch
               id="hours"
@@ -85,9 +98,13 @@ export function GuidePanel({
             <div className="text-muted-foreground">
               실제 개장 여부: {state.market.open ? "개장" : "휴장/장마감"} · 타임존 Asia/Seoul
             </div>
+            <div className="mt-2 text-muted-foreground">
+              브로커: {state.broker?.driver === "kis" ? "한국투자증권" : "로컬 모의"}
+              {state.broker?.accountMasked ? ` · ${state.broker.accountMasked}` : ""}
+            </div>
           </div>
           <Button variant="outline" className="w-full" onClick={() => void reset()}>
-            모의계좌 초기화
+            로컬 장부 초기화
           </Button>
         </CardContent>
       </Card>

@@ -104,8 +104,8 @@ export function StrategiesPanel({
               </CardTitle>
               <CardDescription>
                 총 예수금 {formatWon(state.totalDeposit)}을 전략별로 나눠 씁니다. 각 전략은 자기
-                잔액 안에서만 주문합니다. 브로커는 {state.settings.broker === "kis" ? "KIS" : "Mock"}{" "}
-                어댑터입니다.
+                잔액 안에서만 주문합니다. 통과한 주문은{" "}
+                {state.broker?.driver === "kis" ? "한국투자증권" : "로컬 페이퍼 북"}으로 전달됩니다.
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -162,18 +162,27 @@ export function StrategiesPanel({
       </Card>
       <Card>
         <CardHeader>
-          <CardTitle>브로커 교체</CardTitle>
+          <CardTitle>브로커</CardTitle>
           <CardDescription>
-            전략은 IBroker만 봅니다. 실거래는{" "}
-            <code className="rounded bg-muted px-1">BROKER=kis</code> 와 KIS 앱키를 넣은 뒤{" "}
-            <code className="rounded bg-muted px-1">KisBroker</code>를 구현하면 됩니다.
+            전략은 IBroker만 봅니다. <code className="rounded bg-muted px-1">BROKER=kis</code> 와
+            앱키를 넣으면 한국투자증권 모의·실전 주문이 나갑니다. 실전은{" "}
+            <code className="rounded bg-muted px-1">KIS_LIVE_CONFIRM=I_UNDERSTAND</code> 가 필요합니다.
           </CardDescription>
         </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          <Label>현재 드라이버</Label>
-          <p className="mt-1 font-medium text-foreground">
-            {state.settings.broker === "kis" ? "한국투자증권 Open API (미연결)" : "MockBroker 모의체결"}
-          </p>
+        <CardContent className="space-y-2 text-sm">
+          <div>
+            <Label>현재 드라이버</Label>
+            <p className="mt-1 font-medium text-foreground">
+              {state.broker?.driver === "kis"
+                ? state.broker.mode === "real"
+                  ? state.broker.liveEnabled
+                    ? "한국투자증권 실전"
+                    : "한국투자증권 실전 (주문 잠금)"
+                  : "한국투자증권 모의투자"
+                : "MockBroker 로컬 모의체결"}
+            </p>
+          </div>
+          <p className="text-muted-foreground">{state.broker?.message}</p>
         </CardContent>
       </Card>
     </div>

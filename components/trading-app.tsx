@@ -11,7 +11,6 @@ import {
   ReceiptIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Sheet,
@@ -22,7 +21,7 @@ import {
 import { ConditionsPanel } from "@/components/conditions-panel";
 import { DcaPanel } from "@/components/dca-panel";
 import { GuidePanel } from "@/components/guide-panel";
-import { MarketBadge, OverviewPanel } from "@/components/overview-panel";
+import { MarketBadge, OverviewPanel, BrokerBadge } from "@/components/overview-panel";
 import { OrdersPanel } from "@/components/orders-panel";
 import { StrategiesPanel } from "@/components/strategies-panel";
 import { useTrading } from "@/hooks/use-trading";
@@ -65,10 +64,10 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
                 <h1 className="truncate text-sm font-semibold tracking-tight sm:text-base">
                   미리매수
                 </h1>
-                <Badge variant="secondary">모의투자</Badge>
+                <BrokerBadge state={state} />
               </div>
               <p className="hidden truncate text-xs text-muted-foreground sm:block">
-                미래에셋 카이로스 서버자동주문 스타일
+                한국투자증권 Open API 자동매매
               </p>
             </div>
           </div>

@@ -3,6 +3,7 @@ import path from "node:path";
 import { createInitialState, ensureUniverseQuotes, portfolioValue, tickState } from "./engine";
 import { getMarketClock } from "./market-hours";
 import { cashFromAllocations, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
+import { brokerDriver, getBrokerPublicStatus } from "@/src/brokers/kis-config";
 import type { Allocation, AppState, Position, PublicState } from "./types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -53,7 +54,7 @@ function migrateState(parsed: AppState): AppState {
     settings: {
       ignoreMarketHours: parsed.settings?.ignoreMarketHours ?? true,
       startingCash: parsed.settings?.startingCash ?? totalDeposit,
-      broker: parsed.settings?.broker ?? "mock",
+      broker: brokerDriver(),
     },
     totalDeposit,
     allocations,
@@ -114,6 +115,7 @@ export function toPublic(state: AppState): PublicState {
       open: clock.open,
       sessionLabel: clock.sessionLabel,
     },
+    broker: getBrokerPublicStatus(),
   };
 }
 

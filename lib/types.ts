@@ -125,6 +125,15 @@ export type AppState = {
   orders: Order[];
 };
 
+export type BrokerPublicStatus = {
+  driver: BrokerDriver;
+  mode: "demo" | "real" | null;
+  configured: boolean;
+  liveEnabled: boolean;
+  accountMasked: string | null;
+  message: string;
+};
+
 export type PublicState = AppState & {
   equity: number;
   market: {
@@ -133,4 +142,5 @@ export type PublicState = AppState & {
     open: boolean;
     sessionLabel: string;
   };
+  broker: BrokerPublicStatus;
 };

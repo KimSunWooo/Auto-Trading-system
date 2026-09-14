@@ -1,52 +1,52 @@
 # 미리매수
 
-미래에셋증권 카이로스 0635 스타일 조건매수에, 전략별 서브계좌와 브로커 어댑터를 붙인 모의투자 엔진입니다.
+한국투자증권 Open API를 쓰는 국내주식 자동매매 엔진입니다. 조건매수·적립매수·퀀트 전략이 같은 `IBroker`를 호출하므로, 로컬 모의체결과 KIS 모의투자·실전 주문을 환경변수만으로 바꿉니다.
 
-미래에셋증권은 개인용 매매 Open API가 없습니다. 실거래 경로로 남겨 둔 것은 **한국투자증권 Open API** (`KisBroker` 골격)입니다.
+기본값은 **로컬 페이퍼 북**입니다. 앱키를 넣기 전에는 실제 주문이 나가지 않습니다.
 
 ## 아키텍처
+
+```
+전략 / 조건 / 적립 / 수동매수
+        │
+        ▼
+     IBroker
+   ┌────┴────┐
+MockBroker  KisBroker
+ 로컬체결    KIS REST (시세·현금주문)
+        │
+        ▼
+  OrderManager  →  전략별 예수금 버킷 (리스크 한도)
+```
 
 ```
 src/
   brokers/
     IBroker.ts          # getCurrentPrice / buyMarket / buyLimit / sellMarket
-    MockBroker.ts       # 로컬 페이퍼 북 체결
-    KisBroker.ts        # KIS Open API 골격 (미연결)
-    index.ts            # createBroker() — BROKER=mock|kis
+    MockBroker.ts       # 로컬 페이퍼 북
+    KisBroker.ts        # 한국투자증권 Open API
+    kis-client.ts       # tokenP · 현재가 · 일봉 · hashkey · 현금주문
+    kis-config.ts       # BROKER / KIS_* 환경변수
   accounts/
-    defaults.ts         # 총 예수금 1,000만 · 70/30 배분
-    fills.ts            # 수수료·버킷 차감 체결
-    OrderManager.ts     # 전략 잔액 게이트
-    AccountBucket.ts
+    OrderManager.ts     # 전략 잔액 게이트. KIS 주문 전에 한도를 먼저 봅니다.
   strategies/
-    IStrategy.ts        # execute(broker, accountBucket)
     RiskLevel1Strategy.ts   # KODEX 200 정액 적립
-    RiskLevel5Strategy.ts   # 5/20 이평 스윙
+    RiskLevel5Strategy.ts   # 삼성전자 5/20 이평 스윙
     RiskLevel10Strategy.ts  # 변동성 돌파 추격
-    index.ts            # StrategyFactory (리스크 1–10)
   engine/
-    QuantEngine.ts      # 틱마다 활성 버킷 전략 실행
+    QuantEngine.ts
 ```
 
-- 리스크 1–3 → Level1, 4–7 → Level5, 8–10 → Level10
+- 리스크 1–3 → 안정 적립, 4–7 → 이평 스윙, 8–10 → 변동성 추격
 - 기본 배분: `Level1_Stable` 700만 / `Level10_Aggressive` 300만
-- 매수는 해당 전략 `balance` 안에서만 승인됩니다
+- 매수는 해당 전략 `balance` 안에서만 승인된 뒤 브로커로 전달됩니다
 
-`data/paper-account.json` 스키마:
+로컬 장부(`data/paper-account.json`)는 전략 한도와 UI용입니다. KIS 모의·실전 잔고·수수료와 숫자가 다를 수 있습니다.
 
-```json
-{
-  "totalDeposit": 10000000,
-  "allocations": [
-    { "strategy": "Level1_Stable", "riskLevel": 1, "budget": 7000000, "balance": 7000000, "enabled": true },
-    { "strategy": "Level10_Aggressive", "riskLevel": 10, "budget": 3000000, "balance": 3000000, "enabled": true }
-  ]
-}
-```
-
-## 실행
+## 실행 (로컬 모의)
 
 ```bash
+cp .env.example .env.local
 npm install
 npm run dev
 ```
@@ -57,12 +57,72 @@ npm run dev
 npm test
 ```
 
-퀀트 탭에서 버킷 on/off, 70/30 재설정, 리스크5 스윙 버킷 추가가 가능합니다. 시세가 2.5초마다 움직이면 켜 둔 전략이 조건을 보고 주문합니다.
+키 없이 실행하면 `BROKER=mock` 입니다. 관심종목 호가는 2.5초마다 움직이고, 켠 전략·조건·적립이 로컬에서 체결됩니다.
 
-KIS로 바꾸려면 (아직 주문은 거절됩니다):
+## 한국투자증권 연결
+
+실거래(또는 KIS 모의투자)를 쓰려면 Open API 앱키와 계좌번호가 필요합니다.
+
+### 1. 개발자센터에서 앱키 발급
+
+1. [한국투자증권 Open API](https://apiportal.koreainvestment.com)에 로그인합니다.
+2. 앱을 등록해 **앱키 / 앱시크릿**을 발급합니다. 모의투자용 키와 실전용 키는 다릅니다.
+3. 모의투자는 개발자센터의 모의투자 계좌를, 실전은 실제 위탁계좌를 씁니다.
+4. HTS/앱에서 해당 계좌의 국내주식 거래·Open API 사용이 가능한지 확인합니다.
+
+### 2. 환경변수
+
+`.env.local` 예시:
 
 ```bash
-BROKER=kis KIS_APP_KEY=... KIS_APP_SECRET=... KIS_ACCOUNT_NO=... npm run dev
+BROKER=kis
+KIS_APP_KEY=발급받은앱키
+KIS_APP_SECRET=발급받은앱시크릿
+KIS_ACCOUNT_NO=12345678-01
+KIS_MODE=demo
 ```
 
-이 프로그램은 투자 자문이 아니며 모의 시세는 실제 호가와 다릅니다.
+| 변수 | 설명 |
+| --- | --- |
+| `BROKER` | `mock` (기본) 또는 `kis` |
+| `KIS_APP_KEY` / `KIS_APP_SECRET` | 개발자센터 앱키 |
+| `KIS_ACCOUNT_NO` | 계좌 8자리 + 상품코드 2자리. `12345678-01` 또는 `1234567801` |
+| `KIS_MODE` | `demo` 모의투자(VTS, `openapivts.koreainvestment.com:29443`) / `real` 실전 (`openapi.koreainvestment.com:9443`) |
+| `KIS_LIVE_CONFIRM` | 실전 주문 잠금 해제. 값은 반드시 `I_UNDERSTAND` |
+
+`KIS_MODE=demo` 이면 모의투자 TR(`VTTC0802U` 매수 / `VTTC0801U` 매도)로 주문을 냅니다. 시세는 `FHKST01010100`, 일봉은 `FHKST03010100`, 접근토큰은 `POST /oauth2/tokenP` 입니다.
+
+### 3. 실전 주문
+
+실전은 기본으로 잠겨 있습니다. 시세만 실전 Open API로 가져오고, 주문은 거절합니다.
+
+실전 현금 주문을 열려면:
+
+```bash
+BROKER=kis
+KIS_MODE=real
+KIS_LIVE_CONFIRM=I_UNDERSTAND
+KIS_APP_KEY=실전앱키
+KIS_APP_SECRET=실전앱시크릿
+KIS_ACCOUNT_NO=12345678-01
+```
+
+화면 상단 배지가 **KIS 실전**인지 확인한 뒤 전략을 켜세요. 정규장 외 주문은 KIS가 거절할 수 있으니, 안내 탭에서 **정규장 외 모의매매**를 끄는 것을 권장합니다.
+
+주문 흐름은 항상 같습니다.
+
+1. 전략 버킷 잔액·보유 수량을 로컬에서 검사합니다.
+2. 통과하면 KIS `order-cash` (hashkey 포함) 를 호출합니다.
+3. 주문번호(`ODNO`)를 받은 뒤에만 로컬 장부에 반영합니다.
+
+## 화면
+
+- **대시보드** — 관심종목·잔고. KIS 모드에서는 실제 현재가를 갱신합니다.
+- **퀀트** — 버킷 on/off, 70/30 재설정, 브로커 상태
+- **조건매수 / 적립매수** — 조건이 맞으면 같은 브로커로 주문
+- **체결내역** — 로컬에 기록된 체결(KIS 주문번호 포함)
+- **안내** — 모의/실전 설정과 계좌 초기화(로컬 장부만 지웁니다)
+
+## 주의
+
+이 프로그램은 투자 자문이 아닙니다. 실전 키와 `KIS_LIVE_CONFIRM=I_UNDERSTAND` 를 넣는 순간 실제 주문이 나갑니다. `.env.local` 을 커밋하지 마세요.

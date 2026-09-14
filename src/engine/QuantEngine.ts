@@ -1,6 +1,5 @@
 import { toBucket } from "@/src/accounts/AccountBucket";
 import type { StateBox } from "@/src/accounts/StateBox";
-import { MockBroker } from "@/src/brokers/MockBroker";
 import { createBroker } from "@/src/brokers/index";
 import { StrategyFactory } from "@/src/strategies/index";
 import type { AppState } from "@/lib/types";
@@ -13,10 +12,7 @@ export class QuantEngine {
     for (const alloc of box.current.allocations) {
       if (!alloc.enabled) continue;
       const strategy = StrategyFactory.create(alloc.riskLevel);
-      const broker =
-        root.driver === "mock"
-          ? (root as MockBroker).forStrategy(alloc.strategy)
-          : root;
+      const broker = root.forStrategy(alloc.strategy);
       const before = toBucket(alloc, box.current.positions);
       try {
         const after = await strategy.execute(broker, before);

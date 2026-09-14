@@ -1,10 +1,10 @@
+import type { OrderSource } from "@/lib/types";
+
 /**
  * Broker adapter contract.
  *
- * MockBroker fills the local paper book. KisBroker is the future KIS Open API
- * adapter — swap via `createBroker()` without changing strategies.
- *
- * `amount` on buy methods is notional KRW (정액). `qty` on sell is shares.
+ * MockBroker fills the local paper book. KisBroker talks to 한국투자증권
+ * Open API (모의 VTS / 실전) then mirrors the fill onto the local risk buckets.
  */
 export interface BrokerQuote {
   ticker: string;
@@ -35,6 +35,8 @@ export interface BrokerFill {
 
 export interface IBroker {
   readonly driver: "mock" | "kis";
+  forStrategy(strategyKey: string): IBroker;
+  withSource(source: OrderSource, sourceId?: string): IBroker;
   getCurrentPrice(ticker: string): Promise<number>;
   getQuote(ticker: string): Promise<BrokerQuote | null>;
   buyMarket(ticker: string, amount: number): Promise<BrokerFill>;

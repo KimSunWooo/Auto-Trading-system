@@ -76,7 +76,11 @@ export function OverviewPanel({
       ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-        <Watchlist quotes={quotes} onState={onState} />
+        <Watchlist
+          quotes={quotes}
+          onState={onState}
+          liveQuotes={state.broker?.driver === "kis"}
+        />
         <Positions state={state} onState={onState} />
       </div>
     </div>
@@ -114,9 +118,11 @@ function Stat({
 function Watchlist({
   quotes,
   onState,
+  liveQuotes,
 }: {
   quotes: Quote[];
   onState: (next: PublicState) => void;
+  liveQuotes: boolean;
 }) {
   const [query, setQuery] = useState("");
   const filtered = quotes.filter(
@@ -129,7 +135,11 @@ function Watchlist({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <CardTitle>관심종목</CardTitle>
-            <CardDescription>2.5초마다 호가가 움직입니다. 국내 관례로 상승은 빨강입니다.</CardDescription>
+            <CardDescription>
+              {liveQuotes
+                ? "한국투자증권 현재가를 주기적으로 가져옵니다. 상승은 빨강입니다."
+                : "2.5초마다 호가가 움직입니다. 국내 관례로 상승은 빨강입니다."}
+            </CardDescription>
           </div>
           <Input
             value={query}
@@ -298,12 +308,25 @@ async function buySell(
   }
 }
 
+export function BrokerBadge({ state }: { state: PublicState }) {
+  if (state.broker?.driver !== "kis") {
+    return <Badge variant="secondary">로컬 모의</Badge>;
+  }
+  if (state.broker.mode === "real" && state.broker.liveEnabled) {
+    return <Badge variant="destructive">KIS 실전</Badge>;
+  }
+  if (state.broker.mode === "real") {
+    return <Badge variant="outline">KIS 실전 · 주문잠금</Badge>;
+  }
+  return <Badge variant="secondary">KIS 모의투자</Badge>;
+}
+
 export function MarketBadge({ state }: { state: PublicState }) {
   const live = state.settings.ignoreMarketHours || state.market.open;
   return (
     <Badge variant={live ? "default" : "outline"}>
       {state.settings.ignoreMarketHours
-        ? "모의장 상시개장"
+        ? "상시개장"
         : `${state.market.sessionLabel}${state.market.open ? "" : " · 주문대기"}`}
     </Badge>
   );

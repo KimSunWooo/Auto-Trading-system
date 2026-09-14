@@ -1,3 +1,4 @@
+import { AGGRESSIVE_UNIVERSE } from "@/src/accounts/defaults";
 import type { AccountBucket } from "@/src/accounts/AccountBucket";
 import type { IBroker } from "@/src/brokers/IBroker";
 import type { IStrategy } from "@/src/strategies/IStrategy";
@@ -17,7 +18,7 @@ export class RiskLevel10Strategy implements IStrategy {
       return { ...bucket, lastMessage: "추격 매수 쿨다운" };
     }
 
-    const universe = ["005930", "000660", "035720", "247540", "259960", "352820"];
+    const universe = AGGRESSIVE_UNIVERSE;
     let best: { ticker: string; score: number } | null = null;
 
     for (const ticker of universe) {
