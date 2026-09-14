@@ -1,0 +1,143 @@
+"use client";
+
+import { useState } from "react";
+import {
+  BookOpenIcon,
+  CalendarClockIcon,
+  LayoutDashboardIcon,
+  MenuIcon,
+  RadarIcon,
+  ReceiptIcon,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { ConditionsPanel } from "@/components/conditions-panel";
+import { DcaPanel } from "@/components/dca-panel";
+import { GuidePanel } from "@/components/guide-panel";
+import { MarketBadge, OverviewPanel } from "@/components/overview-panel";
+import { OrdersPanel } from "@/components/orders-panel";
+import { useTrading } from "@/hooks/use-trading";
+import { formatWon } from "@/lib/format";
+import type { PublicState } from "@/lib/types";
+
+const TABS = [
+  { value: "overview", label: "대시보드", icon: LayoutDashboardIcon },
+  { value: "conditions", label: "조건매수", icon: RadarIcon },
+  { value: "dca", label: "적립매수", icon: CalendarClockIcon },
+  { value: "orders", label: "체결내역", icon: ReceiptIcon },
+  { value: "guide", label: "안내", icon: BookOpenIcon },
+] as const;
+
+export function TradingApp({ initialState }: { initialState: PublicState }) {
+  const { state, setState, error, reload } = useTrading(initialState);
+  const [tab, setTab] = useState<string>("overview");
+  const [menu, setMenu] = useState(false);
+
+  return (
+    <div className="flex min-h-full flex-1 flex-col">
+      <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-7xl items-center gap-3 px-4 py-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            onClick={() => setMenu(true)}
+            aria-label="메뉴"
+          >
+            <MenuIcon />
+          </Button>
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex size-9 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
+              M
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-sm font-semibold tracking-tight sm:text-base">
+                  미리매수
+                </h1>
+                <Badge variant="secondary">모의투자</Badge>
+              </div>
+              <p className="hidden truncate text-xs text-muted-foreground sm:block">
+                미래에셋 카이로스 서버자동주문 스타일
+              </p>
+            </div>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <MarketBadge state={state} />
+            <div className="hidden text-right sm:block">
+              <div className="text-[11px] text-muted-foreground">예수금</div>
+              <div className="text-sm tabular-nums font-medium">{formatWon(state.cash)}</div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <Sheet open={menu} onOpenChange={setMenu}>
+        <SheetContent side="left" className="w-72 p-0">
+          <SheetHeader>
+            <SheetTitle>미리매수</SheetTitle>
+          </SheetHeader>
+          <nav className="grid gap-1 px-3 pb-6">
+            {TABS.map((item) => (
+              <Button
+                key={item.value}
+                variant={tab === item.value ? "secondary" : "ghost"}
+                className="justify-start"
+                onClick={() => {
+                  setTab(item.value);
+                  setMenu(false);
+                }}
+              >
+                <item.icon data-icon="inline-start" />
+                {item.label}
+              </Button>
+            ))}
+          </nav>
+        </SheetContent>
+      </Sheet>
+
+      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 py-4">
+        {error ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
+            <p>{error}</p>
+            <Button size="sm" variant="outline" onClick={() => void reload(true)}>
+              다시 시도
+            </Button>
+          </div>
+        ) : null}
+        <Tabs value={tab} onValueChange={(value) => setTab(String(value ?? "overview"))}>
+          <TabsList className="mb-4 hidden w-full max-w-xl md:flex">
+            {TABS.map((item) => (
+              <TabsTrigger key={item.value} value={item.value}>
+                <item.icon />
+                {item.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <TabsContent value="overview">
+            <OverviewPanel state={state} onState={setState} />
+          </TabsContent>
+          <TabsContent value="conditions">
+            <ConditionsPanel state={state} onState={setState} />
+          </TabsContent>
+          <TabsContent value="dca">
+            <DcaPanel state={state} onState={setState} />
+          </TabsContent>
+          <TabsContent value="orders">
+            <OrdersPanel state={state} />
+          </TabsContent>
+          <TabsContent value="guide">
+            <GuidePanel state={state} onState={setState} />
+          </TabsContent>
+        </Tabs>
+      </main>
+    </div>
+  );
+}
