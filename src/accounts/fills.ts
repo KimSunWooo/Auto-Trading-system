@@ -53,6 +53,12 @@ export function applyFill(
     tax: fees.tax,
     net: fees.net,
     status: "filled",
+    parentOrderId: draft.parentOrderId,
+    brokerOrderNo: draft.brokerOrderNo,
+    krxOrgNo: draft.krxOrgNo,
+    ordDvsn: draft.ordDvsn,
+    orderedQty: draft.orderedQty,
+    filledQty: draft.filledQty ?? draft.qty,
   };
 
   const reject = (reason: string) => {
@@ -189,6 +195,8 @@ export function recordPending(
     status: "pending",
     intentId: draft.intentId ?? crypto.randomUUID(),
     reason: "증권사 응답 대기",
+    orderedQty: draft.qty,
+    filledQty: 0,
   };
   return {
     state: {
@@ -256,5 +264,94 @@ export function confirmPendingFill(
     side: pending.side,
     qty: extra?.qty ?? pending.qty,
     price: extra?.price ?? pending.price,
+    brokerOrderNo: extra?.brokerOrderNo ?? pending.brokerOrderNo,
+    krxOrgNo: pending.krxOrgNo,
+    ordDvsn: pending.ordDvsn,
+    orderedQty: pending.orderedQty ?? pending.qty,
+    filledQty: extra?.qty ?? pending.qty,
   });
+}
+
+/**
+ * Book only the newly reported fill qty as a child order.
+ * The parent stays open until remaining qty is filled or cancelled.
+ */
+export function bookReportedFill(
+  state: AppState,
+  parentId: string,
+  input: { filledQty: number; avgPrice?: number; brokerOrderNo?: string },
+): { state: AppState; parent: Order; child?: Order } {
+  const parent = state.orders.find((row) => row.id === parentId);
+  if (!parent) {
+    return {
+      state,
+      parent: {
+        id: parentId,
+        createdAt: new Date().toISOString(),
+        source: "strategy",
+        code: "",
+        name: "",
+        side: "buy",
+        qty: 0,
+        price: 0,
+        amount: 0,
+        commission: 0,
+        tax: 0,
+        net: 0,
+        status: "rejected",
+        reason: "대기 주문을 찾지 못했습니다.",
+      },
+    };
+  }
+
+  const ordered = parent.orderedQty ?? parent.qty;
+  const already = parent.filledQty ?? 0;
+  const reported = Math.max(0, Math.min(Math.floor(input.filledQty), ordered));
+  const delta = reported - already;
+  if (delta < 1) {
+    if (reported >= ordered && parent.status !== "filled") {
+      const patched = patchOrder(state, parent.id, {
+        filledQty: reported,
+        status: "filled",
+        reason: "전량 체결",
+        brokerOrderNo: input.brokerOrderNo ?? parent.brokerOrderNo,
+      });
+      return { state: patched.state, parent: patched.order ?? parent };
+    }
+    return { state, parent };
+  }
+
+  const applied = applyFill(state, {
+    source: parent.source,
+    sourceId: parent.sourceId,
+    strategy: parent.strategy,
+    code: parent.code,
+    name: parent.name,
+    side: parent.side,
+    qty: delta,
+    price: input.avgPrice && input.avgPrice > 0 ? input.avgPrice : parent.price,
+    parentOrderId: parent.id,
+    brokerOrderNo: input.brokerOrderNo ?? parent.brokerOrderNo,
+    krxOrgNo: parent.krxOrgNo,
+    ordDvsn: parent.ordDvsn,
+  });
+
+  if (applied.order.status !== "filled") {
+    const patched = patchOrder(applied.state, parent.id, {
+      status: "unknown",
+      reason: applied.order.reason ?? "증권사 체결을 로컬 장부에 반영하지 못했습니다.",
+      brokerOrderNo: input.brokerOrderNo ?? parent.brokerOrderNo,
+    });
+    return { state: patched.state, parent: patched.order ?? parent, child: applied.order };
+  }
+
+  const newFilled = already + delta;
+  const done = newFilled >= ordered;
+  const patched = patchOrder(applied.state, parent.id, {
+    filledQty: newFilled,
+    status: done ? "filled" : parent.status,
+    reason: done ? "전량 체결" : `부분체결 ${newFilled}/${ordered}주`,
+    brokerOrderNo: input.brokerOrderNo ?? parent.brokerOrderNo,
+  });
+  return { state: patched.state, parent: patched.order ?? parent, child: applied.order };
 }

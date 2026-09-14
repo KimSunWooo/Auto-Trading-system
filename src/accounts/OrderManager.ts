@@ -60,6 +60,17 @@ export class OrderManager {
         price,
       });
       if (hard) return { ok: false, reason: hard };
+      const working = this.box.current.orders.find(
+        (order) =>
+          !order.parentOrderId &&
+          (order.status === "pending" || order.status === "unknown") &&
+          order.strategy === strategy &&
+          order.code === ticker &&
+          order.side === "buy",
+      );
+      if (working) {
+        return { ok: false, reason: `${ticker} 미체결 주문이 있어 대기합니다.` };
+      }
     }
     return { ok: true, net };
   }
@@ -77,6 +88,17 @@ export class OrderManager {
     const existing = findPosition(this.box.current.positions, ticker, strategy);
     if (!existing || existing.qty < qty) {
       return { ok: false, reason: "매도 가능 수량이 부족합니다." };
+    }
+    const working = this.box.current.orders.find(
+      (order) =>
+        !order.parentOrderId &&
+        (order.status === "pending" || order.status === "unknown") &&
+        order.strategy === strategy &&
+        order.code === ticker &&
+        order.side === "sell",
+    );
+    if (working) {
+      return { ok: false, reason: `${ticker} 미체결 매도가 있어 대기합니다.` };
     }
     return { ok: true };
   }
@@ -106,10 +128,17 @@ export class OrderManager {
     return started.order;
   }
 
-  ackWorking(orderId: string, brokerOrderNo: string, reason: string): BrokerFill {
+  ackWorking(
+    orderId: string,
+    brokerOrderNo: string,
+    reason: string,
+    extra?: { krxOrgNo?: string; ordDvsn?: "market" | "limit" },
+  ): BrokerFill {
     const patched = patchOrder(this.box.current, orderId, {
       status: "pending",
       brokerOrderNo,
+      krxOrgNo: extra?.krxOrgNo,
+      ordDvsn: extra?.ordDvsn,
       reason,
     });
     if (!patched.order) {

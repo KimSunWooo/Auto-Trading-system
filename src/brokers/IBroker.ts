@@ -4,7 +4,8 @@ import type { OrderSource, OrderStatus } from "@/lib/types";
  * Broker adapter contract.
  *
  * MockBroker fills the local paper book. KisBroker talks to 한국투자증권
- * Open API (모의 VTS / 실전) then mirrors the fill onto the local risk buckets.
+ * Open API (모의 VTS / 실전), keeps the ticket pending until daily ccld
+ * reports filled qty, then mirrors only that qty onto the local risk buckets.
  */
 export interface BrokerQuote {
   ticker: string;

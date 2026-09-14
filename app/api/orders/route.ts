@@ -45,9 +45,11 @@ export async function POST(request: Request) {
         ? await broker.sellMarket(stock.code, qty)
         : await broker.buyMarket(stock.code, qty * price);
 
-    if (!fill.ok) {
+    if (fill.status === "unknown") {
+      rejected = fill.reason ?? "주문 결과를 확인하지 못했습니다.";
+      unknown = true;
+    } else if (!fill.ok && fill.status !== "pending") {
       rejected = fill.reason ?? "주문에 실패했습니다.";
-      unknown = fill.status === "unknown";
     }
     return box.current;
   });

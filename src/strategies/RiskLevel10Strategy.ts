@@ -44,7 +44,9 @@ export class RiskLevel10Strategy implements IStrategy {
       lastRunAt: new Date().toISOString(),
       lastMessage: fill.ok
         ? `${best.ticker} 변동성 돌파 추격 ${fill.qty}주 (${(best.score * 100).toFixed(2)}%)`
-        : fill.reason ?? "추격 실패",
+        : fill.status === "pending"
+          ? `${best.ticker} 추격 주문 접수 (체결 대기)`
+          : fill.reason ?? "추격 실패",
       meta: {
         ...bucket.meta,
         firedAt: sent ? Date.now() : lastFire,

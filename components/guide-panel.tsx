@@ -66,8 +66,9 @@ export function GuidePanel({
           </ol>
           <p className="text-muted-foreground">{state.broker?.message}</p>
           <p>
-            타임아웃이 나면 미체결로 단정하지 않고 주문을 미확인으로 남긴 뒤 서킷을 엽니다. 상단 빨간
-            띠가 보이면 신규 주문은 나가지 않습니다.
+            주문번호(ODNO)는 접수로만 취급합니다. 장부에는 체결내역의 실제 체결 수량만 반영하고,
+            미체결 잔량은 30초 뒤 취소합니다. 타임아웃이 나면 미체결로 단정하지 않고 주문을 미확인으로
+            남긴 뒤 서킷을 엽니다. 상단 빨간 띠가 보이면 신규 주문은 나가지 않습니다.
           </p>
         </CardContent>
       </Card>

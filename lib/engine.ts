@@ -17,7 +17,7 @@ import type { IBroker } from "@/src/brokers/IBroker";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 import { emptyCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { HARD_LIMITS } from "@/src/risk/limits";
-import { expireStaleInFlight, reconcileUnknownOrders } from "@/src/risk/reconcile";
+import { expireStaleInFlight, settleOpenOrders } from "@/src/risk/reconcile";
 import { getSharedKisClient } from "@/src/brokers/kis-client";
 
 const HISTORY_LEN = 40;
@@ -266,7 +266,11 @@ export async function evaluateDca(state: AppState, nowIso: string): Promise<AppS
 
     const updatedPlan: DcaPlan = {
       ...scheduled,
-      lastMessage: fill.ok ? `${fill.qty}주 적립 매수` : fill.reason,
+      lastMessage: fill.ok
+        ? `${fill.qty}주 적립 매수`
+        : fill.status === "pending"
+          ? `${fill.qty}주 주문 접수 (체결 대기)`
+          : fill.reason,
     };
 
     box.current = {
@@ -301,7 +305,7 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
 
   if (root.driver === "kis") {
     expireStaleInFlight(box);
-    await reconcileUnknownOrders(box, getSharedKisClient());
+    await settleOpenOrders(box, getSharedKisClient());
     await refreshLiveQuotes(box, root);
   } else {
     box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };

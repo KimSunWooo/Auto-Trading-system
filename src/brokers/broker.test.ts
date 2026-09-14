@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { KisBroker } from "./KisBroker";
 import { MockBroker } from "./MockBroker";
-import type { KisApi, KisCashOrder, KisPrice } from "./kis-client";
+import type { KisApi, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "./kis-client";
+import { padOdno, sameOdno } from "./kis-client";
 import { createInitialState } from "@/lib/engine";
+import { settleOpenOrders } from "@/src/risk/reconcile";
+import { HARD_LIMITS } from "@/src/risk/limits";
 
 function fakePrice(ticker: string, price = 70_000): KisPrice {
   return {
@@ -24,7 +27,11 @@ class FakeKis implements KisApi {
   liveEnabled: boolean;
   issues: string[];
   orders: KisCashOrder[] = [];
+  fills: KisDayOrder[] = [];
+  cancels: KisCancelOrder[] = [];
   failNext: string | null = null;
+  failCancel: string | null = null;
+  autoFill = false;
 
   constructor(opts: { configured?: boolean; liveEnabled?: boolean; issues?: string[] } = {}) {
     this.configured = opts.configured ?? true;
@@ -41,19 +48,50 @@ class FakeKis implements KisApi {
   }
 
   async inquireDailyCcld() {
-    return [];
+    return this.fills.map((row) => ({ ...row }));
   }
 
-  async orderCash(order: KisCashOrder): Promise<{ orderNo: string }> {
+  async orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }> {
     if (this.failNext) {
       const msg = this.failNext;
       this.failNext = null;
       throw new Error(msg);
     }
     this.orders.push(order);
-    return { orderNo: "0000000123" };
+    const orderNo = "0000000123";
+    if (this.autoFill) {
+      this.fills.push({
+        orderNo,
+        ticker: order.ticker,
+        side: order.side,
+        qty: order.qty,
+        filledQty: order.qty,
+        unfilledQty: 0,
+        avgPrice: 70_000,
+      });
+    }
+    return { orderNo, krxOrgNo: "06010" };
+  }
+
+  async cancelOrder(order: KisCancelOrder): Promise<void> {
+    if (this.failCancel) {
+      const msg = this.failCancel;
+      this.failCancel = null;
+      const err = new Error(msg);
+      if (/timeout/i.test(msg)) err.name = "TimeoutError";
+      throw err;
+    }
+    this.cancels.push(order);
+    const row = this.fills.find((fill) => sameOdno(fill.orderNo, order.orderNo));
+    if (row) row.unfilledQty = 0;
   }
 }
+
+test("sameOdno matches padded KIS order numbers", () => {
+  assert.equal(sameOdno("0000000123", "123"), true);
+  assert.equal(padOdno("123"), "0000000123");
+  assert.equal(sameOdno("99", "100"), false);
+});
 
 test("KisBroker without credentials refuses orders and does not hit KIS", async () => {
   const box = { current: createInitialState() };
@@ -68,19 +106,40 @@ test("KisBroker without credentials refuses orders and does not hit KIS", async 
   assert.equal(client.orders.length, 0);
 });
 
-test("KisBroker sends a cash order then books the fill once", async () => {
+test("KisBroker treats ODNO as working, not a full fill", async () => {
   const box = { current: createInitialState() };
   const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
   const client = new FakeKis();
   const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
-  assert.equal(fill.ok, true);
+  assert.equal(fill.ok, false);
+  assert.equal(fill.status, "pending");
   assert.equal(fill.qty, 2);
-  assert.equal(fill.status, "filled");
   assert.equal(client.orders.length, 1);
   assert.equal(client.orders[0]?.ordDvsn, "market");
   const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  assert.equal(after, before);
+  const parent = box.current.orders.find((o) => o.status === "pending");
+  assert.ok(parent);
+  assert.equal(parent?.brokerOrderNo, "0000000123");
+  assert.equal(parent?.krxOrgNo, "06010");
+  assert.equal(parent?.filledQty, 0);
+  assert.equal(parent?.orderedQty, 2);
+});
+
+test("KisBroker books a fill only after daily ccld reports qty", async () => {
+  const box = { current: createInitialState() };
+  const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const client = new FakeKis();
+  client.autoFill = true;
+  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  assert.equal(fill.ok, true);
+  assert.equal(fill.status, "filled");
+  const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
   assert.ok(after < before);
-  assert.equal(box.current.orders.filter((o) => o.status === "filled").length, 1);
+  const children = box.current.orders.filter((o) => o.parentOrderId);
+  assert.equal(children.length, 1);
+  assert.equal(children[0]?.qty, 2);
+  assert.equal(children[0]?.status, "filled");
 });
 
 test("KisBroker checks the bucket before calling KIS", async () => {
@@ -129,6 +188,101 @@ test("hard limit blocks a ticket before it reaches KIS", async () => {
   assert.equal(fill.ok, false);
   assert.match(fill.reason ?? "", /한도/);
   assert.equal(client.orders.length, 0);
+});
+
+test("pending working order blocks another buy of the same ticker", async () => {
+  const box = { current: createInitialState() };
+  const client = new FakeKis();
+  const first = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  assert.equal(first.status, "pending");
+  const second = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  assert.equal(second.ok, false);
+  assert.match(second.reason ?? "", /미체결/);
+  assert.equal(client.orders.length, 1);
+});
+
+test("settleOpenOrders books only the reported partial fill", async () => {
+  const box = { current: createInitialState() };
+  const client = new FakeKis();
+  await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const parent = box.current.orders.find((o) => o.status === "pending")!;
+  const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  client.fills = [
+    {
+      orderNo: "123",
+      ticker: "005930",
+      side: "buy",
+      qty: 2,
+      filledQty: 1,
+      unfilledQty: 1,
+      avgPrice: 70_000,
+    },
+  ];
+  await settleOpenOrders(box, client);
+  const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  assert.ok(after < before);
+  const live = box.current.orders.find((o) => o.id === parent.id)!;
+  assert.equal(live.status, "pending");
+  assert.equal(live.filledQty, 1);
+  const child = box.current.orders.find((o) => o.parentOrderId === parent.id);
+  assert.equal(child?.qty, 1);
+  assert.equal(child?.status, "filled");
+  assert.equal(client.cancels.length, 0);
+});
+
+test("settleOpenOrders cancels remaining qty after the timeout", async () => {
+  const box = { current: createInitialState() };
+  const client = new FakeKis();
+  await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const parent = box.current.orders.find((o) => o.status === "pending")!;
+  parent.createdAt = new Date(Date.now() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
+  client.fills = [
+    {
+      orderNo: "0000000123",
+      ticker: "005930",
+      side: "buy",
+      qty: 2,
+      filledQty: 1,
+      unfilledQty: 1,
+      avgPrice: 70_000,
+    },
+  ];
+  await settleOpenOrders(box, client);
+  assert.equal(client.cancels.length, 1);
+  assert.equal(client.cancels[0]?.ordDvsn, "market");
+  const live = box.current.orders.find((o) => o.id === parent.id)!;
+  assert.equal(live.status, "filled");
+  assert.equal(live.filledQty, 1);
+  assert.match(live.reason ?? "", /잔량 취소/);
+  const child = box.current.orders.find((o) => o.parentOrderId === parent.id);
+  assert.equal(child?.qty, 1);
+});
+
+test("settleOpenOrders cancels a still-unfilled ticket with no fills", async () => {
+  const box = { current: createInitialState() };
+  const client = new FakeKis();
+  await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const parent = box.current.orders.find((o) => o.status === "pending")!;
+  parent.createdAt = new Date(Date.now() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
+  client.fills = [
+    {
+      orderNo: "0000000123",
+      ticker: "005930",
+      side: "buy",
+      qty: 2,
+      filledQty: 0,
+      unfilledQty: 2,
+      avgPrice: 0,
+    },
+  ];
+  const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  await settleOpenOrders(box, client);
+  assert.equal(client.cancels.length, 1);
+  const live = box.current.orders.find((o) => o.id === parent.id)!;
+  assert.equal(live.status, "cancelled");
+  assert.equal(live.filledQty, 0);
+  const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  assert.equal(after, before);
 });
 
 test("MockBroker getCurrentPrice reads the paper book", async () => {

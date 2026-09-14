@@ -106,6 +106,11 @@ export type Order = {
   reason?: string;
   intentId?: string;
   brokerOrderNo?: string;
+  krxOrgNo?: string;
+  ordDvsn?: "market" | "limit";
+  orderedQty?: number;
+  filledQty?: number;
+  parentOrderId?: string;
 };
 
 export type CircuitState = {

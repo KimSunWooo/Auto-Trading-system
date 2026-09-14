@@ -5,6 +5,7 @@ import {
   loadKisConfig,
   parseAccountNo,
   KIS_LIVE_CONFIRM_VALUE,
+  KIS_TR,
 } from "./kis-config";
 
 test("parseAccountNo accepts dashed and compact forms", () => {
@@ -52,4 +53,9 @@ test("public status for mock does not leak account numbers", () => {
   assert.equal(status.driver, "mock");
   assert.equal(status.accountMasked, null);
   assert.match(status.message, /페이퍼/);
+});
+
+test("cancel TR ids are the KIS revise-cancel codes", () => {
+  assert.equal(KIS_TR.cancel.demo, "VTTC0803U");
+  assert.equal(KIS_TR.cancel.real, "TTTC0803U");
 });

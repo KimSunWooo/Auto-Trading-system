@@ -28,13 +28,20 @@ export class RiskLevel5Strategy implements IStrategy {
     if (fast > slow && regime !== "long") {
       const amount = Math.floor(bucket.balance * 0.35);
       const fill = await broker.buyMarket(SWING_TICKER, amount);
+      const sent = fill.ok || fill.status === "pending" || fill.status === "unknown";
       return {
         ...bucket,
         lastRunAt: new Date().toISOString(),
         lastMessage: fill.ok
           ? `골든크로스 매수 ${fill.qty}주`
-          : fill.reason ?? "매수 실패",
-        meta: { ...bucket.meta, regime: fill.ok ? "long" : fill.status === "unknown" ? "halt" : regime },
+          : fill.status === "pending"
+            ? `골든크로스 주문 접수 (${fill.qty}주, 체결 대기)`
+            : fill.reason ?? "매수 실패",
+        meta: {
+          ...bucket.meta,
+          regime: fill.ok ? "long" : fill.status === "unknown" ? "halt" : regime,
+          lastFillOk: sent,
+        },
       };
     }
 

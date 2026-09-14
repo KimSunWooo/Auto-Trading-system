@@ -26,7 +26,7 @@ export function OrdersPanel({ state }: { state: PublicState }) {
       <CardHeader className="border-b">
         <CardTitle>자동주문 실행내역</CardTitle>
         <CardDescription>
-          모의투자 체결입니다. 매수 수수료 0.015%, 매도 시 거래세 0.18%를 반영합니다.
+          KIS 체결내역의 실제 체결 수량만 장부에 넣습니다. 미체결 잔량은 30초 후 취소합니다.
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-4">
@@ -49,7 +49,33 @@ export function OrdersPanel({ state }: { state: PublicState }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {state.orders.map((order) => (
+              {state.orders.map((order) => {
+                const ordered = order.orderedQty ?? order.qty;
+                const filled = order.filledQty;
+                const qtyLabel =
+                  order.parentOrderId
+                    ? String(order.qty)
+                    : filled != null && filled !== ordered
+                      ? `${filled}/${ordered}`
+                      : order.status === "pending" || order.status === "unknown"
+                        ? `${filled ?? 0}/${ordered}`
+                        : String(order.qty);
+                const resultLabel = order.status === "filled"
+                  ? order.parentOrderId
+                    ? "체결"
+                    : (order.filledQty != null &&
+                        order.orderedQty != null &&
+                        order.filledQty < order.orderedQty)
+                      ? "부분체결"
+                      : "체결"
+                  : order.status === "pending"
+                    ? "대기"
+                    : order.status === "unknown"
+                      ? "미확인"
+                      : order.status === "cancelled"
+                        ? "취소"
+                        : "거부";
+                return (
                 <TableRow key={order.id}>
                   <TableCell>{formatSeoul(order.createdAt)}</TableCell>
                   <TableCell>{SOURCE[order.source] ?? order.source}</TableCell>
@@ -58,12 +84,13 @@ export function OrdersPanel({ state }: { state: PublicState }) {
                     <div className="text-xs text-muted-foreground">
                       {order.code}
                       {order.strategy ? ` · ${order.strategy}` : ""}
+                      {order.brokerOrderNo ? ` · ${order.brokerOrderNo}` : ""}
                     </div>
                   </TableCell>
                   <TableCell className={order.side === "buy" ? "text-up" : "text-down"}>
                     {sideLabel(order.side)}
                   </TableCell>
-                  <TableCell className="tabular-nums">{order.qty}</TableCell>
+                  <TableCell className="tabular-nums">{qtyLabel}</TableCell>
                   <TableCell className="tabular-nums">{formatWon(order.price)}</TableCell>
                   <TableCell className="tabular-nums">{formatWon(order.net)}</TableCell>
                   <TableCell>
@@ -76,15 +103,7 @@ export function OrdersPanel({ state }: { state: PublicState }) {
                             : "destructive"
                       }
                     >
-                      {order.status === "filled"
-                        ? "체결"
-                        : order.status === "pending"
-                          ? "대기"
-                          : order.status === "unknown"
-                            ? "미확인"
-                            : order.status === "cancelled"
-                              ? "취소"
-                              : "거부"}
+                      {resultLabel}
                     </Badge>
                     {order.reason ? (
                       <div className="mt-1 max-w-40 truncate text-xs text-muted-foreground">
@@ -93,7 +112,8 @@ export function OrdersPanel({ state }: { state: PublicState }) {
                     ) : null}
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         )}

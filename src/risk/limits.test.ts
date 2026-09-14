@@ -47,3 +47,50 @@ test("resetCircuit clears halt when there is no unknown order", () => {
   assert.equal(reset.state.circuit.halted, false);
   assert.equal(emptyCircuit().halted, false);
 });
+
+test("child partial fills do not double-count the daily order cap", () => {
+  const state = createInitialState();
+  const today = new Date().toISOString();
+  state.orders = [
+    {
+      id: "parent",
+      createdAt: today,
+      source: "strategy",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 2,
+      price: 70_000,
+      amount: 140_000,
+      commission: 0,
+      tax: 0,
+      net: 140_000,
+      status: "pending",
+      orderedQty: 2,
+      filledQty: 1,
+    },
+    {
+      id: "child",
+      createdAt: today,
+      source: "strategy",
+      parentOrderId: "parent",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 70_000,
+      amount: 70_000,
+      commission: 0,
+      tax: 0,
+      net: 70_000,
+      status: "filled",
+    },
+  ];
+  const reason = checkHardLimits(state, {
+    side: "buy",
+    ticker: "069500",
+    qty: 1,
+    price: 10_000,
+  });
+  assert.equal(reason, null);
+});

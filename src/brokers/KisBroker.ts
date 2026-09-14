@@ -8,10 +8,12 @@ import { tickSize } from "@/lib/tick-size";
 import type { OrderSource, Quote } from "@/lib/types";
 import { isIndeterminateError } from "@/src/risk/errors";
 import { tradingBlocked } from "@/src/risk/circuit";
+import { settleOpenOrders } from "@/src/risk/reconcile";
 
 /**
  * 한국투자증권 Open API adapter.
- * 주문은 pending 기록 후 전송하고, 타임아웃은 unknown + 서킷으로 처리합니다.
+ * 주문은 pending 기록 후 전송하고, ODNO는 접수로만 취급합니다.
+ * 실제 체결 수량은 일별 체결내역으로만 장부에 넣고, 잔량은 일정 시간 후 취소합니다.
  */
 export class KisBroker implements IBroker {
   readonly driver = "kis" as const;
@@ -133,14 +135,17 @@ export class KisBroker implements IBroker {
           ordDvsn,
           price: ordDvsn === "limit" ? price : 0,
         });
-        if (ordDvsn === "limit") {
-          return orders.ackWorking(
-            pending.id,
-            placed.orderNo,
-            `지정가 접수(${placed.orderNo}). 체결 전까지 로컬 잔고에 반영하지 않습니다.`,
-          );
-        }
-        return orders.confirm(pending.id, placed.orderNo);
+        const working = orders.ackWorking(
+          pending.id,
+          placed.orderNo,
+          `주문 접수(${placed.orderNo}). 체결수량은 체결내역으로만 반영합니다.`,
+          { krxOrgNo: placed.krxOrgNo, ordDvsn },
+        );
+        await persistNow(this.box.current);
+        await settleOpenOrders(this.box, this.client);
+        await persistNow(this.box.current);
+        const latest = this.box.current.orders.find((row) => row.id === pending.id);
+        return latest ? orders.toFill(latest) : working;
       } catch (err) {
         const reason = err instanceof Error ? err.message : "한국투자증권 주문에 실패했습니다.";
         if (isIndeterminateError(err)) {
@@ -177,7 +182,17 @@ export class KisBroker implements IBroker {
           ordDvsn: "market",
           price: 0,
         });
-        return orders.confirm(pending.id, placed.orderNo);
+        const working = orders.ackWorking(
+          pending.id,
+          placed.orderNo,
+          `주문 접수(${placed.orderNo}). 체결수량은 체결내역으로만 반영합니다.`,
+          { krxOrgNo: placed.krxOrgNo, ordDvsn: "market" },
+        );
+        await persistNow(this.box.current);
+        await settleOpenOrders(this.box, this.client);
+        await persistNow(this.box.current);
+        const latest = this.box.current.orders.find((row) => row.id === pending.id);
+        return latest ? orders.toFill(latest) : working;
       } catch (err) {
         const reason = err instanceof Error ? err.message : "한국투자증권 주문에 실패했습니다.";
         if (isIndeterminateError(err)) {

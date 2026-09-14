@@ -9,6 +9,7 @@ export const HARD_LIMITS = {
   minTickMs: 2_500,
   quoteTimeoutMs: 8_000,
   orderTimeoutMs: 10_000,
+  cancelUnfilledAfterMs: 30_000,
 } as const;
 
 export function seoulDay(date = new Date()): string {
@@ -16,6 +17,7 @@ export function seoulDay(date = new Date()): string {
 }
 
 function countsTowardDaily(order: Order): boolean {
+  if (order.parentOrderId) return false;
   return order.status === "filled" || order.status === "pending" || order.status === "unknown";
 }
 

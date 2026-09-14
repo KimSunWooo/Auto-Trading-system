@@ -32,7 +32,14 @@ export type KisDayOrder = {
   side: "buy" | "sell";
   qty: number;
   filledQty: number;
+  unfilledQty: number;
   avgPrice: number;
+};
+
+export type KisCancelOrder = {
+  orderNo: string;
+  krxOrgNo: string;
+  ordDvsn: "market" | "limit";
 };
 
 export interface KisApi {
@@ -43,7 +50,20 @@ export interface KisApi {
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
   inquireDailyCcld(): Promise<KisDayOrder[]>;
-  orderCash(order: KisCashOrder): Promise<{ orderNo: string }>;
+  orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }>;
+  cancelOrder(order: KisCancelOrder): Promise<void>;
+}
+
+/** Strip punctuation/leading zeros so "0000000123" matches "123". */
+export function sameOdno(a: string | undefined, b: string | undefined): boolean {
+  const na = String(a ?? "").replace(/\D/g, "").replace(/^0+/, "");
+  const nb = String(b ?? "").replace(/\D/g, "").replace(/^0+/, "");
+  return na.length > 0 && na === nb;
+}
+
+export function padOdno(value: string | undefined): string {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits.padStart(10, "0").slice(-10);
 }
 
 type FetchLike = typeof fetch;
@@ -173,7 +193,7 @@ export class KisClient implements KisApi {
     }
   }
 
-  async orderCash(order: KisCashOrder): Promise<{ orderNo: string }> {
+  async orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }> {
     this.assertConfigured();
     if (this.config.mode === "real" && !this.config.liveEnabled) {
       throw new Error(
@@ -206,52 +226,90 @@ export class KisClient implements KisApi {
     if (!orderNo) {
       throw new IndeterminateOrderError("KIS가 주문번호를 반환하지 않았습니다. 체결 여부를 확인해야 합니다.");
     }
-    return { orderNo };
+    const krxOrgNo = String(
+      out.KRX_FWDG_ORD_ORGNO ?? out.krx_fwdg_ord_orgno ?? "",
+    ).trim();
+    return { orderNo, krxOrgNo };
+  }
+
+  async cancelOrder(order: KisCancelOrder): Promise<void> {
+    this.assertConfigured();
+    if (this.config.mode === "real" && !this.config.liveEnabled) {
+      throw new Error(
+        "실전 주문이 잠겨 있습니다. KIS_MODE=real 과 KIS_LIVE_CONFIRM=I_UNDERSTAND 를 함께 설정하세요.",
+      );
+    }
+    const body = {
+      CANO: this.config.cano,
+      ACNT_PRDT_CD: this.config.productCode,
+      KRX_FWDG_ORD_ORGNO: order.krxOrgNo,
+      ORGN_ODNO: padOdno(order.orderNo),
+      ORD_DVSN: order.ordDvsn === "market" ? "01" : "00",
+      RVSE_CNCL_DVSN_CD: "02",
+      ORD_QTY: "0",
+      ORD_UNPR: "0",
+      QTY_ALL_ORD_YN: "Y",
+      EXCG_ID_DVSN_CD: "KRX",
+      CNDT_PRIC: "0",
+    };
+    const hashkey = await this.hashkey(body);
+    await this.uapi("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl", {
+      trId: KIS_TR.cancel[this.config.mode],
+      hashkey,
+      body,
+      timeoutMs: HARD_LIMITS.orderTimeoutMs,
+    });
   }
 
   async inquireDailyCcld(): Promise<KisDayOrder[]> {
     this.assertConfigured();
     const day = yyyymmddSeoul(new Date());
-    try {
-      const json = await this.uapi(
-        "GET",
-        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
-        {
-          trId: KIS_TR.dailyCcld[this.config.mode],
-          timeoutMs: HARD_LIMITS.quoteTimeoutMs,
-          query: {
-            CANO: this.config.cano,
-            ACNT_PRDT_CD: this.config.productCode,
-            INQR_STRT_DT: day,
-            INQR_END_DT: day,
-            SLL_BUY_DVSN_CD: "00",
-            INQR_DVSN: "00",
-            PDNO: "",
-            CCLD_DVSN: "00",
-            INQR_DVSN_3: "00",
-            INQR_DVSN_1: "",
-            CTX_AREA_FK100: "",
-            CTX_AREA_NK100: "",
-          },
+    const json = await this.uapi(
+      "GET",
+      "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+      {
+        trId: KIS_TR.dailyCcld[this.config.mode],
+        timeoutMs: HARD_LIMITS.quoteTimeoutMs,
+        query: {
+          CANO: this.config.cano,
+          ACNT_PRDT_CD: this.config.productCode,
+          INQR_STRT_DT: day,
+          INQR_END_DT: day,
+          SLL_BUY_DVSN_CD: "00",
+          INQR_DVSN: "00",
+          PDNO: "",
+          CCLD_DVSN: "00",
+          INQR_DVSN_3: "00",
+          INQR_DVSN_1: "",
+          CTX_AREA_FK100: "",
+          CTX_AREA_NK100: "",
         },
-      );
-      const raw = json.output1 ?? json.output ?? [];
-      const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
-      return rows.map((row) => {
+      },
+    );
+    const raw = json.output1 ?? json.output ?? [];
+    const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+    return rows
+      .map((row) => {
         const side: "buy" | "sell" =
           String(row.sll_buy_dvsn_cd ?? "") === "01" ? "sell" : "buy";
+        const qty = asNumber(row.ord_qty);
+        const filledQty = asNumber(row.tot_ccld_qty);
+        const rawNccs = row.nccs_qty ?? row.NCCS_QTY;
+        const unfilledQty =
+          rawNccs === undefined || rawNccs === null || String(rawNccs).trim() === ""
+            ? Math.max(0, qty - filledQty)
+            : asNumber(rawNccs);
         return {
           orderNo: String(row.odno ?? row.ODNO ?? "").trim(),
           ticker: String(row.pdno ?? row.PDNO ?? "").padStart(6, "0"),
           side,
-          qty: asNumber(row.ord_qty),
-          filledQty: asNumber(row.tot_ccld_qty),
+          qty,
+          filledQty,
+          unfilledQty,
           avgPrice: asNumber(row.avg_prvs) || asNumber(row.avg_ccld_unpr),
         };
-      }).filter((row) => row.orderNo || row.ticker);
-    } catch {
-      return [];
-    }
+      })
+      .filter((row) => row.orderNo || row.ticker);
   }
 
   private assertConfigured() {

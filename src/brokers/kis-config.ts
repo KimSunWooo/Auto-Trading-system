@@ -15,6 +15,7 @@ export const KIS_TR = {
   price: "FHKST01010100",
   daily: "FHKST03010100",
   dailyCcld: { demo: "VTTC8001R", real: "TTTC8001R" },
+  cancel: { demo: "VTTC0803U", real: "TTTC0803U" },
 } as const;
 
 export type KisConfig = {

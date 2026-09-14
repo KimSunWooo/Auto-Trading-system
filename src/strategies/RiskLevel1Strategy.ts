@@ -25,13 +25,16 @@ export class RiskLevel1Strategy implements IStrategy {
     }
 
     const fill = await broker.buyMarket(KODEX_200, amount);
+    const sent = fill.ok || fill.status === "pending" || fill.status === "unknown";
     return {
       ...bucket,
       lastRunAt: new Date(now).toISOString(),
       lastMessage: fill.ok
         ? `KODEX 200 ${fill.qty}주 적립 (${fill.net.toLocaleString("ko-KR")}원)`
-        : fill.reason ?? "적립 실패",
-      meta: { ...bucket.meta, lastFillOk: fill.ok },
+        : fill.status === "pending"
+          ? `KODEX 200 ${fill.qty}주 주문 접수 (체결 대기)`
+          : fill.reason ?? "적립 실패",
+      meta: { ...bucket.meta, lastFillOk: sent },
     };
   }
 }
