@@ -10,6 +10,9 @@ export const HARD_LIMITS = {
   quoteTimeoutMs: 8_000,
   orderTimeoutMs: 10_000,
   cancelUnfilledAfterMs: 30_000,
+  balanceSyncMs: 30_000,
+  /** Rounding only. Not derived from the 0.015% local fee estimate. */
+  balanceCashToleranceKrw: 1,
 } as const;
 
 export function seoulDay(date = new Date()): string {

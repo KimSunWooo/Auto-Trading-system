@@ -77,6 +77,16 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             <div className="hidden text-right sm:block">
               <div className="text-[11px] text-muted-foreground">예수금</div>
               <div className="text-sm tabular-nums font-medium">{formatWon(state.cash)}</div>
+              {state.kisBalance ? (
+                <div
+                  className={`text-[10px] tabular-nums ${
+                    state.kisBalance.matched ? "text-muted-foreground" : "text-destructive"
+                  }`}
+                >
+                  KIS {formatWon(state.kisBalance.cash)}
+                  {state.kisBalance.matched ? "" : " 불일치"}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

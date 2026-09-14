@@ -121,6 +121,23 @@ export type CircuitState = {
   lastError?: string;
 };
 
+export type KisHolding = {
+  ticker: string;
+  name: string;
+  qty: number;
+  avgPrice: number;
+};
+
+export type KisBalanceSnapshot = {
+  syncedAt: string;
+  cash: number;
+  d2Cash: number;
+  holdings: KisHolding[];
+  cashDelta: number;
+  matched: boolean;
+  message: string;
+};
+
 export type Settings = {
   ignoreMarketHours: boolean;
   startingCash: number;
@@ -131,6 +148,7 @@ export type AppState = {
   updatedAt: string;
   tickCount: number;
   lastEngineAt?: number;
+  lastBalanceSyncAt?: number;
   settings: Settings;
   totalDeposit: number;
   allocations: Allocation[];
@@ -141,6 +159,7 @@ export type AppState = {
   dcaPlans: DcaPlan[];
   orders: Order[];
   circuit: CircuitState;
+  kisBalance?: KisBalanceSnapshot;
 };
 
 export type BrokerPublicStatus = {

@@ -18,6 +18,7 @@ import { QuantEngine } from "@/src/engine/QuantEngine";
 import { emptyCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { expireStaleInFlight, settleOpenOrders } from "@/src/risk/reconcile";
+import { syncKisBalance } from "@/src/risk/balance-sync";
 import { getSharedKisClient } from "@/src/brokers/kis-client";
 
 const HISTORY_LEN = 40;
@@ -306,6 +307,7 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
   if (root.driver === "kis") {
     expireStaleInFlight(box);
     await settleOpenOrders(box, getSharedKisClient());
+    await syncKisBalance(box, getSharedKisClient(), now.getTime());
     await refreshLiveQuotes(box, root);
   } else {
     box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };

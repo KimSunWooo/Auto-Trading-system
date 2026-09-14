@@ -16,8 +16,26 @@ import {
 } from "@/components/ui/table";
 import { Change, Price, Sparkline } from "@/components/price";
 import { api } from "@/hooks/use-trading";
-import { formatWon } from "@/lib/format";
+import { formatSeoul, formatWon } from "@/lib/format";
 import type { PublicState, Quote } from "@/lib/types";
+
+function holdingRows(state: PublicState) {
+  const rows = new Map<string, { name: string; kisQty: number; localQty: number }>();
+  for (const pos of state.positions) {
+    if (pos.qty < 1) continue;
+    const cur = rows.get(pos.code) ?? { name: pos.name, kisQty: 0, localQty: 0 };
+    cur.localQty += pos.qty;
+    cur.name = pos.name || cur.name;
+    rows.set(pos.code, cur);
+  }
+  for (const hold of state.kisBalance?.holdings ?? []) {
+    const cur = rows.get(hold.ticker) ?? { name: hold.name, kisQty: 0, localQty: 0 };
+    cur.kisQty += hold.qty;
+    cur.name = hold.name || cur.name;
+    rows.set(hold.ticker, cur);
+  }
+  return [...rows.entries()];
+}
 
 export function OverviewPanel({
   state,
@@ -36,6 +54,7 @@ export function OverviewPanel({
     const q = state.quotes[p.code];
     return sum + p.qty * (q?.price ?? p.avgPrice);
   }, 0);
+  const kisHoldingRows = state.kisBalance ? holdingRows(state) : [];
 
   return (
     <div className="space-y-4">
@@ -73,6 +92,61 @@ export function OverviewPanel({
             </Card>
           ))}
         </div>
+      ) : null}
+
+      {state.kisBalance ? (
+        <Card>
+          <CardHeader className="border-b">
+            <CardDescription>KIS inquire-balance · 30초마다</CardDescription>
+            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+              증권사 실잔고
+              <Badge variant={state.kisBalance.matched ? "secondary" : "destructive"}>
+                {state.kisBalance.matched ? "일치" : "불일치"}
+              </Badge>
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              {state.kisBalance.syncedAt ? formatSeoul(state.kisBalance.syncedAt) : ""} ·{" "}
+              {state.kisBalance.message}
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-4 text-sm">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <div className="text-xs text-muted-foreground">로컬 버킷 합계</div>
+                <div className="tabular-nums font-medium">{formatWon(state.cash)}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">KIS 예수금</div>
+                <div className="tabular-nums font-medium">{formatWon(state.kisBalance.cash)}</div>
+              </div>
+            </div>
+            {kisHoldingRows.length === 0 ? (
+              <p className="text-xs text-muted-foreground">보유 종목이 없습니다.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>종목</TableHead>
+                    <TableHead>KIS 수량</TableHead>
+                    <TableHead>로컬 수량</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {kisHoldingRows.map(([ticker, row]) => (
+                    <TableRow key={ticker}>
+                      <TableCell>
+                        <div className="font-medium">{row.name}</div>
+                        <div className="text-xs text-muted-foreground">{ticker}</div>
+                      </TableCell>
+                      <TableCell className="tabular-nums">{row.kisQty}</TableCell>
+                      <TableCell className="tabular-nums">{row.localQty}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
       ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">

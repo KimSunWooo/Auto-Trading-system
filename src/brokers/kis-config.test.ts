@@ -59,3 +59,8 @@ test("cancel TR ids are the KIS revise-cancel codes", () => {
   assert.equal(KIS_TR.cancel.demo, "VTTC0803U");
   assert.equal(KIS_TR.cancel.real, "TTTC0803U");
 });
+
+test("balance TR ids are the KIS inquire-balance codes", () => {
+  assert.equal(KIS_TR.balance.demo, "VTTC8434R");
+  assert.equal(KIS_TR.balance.real, "TTTC8434R");
+});

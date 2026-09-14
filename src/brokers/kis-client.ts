@@ -42,6 +42,19 @@ export type KisCancelOrder = {
   ordDvsn: "market" | "limit";
 };
 
+export type KisHolding = {
+  ticker: string;
+  name: string;
+  qty: number;
+  avgPrice: number;
+};
+
+export type KisAccountBalance = {
+  cash: number;
+  d2Cash: number;
+  holdings: KisHolding[];
+};
+
 export interface KisApi {
   readonly mode: KisMode;
   readonly configured: boolean;
@@ -50,6 +63,7 @@ export interface KisApi {
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
   inquireDailyCcld(): Promise<KisDayOrder[]>;
+  inquireBalance(): Promise<KisAccountBalance>;
   orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }>;
   cancelOrder(order: KisCancelOrder): Promise<void>;
 }
@@ -310,6 +324,64 @@ export class KisClient implements KisApi {
         };
       })
       .filter((row) => row.orderNo || row.ticker);
+  }
+
+  async inquireBalance(): Promise<KisAccountBalance> {
+    this.assertConfigured();
+    const holdings = new Map<string, KisHolding>();
+    let cash = 0;
+    let d2Cash = 0;
+    let fk = "";
+    let nk = "";
+
+    for (let page = 0; page < 10; page += 1) {
+      const json = await this.uapi(
+        "GET",
+        "/uapi/domestic-stock/v1/trading/inquire-balance",
+        {
+          trId: KIS_TR.balance[this.config.mode],
+          timeoutMs: HARD_LIMITS.quoteTimeoutMs,
+          query: {
+            CANO: this.config.cano,
+            ACNT_PRDT_CD: this.config.productCode,
+            AFHR_FLPR_YN: "N",
+            OFL_YN: "",
+            INQR_DVSN: "01",
+            UNPR_DVSN: "01",
+            FUND_STTL_ICLD_YN: "N",
+            FNCG_AMT_AUTO_RDPT_YN: "N",
+            PRCS_DVSN: "00",
+            CTX_AREA_FK100: fk,
+            CTX_AREA_NK100: nk,
+          },
+        },
+      );
+      const raw1 = json.output1 ?? json.output ?? [];
+      const rows = Array.isArray(raw1) ? (raw1 as Array<Record<string, unknown>>) : [];
+      for (const row of rows) {
+        const qty = asNumber(row.hldg_qty);
+        const ticker = String(row.pdno ?? row.PDNO ?? "").replace(/\D/g, "").slice(-6).padStart(6, "0");
+        if (qty < 1 || ticker === "000000") continue;
+        const prev = holdings.get(ticker);
+        holdings.set(ticker, {
+          ticker,
+          name: String(row.prdt_name ?? row.hts_kor_isnm ?? prev?.name ?? ticker).trim(),
+          qty: (prev?.qty ?? 0) + qty,
+          avgPrice: asNumber(row.pchs_avg_pric) || prev?.avgPrice || 0,
+        });
+      }
+      const raw2 = json.output2;
+      const summary = (Array.isArray(raw2) ? raw2[0] : raw2) as Record<string, unknown> | undefined;
+      if (summary) {
+        cash = asNumber(summary.dnca_tot_amt);
+        d2Cash = asNumber(summary.prvs_rcdl_excc_amt);
+      }
+      nk = String(json.ctx_area_nk100 ?? json.CTX_AREA_NK100 ?? "").trim();
+      fk = String(json.ctx_area_fk100 ?? json.CTX_AREA_FK100 ?? "").trim();
+      if (!nk) break;
+    }
+
+    return { cash, d2Cash, holdings: [...holdings.values()] };
   }
 
   private assertConfigured() {

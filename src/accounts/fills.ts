@@ -9,6 +9,7 @@ export const COMMISSION_RATE = 0.00015;
 export const SELL_TAX_RATE = 0.0018;
 export const MAX_ORDERS = 200;
 
+/** Local estimate only. Live safety is inquire-balance vs buckets, not this rate. */
 export function feeBreakdown(side: Side, amount: number) {
   const commission = Math.round(amount * COMMISSION_RATE);
   const tax = side === "sell" ? Math.round(amount * SELL_TAX_RATE) : 0;

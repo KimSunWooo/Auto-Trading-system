@@ -63,6 +63,8 @@ function migrateState(parsed: AppState): AppState {
     cash: cashFromAllocations(allocations),
     circuit: parsed.circuit ?? emptyCircuit(),
     lastEngineAt: parsed.lastEngineAt,
+    lastBalanceSyncAt: parsed.lastBalanceSyncAt,
+    kisBalance: parsed.kisBalance,
   });
 }
 

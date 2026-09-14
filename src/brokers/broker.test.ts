@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { KisBroker } from "./KisBroker";
 import { MockBroker } from "./MockBroker";
-import type { KisApi, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "./kis-client";
+import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "./kis-client";
 import { padOdno, sameOdno } from "./kis-client";
 import { createInitialState } from "@/lib/engine";
 import { settleOpenOrders } from "@/src/risk/reconcile";
@@ -32,6 +32,7 @@ class FakeKis implements KisApi {
   failNext: string | null = null;
   failCancel: string | null = null;
   autoFill = false;
+  balance: KisAccountBalance = { cash: 10_000_000, d2Cash: 10_000_000, holdings: [] };
 
   constructor(opts: { configured?: boolean; liveEnabled?: boolean; issues?: string[] } = {}) {
     this.configured = opts.configured ?? true;
@@ -49,6 +50,14 @@ class FakeKis implements KisApi {
 
   async inquireDailyCcld() {
     return this.fills.map((row) => ({ ...row }));
+  }
+
+  async inquireBalance(): Promise<KisAccountBalance> {
+    return {
+      cash: this.balance.cash,
+      d2Cash: this.balance.d2Cash,
+      holdings: this.balance.holdings.map((row) => ({ ...row })),
+    };
   }
 
   async orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }> {
