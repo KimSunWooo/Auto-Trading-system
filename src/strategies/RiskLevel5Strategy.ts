@@ -1,33 +1,36 @@
-import { SWING_TICKER } from "@/src/accounts/defaults";
 import type { AccountBucket } from "@/src/accounts/AccountBucket";
 import type { IBroker } from "@/src/brokers/IBroker";
 import type { IStrategy } from "@/src/strategies/IStrategy";
 import { sma } from "@/src/strategies/indicators";
+import { resolveLevel5 } from "@/src/strategies/config";
+import { findStock } from "@/lib/universe";
 
-/** Mid risk: 5/20 이동평균 돌파 스윙 (삼성전자). */
+/** Mid risk: 이동평균 돌파 스윙. 종목·이평은 strategy-config.json. */
 export class RiskLevel5Strategy implements IStrategy {
   readonly id = "Level5_Swing";
   readonly name = "이평 돌파 스윙";
   readonly riskLevel = 5;
 
   async execute(broker: IBroker, bucket: AccountBucket): Promise<AccountBucket> {
-    const quote = await broker.getQuote(SWING_TICKER);
+    const params = resolveLevel5(bucket.meta);
+    const quote = await broker.getQuote(params.ticker);
     if (!quote) {
       return { ...bucket, lastMessage: "스윙 종목 시세 없음" };
     }
 
-    const fast = sma(quote.history, 5);
-    const slow = sma(quote.history, 20);
+    const fast = sma(quote.history, params.fastMa);
+    const slow = sma(quote.history, params.slowMa);
     if (fast == null || slow == null) {
       return { ...bucket, lastMessage: "이동평균 워밍업 중" };
     }
 
     const regime = String(bucket.meta.regime ?? "flat");
-    const held = bucket.positions.find((p) => p.code === SWING_TICKER);
+    const held = bucket.positions.find((p) => p.code === params.ticker);
+    const name = findStock(params.ticker)?.name ?? params.ticker;
 
     if (fast > slow && regime !== "long") {
-      const amount = Math.floor(bucket.balance * 0.35);
-      const fill = await broker.buyMarket(SWING_TICKER, amount);
+      const amount = Math.floor(bucket.balance * params.buyPct);
+      const fill = await broker.buyMarket(params.ticker, amount);
       const sent = fill.ok || fill.status === "pending" || fill.status === "unknown";
       return {
         ...bucket,
@@ -46,7 +49,7 @@ export class RiskLevel5Strategy implements IStrategy {
     }
 
     if (fast < slow && regime === "long" && held && held.qty > 0) {
-      const fill = await broker.sellMarket(SWING_TICKER, held.qty);
+      const fill = await broker.sellMarket(params.ticker, held.qty);
       return {
         ...bucket,
         lastRunAt: new Date().toISOString(),
@@ -57,7 +60,7 @@ export class RiskLevel5Strategy implements IStrategy {
 
     return {
       ...bucket,
-      lastMessage: `관망 (MA5 ${Math.round(fast)} / MA20 ${Math.round(slow)})`,
+      lastMessage: `관망 (${name} MA${params.fastMa} ${Math.round(fast)} / MA${params.slowMa} ${Math.round(slow)})`,
     };
   }
 }

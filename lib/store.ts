@@ -5,6 +5,7 @@ import { getMarketClock } from "./market-hours";
 import { cashFromAllocations, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
 import { emptyCircuit } from "@/src/risk/circuit";
 import { brokerDriver, getBrokerPublicStatus } from "@/src/brokers/kis-config";
+import { getStrategyConfig } from "@/src/strategies/config";
 import type { Allocation, AppState, Position, PublicState } from "./types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -126,6 +127,7 @@ export function toPublic(state: AppState): PublicState {
       sessionLabel: clock.sessionLabel,
     },
     broker: getBrokerPublicStatus(),
+    strategyConfig: getStrategyConfig(),
   };
 }
 

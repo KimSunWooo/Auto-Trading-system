@@ -35,9 +35,11 @@ src/
     reconcile.ts        # 체결내역 반영 · 잔량 취소
     balance-sync.ts     # inquire-balance vs 로컬 버킷
   strategies/
-    RiskLevel1Strategy.ts   # KODEX 200 정액 적립
-    RiskLevel5Strategy.ts   # 삼성전자 5/20 이평 스윙
-    RiskLevel10Strategy.ts  # 변동성 돌파 추격
+    params.ts               # 기본 파라미터 (종목·주기·이평·K)
+    config.ts               # data/strategy-config.json 로드 / 버킷 meta 덮어쓰기
+    RiskLevel1Strategy.ts   # 안정 적립
+    RiskLevel5Strategy.ts   # 이평 스윙
+    RiskLevel10Strategy.ts  # 변동성 추격
   engine/
     QuantEngine.ts
 ```
@@ -45,6 +47,7 @@ src/
 - 리스크 1–3 → 안정 적립, 4–7 → 이평 스윙, 8–10 → 변동성 추격
 - 기본 배분: `Level1_Stable` 700만 / `Level10_Aggressive` 300만
 - 매수는 해당 전략 `balance` 안에서만 승인된 뒤 브로커로 전달됩니다
+- 종목코드·매수 주기·슬라이스·이평·K·쿨다운은 `data/strategy-config.json` (퀀트 탭에서 수정). 버킷 `meta`의 같은 키로 개별 덮어쓰기
 
 로컬 장부(`data/paper-account.json`)는 전략 한도와 UI용입니다. KIS 모의·실전 잔고·수수료와 숫자가 다를 수 있습니다.
 
@@ -138,7 +141,7 @@ KIS_ACCOUNT_NO=12345678-01
 ## 화면
 
 - **대시보드** — 관심종목·잔고. KIS 모드에서는 실제 현재가와 증권사 실잔고를 갱신합니다.
-- **퀀트** — 버킷 on/off, 70/30 재설정, 브로커 상태
+- **퀀트** — 버킷 on/off, 전략 파라미터(`data/strategy-config.json`), 브로커 상태
 - **조건매수 / 적립매수** — 조건이 맞으면 같은 브로커로 주문
 - **체결내역** — 로컬에 기록된 체결(KIS 주문번호 포함)
 - **안내** — 모의/실전 설정과 계좌 초기화(로컬 장부만 지웁니다)

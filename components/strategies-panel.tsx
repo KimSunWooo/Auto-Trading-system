@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { toast } from "sonner";
 import { GaugeIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,20 +8,16 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
 import type { Allocation, PublicState } from "@/lib/types";
+import { DEFAULT_STRATEGY_CONFIG, type StrategyConfigFile } from "@/src/strategies/params";
 
-const PLAYBOOK: Record<number, string> = {
-  1: "KODEX 200 정액 적립",
-  5: "이평 돌파 스윙",
-  10: "변동성 돌파 추격",
-};
-
-function playbook(level: number): string {
-  if (level <= 3) return PLAYBOOK[1];
-  if (level <= 7) return PLAYBOOK[5];
-  return PLAYBOOK[10];
+function playbook(level: number, config: StrategyConfigFile): string {
+  if (level <= 3) return `${config.Level1_Stable.ticker} 정액 적립`;
+  if (level <= 7) return `${config.Level5_Swing.ticker} 이평 스윙`;
+  return "변동성 돌파 추격";
 }
 
 export function StrategiesPanel({
@@ -129,7 +126,9 @@ export function StrategiesPanel({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="font-medium">{row.strategy}</div>
-                    <p className="text-xs text-muted-foreground">{playbook(row.riskLevel)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {playbook(row.riskLevel, state.strategyConfig ?? DEFAULT_STRATEGY_CONFIG)}
+                    </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge variant="secondary">리스크 {row.riskLevel}</Badge>
@@ -160,6 +159,10 @@ export function StrategiesPanel({
           })}
         </CardContent>
       </Card>
+      <StrategyParamsCard
+        config={state.strategyConfig ?? DEFAULT_STRATEGY_CONFIG}
+        onState={onState}
+      />
       <Card>
         <CardHeader>
           <CardTitle>브로커</CardTitle>
@@ -186,5 +189,276 @@ export function StrategiesPanel({
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="grid gap-1 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function StrategyParamsCard({
+  config,
+  onState,
+}: {
+  config: StrategyConfigFile;
+  onState: (next: PublicState) => void;
+}) {
+  const [draft, setDraft] = useState<StrategyConfigFile>(config);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    try {
+      const next = await api<PublicState>("/api/strategy-config", {
+        method: "PUT",
+        body: JSON.stringify(draft),
+      });
+      onState(next);
+      setDraft(next.strategyConfig);
+      toast.success("전략 파라미터를 data/strategy-config.json 에 저장했습니다.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "저장에 실패했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function restoreDefaults() {
+    setDraft(structuredClone(DEFAULT_STRATEGY_CONFIG));
+  }
+
+  const l1 = draft.Level1_Stable;
+  const l5 = draft.Level5_Swing;
+  const l10 = draft.Level10_Aggressive;
+
+  return (
+    <Card>
+      <CardHeader className="border-b">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle>전략 파라미터</CardTitle>
+            <CardDescription>
+              종목·주기·슬라이스·이평·K값·쿨다운은 코드가 아니라{" "}
+              <code className="rounded bg-muted px-1">data/strategy-config.json</code> 에
+              있습니다. 버킷 <code className="rounded bg-muted px-1">meta</code>의 같은 키로
+              한 전략만 덮어쓸 수 있습니다.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={restoreDefaults}>
+              기본값
+            </Button>
+            <Button onClick={() => void save()} disabled={saving}>
+              {saving ? "저장 중" : "설정 저장"}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-6 pt-4">
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium">Level1 안정 적립</h3>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <Field label="종목코드">
+              <Input
+                value={l1.ticker}
+                onChange={(e) =>
+                  setDraft({ ...draft, Level1_Stable: { ...l1, ticker: e.target.value } })
+                }
+              />
+            </Field>
+            <Field label="매수 주기 (초)">
+              <Input
+                type="number"
+                min={1}
+                value={Math.round(l1.intervalMs / 1000)}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level1_Stable: { ...l1, intervalMs: Number(e.target.value) * 1000 },
+                  })
+                }
+              />
+            </Field>
+            <Field label="슬라이스 금액 (원)">
+              <Input
+                type="number"
+                min={1}
+                value={l1.sliceKrw}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level1_Stable: { ...l1, sliceKrw: Number(e.target.value) },
+                  })
+                }
+              />
+            </Field>
+            <Field label="버킷 비율 (%)">
+              <Input
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={Number((l1.slicePct * 100).toFixed(2))}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level1_Stable: { ...l1, slicePct: Number(e.target.value) / 100 },
+                  })
+                }
+              />
+            </Field>
+            <Field label="최소 금액 (원)">
+              <Input
+                type="number"
+                min={1}
+                value={l1.minAmountKrw}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level1_Stable: { ...l1, minAmountKrw: Number(e.target.value) },
+                  })
+                }
+              />
+            </Field>
+          </div>
+        </section>
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium">Level5 이평 스윙</h3>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="종목코드">
+              <Input
+                value={l5.ticker}
+                onChange={(e) =>
+                  setDraft({ ...draft, Level5_Swing: { ...l5, ticker: e.target.value } })
+                }
+              />
+            </Field>
+            <Field label="단기 이평">
+              <Input
+                type="number"
+                min={1}
+                value={l5.fastMa}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level5_Swing: { ...l5, fastMa: Number(e.target.value) },
+                  })
+                }
+              />
+            </Field>
+            <Field label="장기 이평">
+              <Input
+                type="number"
+                min={2}
+                value={l5.slowMa}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level5_Swing: { ...l5, slowMa: Number(e.target.value) },
+                  })
+                }
+              />
+            </Field>
+            <Field label="매수 비중 (%)">
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={Number((l5.buyPct * 100).toFixed(2))}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level5_Swing: { ...l5, buyPct: Number(e.target.value) / 100 },
+                  })
+                }
+              />
+            </Field>
+          </div>
+        </section>
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium">Level10 변동성 추격</h3>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Field label="유니버스 (쉼표 구분)">
+                <Input
+                  value={l10.universe.join(", ")}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      Level10_Aggressive: {
+                        ...l10,
+                        universe: e.target.value.split(/[,\s]+/).filter(Boolean),
+                      },
+                    })
+                  }
+                />
+              </Field>
+            </div>
+            <Field label="쿨다운 (초)">
+              <Input
+                type="number"
+                min={0}
+                value={Math.round(l10.cooldownMs / 1000)}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level10_Aggressive: { ...l10, cooldownMs: Number(e.target.value) * 1000 },
+                  })
+                }
+              />
+            </Field>
+            <Field label="K값">
+              <Input
+                type="number"
+                min={0.01}
+                step={0.05}
+                value={l10.k}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level10_Aggressive: { ...l10, k: Number(e.target.value) },
+                  })
+                }
+              />
+            </Field>
+            <Field label="최소 당일수익률 (%)">
+              <Input
+                type="number"
+                min={0}
+                step={0.1}
+                value={Number((l10.minDayReturn * 100).toFixed(3))}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level10_Aggressive: {
+                      ...l10,
+                      minDayReturn: Number(e.target.value) / 100,
+                    },
+                  })
+                }
+              />
+            </Field>
+            <Field label="매수 비중 (%)">
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={Number((l10.buyPct * 100).toFixed(2))}
+                onChange={(e) =>
+                  setDraft({
+                    ...draft,
+                    Level10_Aggressive: { ...l10, buyPct: Number(e.target.value) / 100 },
+                  })
+                }
+              />
+            </Field>
+          </div>
+        </section>
+      </CardContent>
+    </Card>
   );
 }

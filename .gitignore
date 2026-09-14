@@ -36,6 +36,7 @@ yarn-error.log*
 
 # paper trading store
 /data/*.json
+!/data/strategy-config.json
 /agent-tools
 
 # vercel

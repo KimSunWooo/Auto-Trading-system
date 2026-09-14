@@ -1,4 +1,9 @@
 import type { Allocation } from "@/lib/types";
+import {
+  AGGRESSIVE_UNIVERSE,
+  KODEX_200,
+  SWING_TICKER,
+} from "@/src/strategies/params";
 
 export const TOTAL_DEPOSIT = 10_000_000;
 
@@ -20,16 +25,7 @@ export const DEFAULT_ALLOCATIONS: Allocation[] = [
   },
 ];
 
-export const KODEX_200 = "069500";
-export const SWING_TICKER = "005930";
-export const AGGRESSIVE_UNIVERSE = [
-  "005930",
-  "000660",
-  "035720",
-  "247540",
-  "259960",
-  "352820",
-];
+export { KODEX_200, SWING_TICKER, AGGRESSIVE_UNIVERSE };
 
 export function cashFromAllocations(allocations: Allocation[]): number {
   return allocations.reduce((sum, row) => sum + row.balance, 0);

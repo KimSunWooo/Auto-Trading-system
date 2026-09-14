@@ -4,11 +4,8 @@ import { UNIVERSE } from "./universe";
 import { getMarketClock } from "./market-hours";
 import { canFillLimit } from "@/src/accounts/fills";
 import {
-  AGGRESSIVE_UNIVERSE,
   cashFromAllocations,
   DEFAULT_ALLOCATIONS,
-  KODEX_200,
-  SWING_TICKER,
   TOTAL_DEPOSIT,
 } from "@/src/accounts/defaults";
 import type { StateBox } from "@/src/accounts/StateBox";
@@ -20,6 +17,7 @@ import { HARD_LIMITS } from "@/src/risk/limits";
 import { expireStaleInFlight, settleOpenOrders } from "@/src/risk/reconcile";
 import { syncKisBalance } from "@/src/risk/balance-sync";
 import { getSharedKisClient } from "@/src/brokers/kis-client";
+import { watchedStrategyTickers } from "@/src/strategies/config";
 
 const HISTORY_LEN = 40;
 
@@ -125,7 +123,7 @@ export function conditionMatches(cond: AutoCondition, quote: Quote): boolean {
 }
 
 function watchedTickers(state: AppState): string[] {
-  const codes = new Set<string>([KODEX_200, SWING_TICKER, ...AGGRESSIVE_UNIVERSE]);
+  const codes = new Set<string>(watchedStrategyTickers(state.allocations));
   for (const pos of state.positions) codes.add(pos.code);
   for (const cond of state.conditions) {
     if (cond.watching) codes.add(cond.code);

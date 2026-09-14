@@ -1,0 +1,22 @@
+{
+  "Level1_Stable": {
+    "ticker": "069500",
+    "intervalMs": 45000,
+    "sliceKrw": 150000,
+    "slicePct": 0.05,
+    "minAmountKrw": 10000
+  },
+  "Level5_Swing": {
+    "ticker": "005930",
+    "fastMa": 5,
+    "slowMa": 20,
+    "buyPct": 0.35
+  },
+  "Level10_Aggressive": {
+    "universe": ["005930", "000660", "035720", "247540", "259960", "352820"],
+    "cooldownMs": 120000,
+    "k": 0.4,
+    "minDayReturn": 0.004,
+    "buyPct": 0.25
+  }
+}

@@ -1,3 +1,5 @@
+import type { StrategyConfigFile } from "@/src/strategies/params";
+
 export type Market = "KOSPI" | "KOSDAQ";
 export type Side = "buy" | "sell";
 export type WatchBasis = "last" | "bid" | "ask";
@@ -180,4 +182,5 @@ export type PublicState = AppState & {
     sessionLabel: string;
   };
   broker: BrokerPublicStatus;
+  strategyConfig: StrategyConfigFile;
 };
