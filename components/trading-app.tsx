@@ -24,9 +24,10 @@ import { GuidePanel } from "@/components/guide-panel";
 import { MarketBadge, OverviewPanel, BrokerBadge } from "@/components/overview-panel";
 import { OrdersPanel } from "@/components/orders-panel";
 import { StrategiesPanel } from "@/components/strategies-panel";
-import { useTrading } from "@/hooks/use-trading";
+import { useTrading, api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
+import { toast } from "sonner";
 
 const TABS = [
   { value: "overview", label: "대시보드", icon: LayoutDashboardIcon },
@@ -80,6 +81,30 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
           </div>
         </div>
       </header>
+
+      {state.circuit?.halted || state.orders.some((order) => order.status === "unknown") ? (
+        <div className="border-b border-destructive/40 bg-destructive/10">
+          <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-2 text-sm">
+            <p>
+              {state.circuit?.reason ??
+                "미확인 주문이 있어 신규 매매를 차단했습니다. 증권사 체결내역을 확인하세요."}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void api<PublicState>("/api/circuit/reset", { method: "POST" })
+                  .then(setState)
+                  .catch((err: unknown) => {
+                    toast.error(err instanceof Error ? err.message : "서킷을 해제하지 못했습니다.");
+                  });
+              }}
+            >
+              서킷 해제
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <Sheet open={menu} onOpenChange={setMenu}>
         <SheetContent side="left" className="w-72 p-0">

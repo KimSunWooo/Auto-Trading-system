@@ -67,8 +67,24 @@ export function OrdersPanel({ state }: { state: PublicState }) {
                   <TableCell className="tabular-nums">{formatWon(order.price)}</TableCell>
                   <TableCell className="tabular-nums">{formatWon(order.net)}</TableCell>
                   <TableCell>
-                    <Badge variant={order.status === "filled" ? "secondary" : "destructive"}>
-                      {order.status === "filled" ? "정상" : "오류"}
+                    <Badge
+                      variant={
+                        order.status === "filled"
+                          ? "secondary"
+                          : order.status === "pending"
+                            ? "outline"
+                            : "destructive"
+                      }
+                    >
+                      {order.status === "filled"
+                        ? "체결"
+                        : order.status === "pending"
+                          ? "대기"
+                          : order.status === "unknown"
+                            ? "미확인"
+                            : order.status === "cancelled"
+                              ? "취소"
+                              : "거부"}
                     </Badge>
                     {order.reason ? (
                       <div className="mt-1 max-w-40 truncate text-xs text-muted-foreground">

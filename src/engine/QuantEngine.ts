@@ -3,6 +3,7 @@ import type { StateBox } from "@/src/accounts/StateBox";
 import { createBroker } from "@/src/brokers/index";
 import { StrategyFactory } from "@/src/strategies/index";
 import type { AppState } from "@/lib/types";
+import { tradingBlocked } from "@/src/risk/circuit";
 
 export class QuantEngine {
   static async run(state: AppState): Promise<AppState> {
@@ -11,6 +12,16 @@ export class QuantEngine {
 
     for (const alloc of box.current.allocations) {
       if (!alloc.enabled) continue;
+      const blocked = tradingBlocked(box.current);
+      if (blocked) {
+        box.current = {
+          ...box.current,
+          allocations: box.current.allocations.map((row) =>
+            row.strategy === alloc.strategy ? { ...row, lastMessage: blocked } : row,
+          ),
+        };
+        continue;
+      }
       const strategy = StrategyFactory.create(alloc.riskLevel);
       const broker = root.forStrategy(alloc.strategy);
       const before = toBucket(alloc, box.current.positions);

@@ -4,6 +4,8 @@ import {
   type KisConfig,
   type KisMode,
 } from "@/src/brokers/kis-config";
+import { HARD_LIMITS } from "@/src/risk/limits";
+import { IndeterminateOrderError } from "@/src/risk/errors";
 
 export type KisPrice = {
   ticker: string;
@@ -24,6 +26,15 @@ export type KisCashOrder = {
   price: number;
 };
 
+export type KisDayOrder = {
+  orderNo: string;
+  ticker: string;
+  side: "buy" | "sell";
+  qty: number;
+  filledQty: number;
+  avgPrice: number;
+};
+
 export interface KisApi {
   readonly mode: KisMode;
   readonly configured: boolean;
@@ -31,6 +42,7 @@ export interface KisApi {
   readonly issues: string[];
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
+  inquireDailyCcld(): Promise<KisDayOrder[]>;
   orderCash(order: KisCashOrder): Promise<{ orderNo: string }>;
 }
 
@@ -187,13 +199,59 @@ export class KisClient implements KisApi {
       trId,
       hashkey,
       body,
+      timeoutMs: HARD_LIMITS.orderTimeoutMs,
     });
     const out = (json.output ?? {}) as Record<string, unknown>;
     const orderNo = String(out.ODNO ?? json.odno ?? "").trim();
     if (!orderNo) {
-      throw new Error("KIS가 주문번호를 반환하지 않았습니다.");
+      throw new IndeterminateOrderError("KIS가 주문번호를 반환하지 않았습니다. 체결 여부를 확인해야 합니다.");
     }
     return { orderNo };
+  }
+
+  async inquireDailyCcld(): Promise<KisDayOrder[]> {
+    this.assertConfigured();
+    const day = yyyymmddSeoul(new Date());
+    try {
+      const json = await this.uapi(
+        "GET",
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+        {
+          trId: KIS_TR.dailyCcld[this.config.mode],
+          timeoutMs: HARD_LIMITS.quoteTimeoutMs,
+          query: {
+            CANO: this.config.cano,
+            ACNT_PRDT_CD: this.config.productCode,
+            INQR_STRT_DT: day,
+            INQR_END_DT: day,
+            SLL_BUY_DVSN_CD: "00",
+            INQR_DVSN: "00",
+            PDNO: "",
+            CCLD_DVSN: "00",
+            INQR_DVSN_3: "00",
+            INQR_DVSN_1: "",
+            CTX_AREA_FK100: "",
+            CTX_AREA_NK100: "",
+          },
+        },
+      );
+      const raw = json.output1 ?? json.output ?? [];
+      const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+      return rows.map((row) => {
+        const side: "buy" | "sell" =
+          String(row.sll_buy_dvsn_cd ?? "") === "01" ? "sell" : "buy";
+        return {
+          orderNo: String(row.odno ?? row.ODNO ?? "").trim(),
+          ticker: String(row.pdno ?? row.PDNO ?? "").padStart(6, "0"),
+          side,
+          qty: asNumber(row.ord_qty),
+          filledQty: asNumber(row.tot_ccld_qty),
+          avgPrice: asNumber(row.avg_prvs) || asNumber(row.avg_ccld_unpr),
+        };
+      }).filter((row) => row.orderNo || row.ticker);
+    } catch {
+      return [];
+    }
   }
 
   private assertConfigured() {
@@ -210,7 +268,7 @@ export class KisClient implements KisApi {
         appsecret: this.config.appSecret,
       },
       body: JSON.stringify(orderBody),
-    });
+    }, HARD_LIMITS.quoteTimeoutMs);
     const hash = String(json.HASH ?? json.hashkey ?? json.hash ?? "").trim();
     if (!hash) {
       throw new Error("hashkey를 발급받지 못했습니다.");
@@ -229,7 +287,7 @@ export class KisClient implements KisApi {
         appkey: this.config.appKey,
         appsecret: this.config.appSecret,
       }),
-    });
+    }, HARD_LIMITS.quoteTimeoutMs);
     const access = String(json.access_token ?? "").trim();
     if (!access) {
       throw new Error("접근 토큰을 받지 못했습니다. 앱키와 모의/실전 도메인을 확인하세요.");
@@ -250,6 +308,7 @@ export class KisClient implements KisApi {
       query?: Record<string, string>;
       body?: Record<string, string>;
       hashkey?: string;
+      timeoutMs?: number;
     },
   ) {
     const token = await this.getAccessToken();
@@ -268,22 +327,29 @@ export class KisClient implements KisApi {
       custtype: "P",
     };
     if (opts.hashkey) headers.hashkey = opts.hashkey;
-    return this.request(method, url.toString(), {
-      headers,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
+    return this.request(
+      method,
+      url.toString(),
+      {
+        headers,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      },
+      opts.timeoutMs ?? HARD_LIMITS.quoteTimeoutMs,
+    );
   }
 
   private async request(
     method: string,
     url: string,
     init: { headers: Record<string, string>; body?: string },
+    timeoutMs: number,
   ): Promise<Record<string, unknown>> {
     return this.slot(async () => {
       const res = await this.fetchImpl(url, {
         method,
         headers: init.headers,
         body: method === "GET" ? undefined : init.body,
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const text = await res.text();
       let json: Record<string, unknown> = {};

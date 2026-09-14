@@ -40,6 +40,10 @@ class FakeKis implements KisApi {
     return Array.from({ length: 30 }, () => 70_000);
   }
 
+  async inquireDailyCcld() {
+    return [];
+  }
+
   async orderCash(order: KisCashOrder): Promise<{ orderNo: string }> {
     if (this.failNext) {
       const msg = this.failNext;
@@ -71,7 +75,7 @@ test("KisBroker sends a cash order then books the fill once", async () => {
   const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
   assert.equal(fill.ok, true);
   assert.equal(fill.qty, 2);
-  assert.equal(fill.orderId, "0000000123");
+  assert.equal(fill.status, "filled");
   assert.equal(client.orders.length, 1);
   assert.equal(client.orders[0]?.ordDvsn, "market");
   const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
@@ -96,6 +100,34 @@ test("KisBroker blocks live orders when confirm is missing", async () => {
   const fill = await new KisBroker(box, client).buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
   assert.match(fill.reason ?? "", /KIS_LIVE_CONFIRM/);
+  assert.equal(client.orders.length, 0);
+});
+
+test("timeout after orderCash marks unknown and blocks the next buy", async () => {
+  const box = { current: createInitialState() };
+  const client = new FakeKis();
+  client.orderCash = async () => {
+    const err = new Error("timeout");
+    err.name = "TimeoutError";
+    throw err;
+  };
+  const first = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  assert.equal(first.ok, false);
+  assert.equal(first.status, "unknown");
+  assert.equal(box.current.circuit.halted, true);
+  assert.equal(box.current.orders[0]?.status, "unknown");
+
+  const second = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  assert.equal(second.ok, false);
+  assert.match(second.reason ?? "", /확인하지|서킷|미확인/);
+});
+
+test("hard limit blocks a ticket before it reaches KIS", async () => {
+  const box = { current: createInitialState() };
+  const client = new FakeKis();
+  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 3_000_000);
+  assert.equal(fill.ok, false);
+  assert.match(fill.reason ?? "", /한도/);
   assert.equal(client.orders.length, 0);
 });
 

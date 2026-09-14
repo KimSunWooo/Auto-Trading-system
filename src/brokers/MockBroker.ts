@@ -69,6 +69,7 @@ export class MockBroker implements IBroker {
     if (!canFillLimit("buy", last, price)) {
       return {
         ok: false,
+        status: "rejected",
         ticker,
         side: "buy",
         qty: 0,

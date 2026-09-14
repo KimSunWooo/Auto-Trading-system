@@ -3,6 +3,7 @@ import path from "node:path";
 import { createInitialState, ensureUniverseQuotes, portfolioValue, tickState } from "./engine";
 import { getMarketClock } from "./market-hours";
 import { cashFromAllocations, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
+import { emptyCircuit } from "@/src/risk/circuit";
 import { brokerDriver, getBrokerPublicStatus } from "@/src/brokers/kis-config";
 import type { Allocation, AppState, Position, PublicState } from "./types";
 
@@ -60,6 +61,8 @@ function migrateState(parsed: AppState): AppState {
     allocations,
     positions,
     cash: cashFromAllocations(allocations),
+    circuit: parsed.circuit ?? emptyCircuit(),
+    lastEngineAt: parsed.lastEngineAt,
   });
 }
 
@@ -102,6 +105,11 @@ export async function mutateStore(
     await saveState(next);
     return next;
   });
+}
+
+export async function persistStateNow(state: AppState) {
+  if (process.env.npm_lifecycle_event === "test") return;
+  await saveState(state);
 }
 
 export function toPublic(state: AppState): PublicState {

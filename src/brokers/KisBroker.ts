@@ -6,10 +6,12 @@ import type { KisApi } from "@/src/brokers/kis-client";
 import { findStock } from "@/lib/universe";
 import { tickSize } from "@/lib/tick-size";
 import type { OrderSource, Quote } from "@/lib/types";
+import { isIndeterminateError } from "@/src/risk/errors";
+import { tradingBlocked } from "@/src/risk/circuit";
 
 /**
  * 한국투자증권 Open API adapter.
- * 시세는 조회 API, 주문은 현금 주문 API로 보낸 뒤 로컬 리스크 버킷에 반영합니다.
+ * 주문은 pending 기록 후 전송하고, 타임아웃은 unknown + 서킷으로 처리합니다.
  */
 export class KisBroker implements IBroker {
   readonly driver = "kis" as const;
@@ -82,6 +84,7 @@ export class KisBroker implements IBroker {
       if (!canFillLimit("buy", last, price)) {
         return {
           ok: false,
+          status: "rejected",
           ticker,
           side: "buy",
           qty: 0,
@@ -98,45 +101,7 @@ export class KisBroker implements IBroker {
   }
 
   async sellMarket(ticker: string, qty: number): Promise<BrokerFill> {
-    if (!this.client.configured) {
-      return this.reject(
-        ticker,
-        "sell",
-        this.client.issues[0] ?? "한국투자증권 앱키가 설정되지 않았습니다.",
-      );
-    }
-    if (!this.client.liveEnabled) {
-      return this.reject(
-        ticker,
-        "sell",
-        "실전 주문이 잠겨 있습니다. KIS_LIVE_CONFIRM=I_UNDERSTAND 를 설정하세요.",
-      );
-    }
-
-    const orders = new OrderManager(this.box);
-    const blocked = orders.canSell(this.strategyKey, ticker, qty);
-    if (!blocked.ok) {
-      return this.reject(ticker, "sell", blocked.reason);
-    }
-
-    let price = 0;
-    try {
-      price = await this.getCurrentPrice(ticker);
-      const placed = await this.client.orderCash({
-        ticker,
-        side: "sell",
-        qty,
-        ordDvsn: "market",
-        price: 0,
-      });
-      return orders.sell(this.strategyKey, ticker, qty, price, {
-        source: this.source,
-        sourceId: this.sourceId,
-        orderId: placed.orderNo,
-      });
-    } catch (err) {
-      return this.fail(ticker, "sell", err, price);
-    }
+    return this.placeSell(ticker, qty);
   }
 
   private async placeBuy(
@@ -145,45 +110,104 @@ export class KisBroker implements IBroker {
     ordDvsn: "market" | "limit",
     limitPrice?: number,
   ): Promise<BrokerFill> {
+    const blocked = this.precheck(ticker, "buy");
+    if (blocked) return blocked;
+
+    let price = 0;
+    const orders = new OrderManager(this.box);
+    try {
+      price = ordDvsn === "limit" && limitPrice ? limitPrice : await this.getCurrentPrice(ticker);
+      const qty = Math.floor(amount / price);
+      const gate = orders.canBuy(this.strategyKey, qty, price, ticker);
+      if (!gate.ok) return this.reject(ticker, "buy", gate.reason);
+      const pending = orders.begin(this.strategyKey, ticker, "buy", qty, price, {
+        source: this.source,
+        sourceId: this.sourceId,
+      });
+      await persistNow(this.box.current);
+      try {
+        const placed = await this.client.orderCash({
+          ticker,
+          side: "buy",
+          qty,
+          ordDvsn,
+          price: ordDvsn === "limit" ? price : 0,
+        });
+        if (ordDvsn === "limit") {
+          return orders.ackWorking(
+            pending.id,
+            placed.orderNo,
+            `지정가 접수(${placed.orderNo}). 체결 전까지 로컬 잔고에 반영하지 않습니다.`,
+          );
+        }
+        return orders.confirm(pending.id, placed.orderNo);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : "한국투자증권 주문에 실패했습니다.";
+        if (isIndeterminateError(err)) {
+          return orders.unknown(pending.id, reason);
+        }
+        return orders.rejectRemote(pending.id, reason);
+      }
+    } catch (err) {
+      return this.fail(ticker, "buy", err, price);
+    }
+  }
+
+  private async placeSell(ticker: string, qty: number): Promise<BrokerFill> {
+    const blocked = this.precheck(ticker, "sell");
+    if (blocked) return blocked;
+
+    const orders = new OrderManager(this.box);
+    const gate = orders.canSell(this.strategyKey, ticker, qty);
+    if (!gate.ok) return this.reject(ticker, "sell", gate.reason);
+
+    let price = 0;
+    try {
+      price = await this.getCurrentPrice(ticker);
+      const pending = orders.begin(this.strategyKey, ticker, "sell", qty, price, {
+        source: this.source,
+        sourceId: this.sourceId,
+      });
+      await persistNow(this.box.current);
+      try {
+        const placed = await this.client.orderCash({
+          ticker,
+          side: "sell",
+          qty,
+          ordDvsn: "market",
+          price: 0,
+        });
+        return orders.confirm(pending.id, placed.orderNo);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : "한국투자증권 주문에 실패했습니다.";
+        if (isIndeterminateError(err)) {
+          return orders.unknown(pending.id, reason);
+        }
+        return orders.rejectRemote(pending.id, reason);
+      }
+    } catch (err) {
+      return this.fail(ticker, "sell", err, price);
+    }
+  }
+
+  private precheck(ticker: string, side: "buy" | "sell"): BrokerFill | null {
     if (!this.client.configured) {
       return this.reject(
         ticker,
-        "buy",
+        side,
         this.client.issues[0] ?? "한국투자증권 앱키가 설정되지 않았습니다.",
       );
     }
     if (!this.client.liveEnabled) {
       return this.reject(
         ticker,
-        "buy",
+        side,
         "실전 주문이 잠겨 있습니다. KIS_LIVE_CONFIRM=I_UNDERSTAND 를 설정하세요.",
       );
     }
-
-    let price = 0;
-    try {
-      price = ordDvsn === "limit" && limitPrice ? limitPrice : await this.getCurrentPrice(ticker);
-      const qty = Math.floor(amount / price);
-      const orders = new OrderManager(this.box);
-      const gate = orders.canBuy(this.strategyKey, qty, price);
-      if (!gate.ok) {
-        return this.reject(ticker, "buy", gate.reason);
-      }
-      const placed = await this.client.orderCash({
-        ticker,
-        side: "buy",
-        qty,
-        ordDvsn,
-        price: ordDvsn === "limit" ? price : 0,
-      });
-      return orders.buy(this.strategyKey, ticker, qty, price, {
-        source: this.source,
-        sourceId: this.sourceId,
-        orderId: placed.orderNo,
-      });
-    } catch (err) {
-      return this.fail(ticker, "buy", err, price);
-    }
+    const halted = tradingBlocked(this.box.current);
+    if (halted) return this.reject(ticker, side, halted);
+    return null;
   }
 
   private fromBook(ticker: string): BrokerQuote | null {
@@ -229,6 +253,7 @@ export class KisBroker implements IBroker {
   private reject(ticker: string, side: "buy" | "sell", reason: string): BrokerFill {
     return {
       ok: false,
+      status: "rejected",
       ticker,
       side,
       qty: 0,
@@ -247,6 +272,7 @@ export class KisBroker implements IBroker {
   ): BrokerFill {
     return {
       ok: false,
+      status: "rejected",
       ticker,
       side,
       qty: 0,
@@ -256,4 +282,9 @@ export class KisBroker implements IBroker {
       reason: err instanceof Error ? err.message : "한국투자증권 주문에 실패했습니다.",
     };
   }
+}
+
+async function persistNow(state: import("@/lib/types").AppState) {
+  const { persistStateNow } = await import("@/lib/store");
+  await persistStateNow(state);
 }

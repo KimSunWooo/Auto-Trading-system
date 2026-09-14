@@ -1,4 +1,4 @@
-import type { OrderSource } from "@/lib/types";
+import type { OrderSource, OrderStatus } from "@/lib/types";
 
 /**
  * Broker adapter contract.
@@ -22,6 +22,7 @@ export interface BrokerQuote {
 
 export interface BrokerFill {
   ok: boolean;
+  status: OrderStatus;
   orderId?: string;
   ticker: string;
   name?: string;

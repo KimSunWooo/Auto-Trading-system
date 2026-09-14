@@ -59,6 +59,8 @@ export function statusLabel(status: ConditionStatus): string {
       return "기간만료";
     case "rejected":
       return "오류";
+    case "unknown":
+      return "미확인";
     case "deleted":
       return "삭제";
   }

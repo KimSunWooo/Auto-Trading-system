@@ -1,5 +1,5 @@
 import { cashFromAllocations } from "@/src/accounts/defaults";
-import type { AppState, Order, Position, Side } from "@/lib/types";
+import type { AppState, Order, OrderSource, Position, Side } from "@/lib/types";
 
 export function canFillLimit(side: Side, last: number, limitPrice: number): boolean {
   return side === "buy" ? last <= limitPrice : last >= limitPrice;
@@ -60,7 +60,7 @@ export function applyFill(
     return {
       state: {
         ...state,
-        orders: [rejected, ...state.orders].slice(0, MAX_ORDERS),
+        orders: trimOrderLog([rejected, ...state.orders]),
       },
       order: rejected,
     };
@@ -106,7 +106,7 @@ export function applyFill(
         cash,
         allocations,
         positions,
-        orders: [{ ...order, strategy: bucketKey }, ...state.orders].slice(0, MAX_ORDERS),
+        orders: trimOrderLog([{ ...order, strategy: bucketKey }, ...state.orders]),
       },
       order: { ...order, strategy: bucketKey },
     };
@@ -132,7 +132,7 @@ export function applyFill(
       cash: cashFromAllocations(allocations),
       allocations,
       positions: remaining,
-      orders: [filled, ...state.orders].slice(0, MAX_ORDERS),
+      orders: trimOrderLog([filled, ...state.orders]),
     },
     order: filled,
   };
@@ -146,4 +146,115 @@ export function findPosition(
   return positions.find(
     (p) => p.code === code && (!strategy || p.strategy === strategy),
   );
+}
+
+export function trimOrderLog(orders: Order[]): Order[] {
+  const sticky = orders.filter((o) => o.status === "pending" || o.status === "unknown");
+  const rest = orders.filter((o) => o.status !== "pending" && o.status !== "unknown");
+  return [...sticky, ...rest].slice(0, Math.max(MAX_ORDERS, sticky.length));
+}
+
+export function recordPending(
+  state: AppState,
+  draft: {
+    id?: string;
+    source: OrderSource;
+    sourceId?: string;
+    strategy?: string;
+    code: string;
+    name: string;
+    side: Side;
+    qty: number;
+    price: number;
+    intentId?: string;
+  },
+): { state: AppState; order: Order } {
+  const amount = draft.qty * draft.price;
+  const fees = feeBreakdown(draft.side, amount);
+  const order: Order = {
+    id: draft.id ?? crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    source: draft.source,
+    sourceId: draft.sourceId,
+    strategy: draft.strategy,
+    code: draft.code,
+    name: draft.name,
+    side: draft.side,
+    qty: draft.qty,
+    price: draft.price,
+    amount,
+    commission: fees.commission,
+    tax: fees.tax,
+    net: fees.net,
+    status: "pending",
+    intentId: draft.intentId ?? crypto.randomUUID(),
+    reason: "증권사 응답 대기",
+  };
+  return {
+    state: {
+      ...state,
+      orders: trimOrderLog([order, ...state.orders.filter((row) => row.id !== order.id)]),
+    },
+    order,
+  };
+}
+
+export function patchOrder(
+  state: AppState,
+  orderId: string,
+  patch: Partial<Order>,
+): { state: AppState; order: Order | undefined } {
+  const current = state.orders.find((row) => row.id === orderId);
+  if (!current) return { state, order: undefined };
+  const order = { ...current, ...patch };
+  return {
+    state: {
+      ...state,
+      orders: trimOrderLog(state.orders.map((row) => (row.id === orderId ? order : row))),
+    },
+    order,
+  };
+}
+
+export function confirmPendingFill(
+  state: AppState,
+  orderId: string,
+  extra?: { brokerOrderNo?: string; price?: number; qty?: number },
+): { state: AppState; order: Order } {
+  const pending = state.orders.find((row) => row.id === orderId);
+  if (!pending) {
+    const rejected: Order = {
+      id: orderId,
+      createdAt: new Date().toISOString(),
+      source: "strategy",
+      code: "",
+      name: "",
+      side: "buy",
+      qty: 0,
+      price: 0,
+      amount: 0,
+      commission: 0,
+      tax: 0,
+      net: 0,
+      status: "rejected",
+      reason: "대기 주문을 찾지 못했습니다.",
+    };
+    return { state, order: rejected };
+  }
+  const without = {
+    ...state,
+    orders: state.orders.filter((row) => row.id !== orderId),
+  };
+  return applyFill(without, {
+    id: pending.id,
+    createdAt: pending.createdAt,
+    source: pending.source,
+    sourceId: pending.sourceId,
+    strategy: pending.strategy,
+    code: pending.code,
+    name: pending.name,
+    side: pending.side,
+    qty: extra?.qty ?? pending.qty,
+    price: extra?.price ?? pending.price,
+  });
 }

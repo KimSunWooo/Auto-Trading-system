@@ -9,9 +9,10 @@ export type ConditionStatus =
   | "filled"
   | "expired"
   | "rejected"
+  | "unknown"
   | "deleted";
 export type OrderSource = "condition" | "dca" | "manual" | "strategy";
-export type OrderStatus = "filled" | "rejected";
+export type OrderStatus = "pending" | "unknown" | "filled" | "rejected" | "cancelled";
 export type BrokerDriver = "mock" | "kis";
 
 export type Quote = {
@@ -103,6 +104,16 @@ export type Order = {
   net: number;
   status: OrderStatus;
   reason?: string;
+  intentId?: string;
+  brokerOrderNo?: string;
+};
+
+export type CircuitState = {
+  halted: boolean;
+  reason?: string;
+  unknownCount: number;
+  openedAt?: string;
+  lastError?: string;
 };
 
 export type Settings = {
@@ -114,6 +125,7 @@ export type Settings = {
 export type AppState = {
   updatedAt: string;
   tickCount: number;
+  lastEngineAt?: number;
   settings: Settings;
   totalDeposit: number;
   allocations: Allocation[];
@@ -123,6 +135,7 @@ export type AppState = {
   conditions: AutoCondition[];
   dcaPlans: DcaPlan[];
   orders: Order[];
+  circuit: CircuitState;
 };
 
 export type BrokerPublicStatus = {

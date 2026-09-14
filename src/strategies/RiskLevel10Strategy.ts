@@ -38,6 +38,7 @@ export class RiskLevel10Strategy implements IStrategy {
 
     const amount = Math.floor(bucket.balance * 0.25);
     const fill = await broker.buyMarket(best.ticker, amount);
+    const sent = fill.ok || fill.status === "unknown" || fill.status === "pending";
     return {
       ...bucket,
       lastRunAt: new Date().toISOString(),
@@ -46,7 +47,7 @@ export class RiskLevel10Strategy implements IStrategy {
         : fill.reason ?? "추격 실패",
       meta: {
         ...bucket.meta,
-        firedAt: fill.ok ? Date.now() : lastFire,
+        firedAt: sent ? Date.now() : lastFire,
         lastTicker: best.ticker,
       },
     };

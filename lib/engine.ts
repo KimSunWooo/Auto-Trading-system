@@ -15,6 +15,10 @@ import type { StateBox } from "@/src/accounts/StateBox";
 import { createBroker, brokerDriver } from "@/src/brokers/index";
 import type { IBroker } from "@/src/brokers/IBroker";
 import { QuantEngine } from "@/src/engine/QuantEngine";
+import { emptyCircuit, tradingBlocked } from "@/src/risk/circuit";
+import { HARD_LIMITS } from "@/src/risk/limits";
+import { expireStaleInFlight, reconcileUnknownOrders } from "@/src/risk/reconcile";
+import { getSharedKisClient } from "@/src/brokers/kis-client";
 
 const HISTORY_LEN = 40;
 
@@ -61,6 +65,7 @@ export function createInitialState(): AppState {
     conditions: [],
     dcaPlans: [],
     orders: [],
+    circuit: emptyCircuit(),
   };
 }
 
@@ -120,7 +125,6 @@ export function conditionMatches(cond: AutoCondition, quote: Quote): boolean {
 
 function watchedTickers(state: AppState): string[] {
   const codes = new Set<string>([KODEX_200, SWING_TICKER, ...AGGRESSIVE_UNIVERSE]);
-  for (const seed of UNIVERSE) codes.add(seed.code);
   for (const pos of state.positions) codes.add(pos.code);
   for (const cond of state.conditions) {
     if (cond.watching) codes.add(cond.code);
@@ -183,21 +187,38 @@ export async function evaluateConditions(state: AppState, nowIso: string): Promi
 
     if (!fill.ok && (fill.reason ?? "").includes("미체결")) continue;
 
-    const updatedCond: AutoCondition = fill.ok
-      ? {
-          ...cond,
-          watching: false,
-          status: "filled",
-          filledAt: new Date().toISOString(),
-          filledOrderId: fill.orderId,
-          message: `${cond.side === "buy" ? "매수" : "매도"} ${fill.qty}주 체결`,
-        }
-      : {
-          ...cond,
-          watching: false,
-          status: "rejected",
-          message: fill.reason,
-        };
+    const updatedCond: AutoCondition =
+      fill.status === "unknown"
+        ? {
+            ...cond,
+            watching: false,
+            status: "unknown",
+            filledOrderId: fill.orderId,
+            message: fill.reason ?? "주문 결과 미확인",
+          }
+        : fill.ok
+          ? {
+              ...cond,
+              watching: false,
+              status: "filled",
+              filledAt: new Date().toISOString(),
+              filledOrderId: fill.orderId,
+              message: `${cond.side === "buy" ? "매수" : "매도"} ${fill.qty}주 체결`,
+            }
+          : fill.status === "pending"
+            ? {
+                ...cond,
+                watching: false,
+                status: "paused",
+                filledOrderId: fill.orderId,
+                message: fill.reason ?? "지정가 접수",
+              }
+            : {
+                ...cond,
+                watching: false,
+                status: "rejected",
+                message: fill.reason,
+              };
 
     box.current = {
       ...box.current,
@@ -258,31 +279,51 @@ export async function evaluateDca(state: AppState, nowIso: string): Promise<AppS
 }
 
 export async function tickState(state: AppState, now = new Date()): Promise<AppState> {
+  if (state.lastEngineAt && now.getTime() - state.lastEngineAt < HARD_LIMITS.minTickMs) {
+    return state;
+  }
+
   const clock = getMarketClock(now);
   const box: StateBox = {
     current: {
       ...ensureUniverseQuotes(state),
       tickCount: state.tickCount + 1,
+      lastEngineAt: now.getTime(),
       updatedAt: clock.iso,
       settings: {
         ...state.settings,
         broker: brokerDriver(),
       },
+      circuit: state.circuit ?? emptyCircuit(),
     },
   };
   const root = createBroker(box);
 
   if (root.driver === "kis") {
+    expireStaleInFlight(box);
+    await reconcileUnknownOrders(box, getSharedKisClient());
     await refreshLiveQuotes(box, root);
   } else {
     box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };
   }
 
-  const tradingAllowed = box.current.settings.ignoreMarketHours || clock.open;
+  const kisLiveSession = root.driver !== "kis" || clock.open;
+  const tradingAllowed =
+    (box.current.settings.ignoreMarketHours || clock.open) &&
+    kisLiveSession &&
+    !tradingBlocked(box.current);
   if (tradingAllowed) {
     box.current = await evaluateConditions(box.current, clock.iso);
     box.current = await evaluateDca(box.current, clock.iso);
     box.current = await QuantEngine.run(box.current);
+  } else if (tradingBlocked(box.current)) {
+    box.current = {
+      ...box.current,
+      allocations: box.current.allocations.map((row) => ({
+        ...row,
+        lastMessage: tradingBlocked(box.current) ?? row.lastMessage,
+      })),
+    };
   }
 
   return box.current;

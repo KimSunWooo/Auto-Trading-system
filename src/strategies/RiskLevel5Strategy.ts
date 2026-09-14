@@ -34,7 +34,7 @@ export class RiskLevel5Strategy implements IStrategy {
         lastMessage: fill.ok
           ? `골든크로스 매수 ${fill.qty}주`
           : fill.reason ?? "매수 실패",
-        meta: { ...bucket.meta, regime: fill.ok ? "long" : regime },
+        meta: { ...bucket.meta, regime: fill.ok ? "long" : fill.status === "unknown" ? "halt" : regime },
       };
     }
 

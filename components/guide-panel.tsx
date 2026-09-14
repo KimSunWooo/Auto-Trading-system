@@ -65,6 +65,10 @@ export function GuidePanel({
             <li>서버를 재시작한 뒤 상단 배지가 KIS 모의투자 또는 KIS 실전인지 확인합니다.</li>
           </ol>
           <p className="text-muted-foreground">{state.broker?.message}</p>
+          <p>
+            타임아웃이 나면 미체결로 단정하지 않고 주문을 미확인으로 남긴 뒤 서킷을 엽니다. 상단 빨간
+            띠가 보이면 신규 주문은 나가지 않습니다.
+          </p>
         </CardContent>
       </Card>
 
@@ -80,7 +84,9 @@ export function GuidePanel({
           <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3">
             <div>
               <Label htmlFor="hours">정규장 외에도 주문</Label>
-              <p className="text-xs text-muted-foreground">끄면 09:00–15:30 KST 평일에만 엔진이 돕니다</p>
+              <p className="text-xs text-muted-foreground">
+                로컬 모의만 해당. KIS 연결 시에는 정규장 외 주문을 내지 않습니다.
+              </p>
             </div>
             <Switch
               id="hours"

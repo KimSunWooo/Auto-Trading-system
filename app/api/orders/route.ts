@@ -24,6 +24,7 @@ export async function POST(request: Request) {
   const strategy = body.strategy ?? "Level1_Stable";
 
   let rejected: string | undefined;
+  let unknown = false;
   const state = await mutateStore(async (current) => {
     const box = { current };
     const broker = createBroker(box).forStrategy(strategy).withSource("manual");
@@ -46,12 +47,13 @@ export async function POST(request: Request) {
 
     if (!fill.ok) {
       rejected = fill.reason ?? "주문에 실패했습니다.";
+      unknown = fill.status === "unknown";
     }
     return box.current;
   });
 
   if (rejected) {
-    return Response.json({ error: rejected, ...toPublic(state) }, { status: 400 });
+    return Response.json({ error: rejected, ...toPublic(state) }, { status: unknown ? 409 : 400 });
   }
   return Response.json(toPublic(state));
 }
