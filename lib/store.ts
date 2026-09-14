@@ -1,13 +1,66 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createInitialState, portfolioValue, tickState } from "./engine";
+import { createInitialState, ensureUniverseQuotes, portfolioValue, tickState } from "./engine";
 import { getMarketClock } from "./market-hours";
-import type { AppState, PublicState } from "./types";
+import { cashFromAllocations, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
+import type { Allocation, AppState, Position, PublicState } from "./types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const STORE_PATH = path.join(DATA_DIR, "paper-account.json");
 
 let queue: Promise<unknown> = Promise.resolve();
+
+function migrateState(parsed: AppState): AppState {
+  const hasAllocations = Array.isArray(parsed.allocations) && parsed.allocations.length > 0;
+  const allocations: Allocation[] = hasAllocations
+    ? parsed.allocations.map((row) => ({
+        strategy: row.strategy,
+        riskLevel: row.riskLevel ?? 1,
+        budget: row.budget,
+        balance: row.balance,
+        enabled: row.enabled ?? true,
+        lastRunAt: row.lastRunAt,
+        lastMessage: row.lastMessage,
+        meta: row.meta ?? {},
+      }))
+    : [
+        {
+          strategy: "Level1_Stable",
+          riskLevel: 1,
+          budget: parsed.cash ?? TOTAL_DEPOSIT,
+          balance: parsed.cash ?? TOTAL_DEPOSIT,
+          enabled: true,
+        },
+        {
+          strategy: "Level10_Aggressive",
+          riskLevel: 10,
+          budget: 0,
+          balance: 0,
+          enabled: true,
+        },
+      ];
+
+  const positions: Position[] = (parsed.positions ?? []).map((p) => ({
+    ...p,
+    strategy: p.strategy ?? "Level1_Stable",
+  }));
+
+  const totalDeposit = parsed.totalDeposit ?? parsed.settings?.startingCash ?? TOTAL_DEPOSIT;
+
+  return ensureUniverseQuotes({
+    ...createInitialState(),
+    ...parsed,
+    settings: {
+      ignoreMarketHours: parsed.settings?.ignoreMarketHours ?? true,
+      startingCash: parsed.settings?.startingCash ?? totalDeposit,
+      broker: parsed.settings?.broker ?? "mock",
+    },
+    totalDeposit,
+    allocations,
+    positions,
+    cash: cashFromAllocations(allocations),
+  });
+}
 
 async function loadState(): Promise<AppState> {
   try {
@@ -16,7 +69,7 @@ async function loadState(): Promise<AppState> {
     if (!parsed.quotes || !parsed.settings) {
       return createInitialState();
     }
-    return parsed;
+    return migrateState(parsed);
   } catch {
     return createInitialState();
   }

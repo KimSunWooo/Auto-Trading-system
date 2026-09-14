@@ -1,20 +1,14 @@
 import { clampDailyLimit, roundToTick, tickSize } from "./tick-size";
-import type {
-  AppState,
-  AutoCondition,
-  DcaPlan,
-  Order,
-  Position,
-  Quote,
-  Side,
-} from "./types";
+import type { AppState, AutoCondition, DcaPlan, Quote } from "./types";
 import { UNIVERSE } from "./universe";
 import { getMarketClock } from "./market-hours";
+import { applyFill, canFillLimit } from "@/src/accounts/fills";
+import { cashFromAllocations, DEFAULT_ALLOCATIONS, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
+import { QuantEngine } from "@/src/engine/QuantEngine";
 
-const COMMISSION_RATE = 0.00015;
-const SELL_TAX_RATE = 0.0018;
 const HISTORY_LEN = 40;
-const MAX_ORDERS = 200;
+
+export { applyFill, canFillLimit, feeBreakdown, findPosition } from "@/src/accounts/fills";
 
 export function createInitialQuotes(): Record<string, Quote> {
   const quotes: Record<string, Quote> = {};
@@ -40,21 +34,33 @@ export function createInitialQuotes(): Record<string, Quote> {
 }
 
 export function createInitialState(): AppState {
-  const startingCash = 10_000_000;
+  const allocations = DEFAULT_ALLOCATIONS.map((row) => ({ ...row }));
   return {
     updatedAt: new Date().toISOString(),
     tickCount: 0,
     settings: {
       ignoreMarketHours: true,
-      startingCash,
+      startingCash: TOTAL_DEPOSIT,
+      broker: "mock",
     },
-    cash: startingCash,
+    totalDeposit: TOTAL_DEPOSIT,
+    allocations,
+    cash: cashFromAllocations(allocations),
     positions: [],
     quotes: createInitialQuotes(),
     conditions: [],
     dcaPlans: [],
     orders: [],
   };
+}
+
+export function ensureUniverseQuotes(state: AppState): AppState {
+  const quotes = { ...state.quotes };
+  const seeded = createInitialQuotes();
+  for (const [code, quote] of Object.entries(seeded)) {
+    if (!quotes[code]) quotes[code] = quote;
+  }
+  return { ...state, quotes };
 }
 
 export function advanceQuotes(
@@ -102,135 +108,6 @@ export function conditionMatches(cond: AutoCondition, quote: Quote): boolean {
     : quote.volume <= cond.volume;
 }
 
-export function canFillLimit(side: Side, last: number, limitPrice: number): boolean {
-  return side === "buy" ? last <= limitPrice : last >= limitPrice;
-}
-
-function roundWon(n: number): number {
-  return Math.round(n);
-}
-
-export function feeBreakdown(side: Side, amount: number) {
-  const commission = roundWon(amount * COMMISSION_RATE);
-  const tax = side === "sell" ? roundWon(amount * SELL_TAX_RATE) : 0;
-  const net = side === "buy" ? amount + commission : amount - commission - tax;
-  return { commission, tax, net };
-}
-
-export function findPosition(positions: Position[], code: string) {
-  return positions.find((p) => p.code === code);
-}
-
-export function applyFill(
-  state: AppState,
-  draft: Omit<
-    Order,
-    "id" | "createdAt" | "commission" | "tax" | "net" | "status" | "reason" | "amount"
-  > & {
-    id?: string;
-    createdAt?: string;
-  },
-): { state: AppState; order: Order } {
-  const amount = draft.qty * draft.price;
-  const fees = feeBreakdown(draft.side, amount);
-  const order: Order = {
-    id: draft.id ?? crypto.randomUUID(),
-    createdAt: draft.createdAt ?? new Date().toISOString(),
-    source: draft.source,
-    sourceId: draft.sourceId,
-    code: draft.code,
-    name: draft.name,
-    side: draft.side,
-    qty: draft.qty,
-    price: draft.price,
-    amount,
-    commission: fees.commission,
-    tax: fees.tax,
-    net: fees.net,
-    status: "filled",
-  };
-
-  const positions = state.positions.map((p) => ({ ...p }));
-  let cash = state.cash;
-
-  if (draft.side === "buy") {
-    if (cash < fees.net) {
-      const rejected = {
-        ...order,
-        status: "rejected" as const,
-        reason: "예수금이 부족합니다.",
-      };
-      return {
-        state: {
-          ...state,
-          orders: [rejected, ...state.orders].slice(0, MAX_ORDERS),
-        },
-        order: rejected,
-      };
-    }
-    cash -= fees.net;
-    const existing = positions.find((p) => p.code === draft.code);
-    if (existing) {
-      const totalQty = existing.qty + draft.qty;
-      existing.avgPrice = (existing.avgPrice * existing.qty + draft.price * draft.qty) / totalQty;
-      existing.qty = totalQty;
-    } else {
-      positions.push({
-        code: draft.code,
-        name: draft.name,
-        qty: draft.qty,
-        avgPrice: draft.price,
-      });
-    }
-  } else {
-    const existing = positions.find((p) => p.code === draft.code);
-    if (!existing || existing.qty < draft.qty) {
-      const rejected = {
-        ...order,
-        status: "rejected" as const,
-        reason: "매도 가능 수량이 부족합니다.",
-      };
-      return {
-        state: {
-          ...state,
-          orders: [rejected, ...state.orders].slice(0, MAX_ORDERS),
-        },
-        order: rejected,
-      };
-    }
-    existing.qty -= draft.qty;
-    cash += fees.net;
-    const remaining = positions.filter((p) => p.qty > 0);
-    return {
-      state: {
-        ...state,
-        cash,
-        positions: remaining,
-        orders: [order, ...state.orders].slice(0, MAX_ORDERS),
-      },
-      order,
-    };
-  }
-
-  return {
-    state: {
-      ...state,
-      cash,
-      positions,
-      orders: [order, ...state.orders].slice(0, MAX_ORDERS),
-    },
-    order,
-  };
-}
-
-function equityOf(state: AppState): number {
-  const holdings = state.positions.reduce((sum, p) => {
-    const quote = state.quotes[p.code];
-    return sum + p.qty * (quote?.price ?? p.avgPrice);
-  }, 0);
-  return state.cash + holdings;
-}
-
 export function evaluateConditions(state: AppState, nowIso: string): AppState {
   let next = state;
   const now = new Date(nowIso).getTime();
@@ -268,6 +145,7 @@ export function evaluateConditions(state: AppState, nowIso: string): AppState {
     const applied = applyFill(next, {
       source: "condition",
       sourceId: cond.id,
+      strategy: cond.strategy ?? "Level1_Stable",
       code: cond.code,
       name: cond.name,
       side: cond.side,
@@ -333,6 +211,7 @@ export function evaluateDca(state: AppState, nowIso: string): AppState {
     const applied = applyFill(next, {
       source: "dca",
       sourceId: plan.id,
+      strategy: plan.strategy ?? "Level1_Stable",
       code: plan.code,
       name: plan.name,
       side: "buy",
@@ -357,11 +236,12 @@ export function evaluateDca(state: AppState, nowIso: string): AppState {
   return next;
 }
 
-export function tickState(state: AppState, now = new Date()): AppState {
+export async function tickState(state: AppState, now = new Date()): Promise<AppState> {
   const clock = getMarketClock(now);
-  const quotes = advanceQuotes(state.quotes);
+  const withUniverse = ensureUniverseQuotes(state);
+  const quotes = advanceQuotes(withUniverse.quotes);
   let next: AppState = {
-    ...state,
+    ...withUniverse,
     quotes,
     tickCount: state.tickCount + 1,
     updatedAt: clock.iso,
@@ -371,11 +251,16 @@ export function tickState(state: AppState, now = new Date()): AppState {
   if (tradingAllowed) {
     next = evaluateConditions(next, clock.iso);
     next = evaluateDca(next, clock.iso);
+    next = await QuantEngine.run(next);
   }
 
   return next;
 }
 
 export function portfolioValue(state: AppState): number {
-  return equityOf(state);
+  const holdings = state.positions.reduce((sum, p) => {
+    const quote = state.quotes[p.code];
+    return sum + p.qty * (quote?.price ?? p.avgPrice);
+  }, 0);
+  return state.cash + holdings;
 }

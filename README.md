@@ -1,18 +1,48 @@
 # 미리매수
 
-미래에셋증권 **카이로스 0635 서버자동주문**과 같은 흐름으로 국내주식을 조건 매수·적립 매수하는 모의투자 앱입니다.
+미래에셋증권 카이로스 0635 스타일 조건매수에, 전략별 서브계좌와 브로커 어댑터를 붙인 모의투자 엔진입니다.
 
-미래에셋증권은 개인 투자자용 매매 Open API를 제공하지 않습니다. 모바일 앱(m.Stock)을 자동 조작하거나 비공식 프로토콜을 쓰지 않고, 같은 조건 엔진을 로컬 모의계좌에서 검증한 뒤 실제 HTS에 옮기는 용도입니다.
+미래에셋증권은 개인용 매매 Open API가 없습니다. 실거래 경로로 남겨 둔 것은 **한국투자증권 Open API** (`KisBroker` 골격)입니다.
 
-## 할 수 있는 일
+## 아키텍처
 
-- 현재가 / 매수1호가 / 매도1호가가 지정 가격 이상·이하이면 1회 매수·매도
-- 거래량 필터, 지정가, 최대 90일 조건기간
-- 정기 적립매수 (데모용 30초~1일 주기)
-- 관심종목 수동 매매, 잔고·평가손익, 체결내역
-- KRX 정규장(09:00–15:30 KST) 준수 또는 모의장 상시개장
+```
+src/
+  brokers/
+    IBroker.ts          # getCurrentPrice / buyMarket / buyLimit / sellMarket
+    MockBroker.ts       # 로컬 페이퍼 북 체결
+    KisBroker.ts        # KIS Open API 골격 (미연결)
+    index.ts            # createBroker() — BROKER=mock|kis
+  accounts/
+    defaults.ts         # 총 예수금 1,000만 · 70/30 배분
+    fills.ts            # 수수료·버킷 차감 체결
+    OrderManager.ts     # 전략 잔액 게이트
+    AccountBucket.ts
+  strategies/
+    IStrategy.ts        # execute(broker, accountBucket)
+    RiskLevel1Strategy.ts   # KODEX 200 정액 적립
+    RiskLevel5Strategy.ts   # 5/20 이평 스윙
+    RiskLevel10Strategy.ts  # 변동성 돌파 추격
+    index.ts            # StrategyFactory (리스크 1–10)
+  engine/
+    QuantEngine.ts      # 틱마다 활성 버킷 전략 실행
+```
 
-시작 예수금은 **1,000만원**입니다. 매수 수수료 0.015%, 매도 시 거래세 0.18%를 반영합니다.
+- 리스크 1–3 → Level1, 4–7 → Level5, 8–10 → Level10
+- 기본 배분: `Level1_Stable` 700만 / `Level10_Aggressive` 300만
+- 매수는 해당 전략 `balance` 안에서만 승인됩니다
+
+`data/paper-account.json` 스키마:
+
+```json
+{
+  "totalDeposit": 10000000,
+  "allocations": [
+    { "strategy": "Level1_Stable", "riskLevel": 1, "budget": 7000000, "balance": 7000000, "enabled": true },
+    { "strategy": "Level10_Aggressive", "riskLevel": 10, "budget": 3000000, "balance": 3000000, "enabled": true }
+  ]
+}
+```
 
 ## 실행
 
@@ -21,22 +51,18 @@ npm install
 npm run dev
 ```
 
-브라우저에서 [http://127.0.0.1:43147](http://127.0.0.1:43147) 을 엽니다.
+브라우저: [http://127.0.0.1:43147](http://127.0.0.1:43147)
 
 ```bash
-npm test   # 체결·조건 엔진
-npm run build
+npm test
 ```
 
-모의 잔고는 `data/paper-account.json`에 저장됩니다. 안내 탭에서 초기화할 수 있습니다.
+퀀트 탭에서 버킷 on/off, 70/30 재설정, 리스크5 스윙 버킷 추가가 가능합니다. 시세가 2.5초마다 움직이면 켜 둔 전략이 조건을 보고 주문합니다.
 
-## 실계좌로 옮길 때
+KIS로 바꾸려면 (아직 주문은 거절됩니다):
 
-1. m.Stock 또는 카이로스에서 국내주식 자동주문시스템을 신청합니다.
-2. **주식특화주문 → 서버자동주문신청/해지**에서 계좌를 등록합니다.
-3. 카이로스 **0635 주식 서버자동주문**에 이 앱과 같은 감시기준·조건가격·수량을 저장하고 감시를 켭니다.
-4. 정규장만 감시되며, PC를 꺼도 증권사 서버가 주문을 냅니다.
+```bash
+BROKER=kis KIS_APP_KEY=... KIS_APP_SECRET=... KIS_ACCOUNT_NO=... npm run dev
+```
 
-프로그래밍으로 실주문을 내려면 한국투자증권 Open API처럼 개인용 REST를 제공하는 증권사가 필요합니다.
-
-이 프로그램은 투자 자문이 아니며, 모의 시세는 실제 호가와 다릅니다.
+이 프로그램은 투자 자문이 아니며 모의 시세는 실제 호가와 다릅니다.

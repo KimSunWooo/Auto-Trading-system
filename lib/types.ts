@@ -10,8 +10,9 @@ export type ConditionStatus =
   | "expired"
   | "rejected"
   | "deleted";
-export type OrderSource = "condition" | "dca" | "manual";
+export type OrderSource = "condition" | "dca" | "manual" | "strategy";
 export type OrderStatus = "filled" | "rejected";
+export type BrokerDriver = "mock" | "kis";
 
 export type Quote = {
   code: string;
@@ -33,6 +34,18 @@ export type Position = {
   name: string;
   qty: number;
   avgPrice: number;
+  strategy: string;
+};
+
+export type Allocation = {
+  strategy: string;
+  riskLevel: number;
+  budget: number;
+  balance: number;
+  enabled: boolean;
+  lastRunAt?: string;
+  lastMessage?: string;
+  meta?: Record<string, string | number | boolean | null>;
 };
 
 export type AutoCondition = {
@@ -53,6 +66,7 @@ export type AutoCondition = {
   watching: boolean;
   status: ConditionStatus;
   createdAt: string;
+  strategy?: string;
   filledAt?: string;
   filledOrderId?: string;
   message?: string;
@@ -68,6 +82,7 @@ export type DcaPlan = {
   enabled: boolean;
   createdAt: string;
   runCount: number;
+  strategy?: string;
   lastMessage?: string;
 };
 
@@ -76,6 +91,7 @@ export type Order = {
   createdAt: string;
   source: OrderSource;
   sourceId?: string;
+  strategy?: string;
   code: string;
   name: string;
   side: Side;
@@ -92,12 +108,15 @@ export type Order = {
 export type Settings = {
   ignoreMarketHours: boolean;
   startingCash: number;
+  broker: BrokerDriver;
 };
 
 export type AppState = {
   updatedAt: string;
   tickCount: number;
   settings: Settings;
+  totalDeposit: number;
+  allocations: Allocation[];
   cash: number;
   positions: Position[];
   quotes: Record<string, Quote>;

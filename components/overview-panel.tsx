@@ -41,7 +41,7 @@ export function OverviewPanel({
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="평가금액" value={formatWon(state.equity)} hint="현금 + 보유주식" />
-        <Stat label="예수금" value={formatWon(state.cash)} hint="매수 가능 현금" />
+        <Stat label="예수금" value={formatWon(state.cash)} hint="버킷 가용 합계" />
         <Stat label="보유주식" value={formatWon(holdings)} hint={`${state.positions.length}종목`} />
         <Stat
           label="누적손익"
@@ -50,6 +50,30 @@ export function OverviewPanel({
           tone={pnl}
         />
       </div>
+
+      {state.allocations.length > 0 ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          {state.allocations.map((row) => (
+            <Card key={row.strategy} size="sm">
+              <CardHeader>
+                <CardDescription>
+                  {row.strategy} · 리스크 {row.riskLevel}
+                  {row.enabled ? "" : " · 중지"}
+                </CardDescription>
+                <CardTitle className="text-base tabular-nums">
+                  {formatWon(row.balance)}
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    / {formatWon(row.budget)}
+                  </span>
+                </CardTitle>
+                <p className="truncate text-xs text-muted-foreground">
+                  {row.lastMessage ?? "퀀트 탭에서 전략을 켜 두세요."}
+                </p>
+              </CardHeader>
+            </Card>
+          ))}
+        </div>
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <Watchlist quotes={quotes} onState={onState} />
@@ -216,11 +240,11 @@ function Positions({
                 const evalAmt = p.qty * last;
                 const pnl = (last - p.avgPrice) * p.qty;
                 return (
-                  <TableRow key={p.code}>
+                  <TableRow key={`${p.strategy}-${p.code}`}>
                     <TableCell>
                       <div className="font-medium">{p.name}</div>
                       <div className="text-xs text-muted-foreground">
-                        평단 {formatWon(p.avgPrice)}
+                        {p.strategy} · 평단 {formatWon(p.avgPrice)}
                       </div>
                     </TableCell>
                     <TableCell className="tabular-nums">{p.qty}주</TableCell>
@@ -236,7 +260,9 @@ function Positions({
                         size="xs"
                         variant="outline"
                         onClick={() =>
-                          quote ? void buySell(quote, "sell", onState, p.qty) : undefined
+                          quote
+                            ? void buySell(quote, "sell", onState, p.qty, p.strategy)
+                            : undefined
                         }
                       >
                         전량매도
@@ -258,11 +284,12 @@ async function buySell(
   side: "buy" | "sell",
   onState: (next: PublicState) => void,
   qty = 1,
+  strategy = "Level1_Stable",
 ) {
   try {
     const next = await api<PublicState>("/api/orders", {
       method: "POST",
-      body: JSON.stringify({ code: quote.code, side, qty }),
+      body: JSON.stringify({ code: quote.code, side, qty, strategy }),
     });
     onState(next);
     toast.success(`${quote.name} ${qty}주 ${side === "buy" ? "매수" : "매도"} 체결`);

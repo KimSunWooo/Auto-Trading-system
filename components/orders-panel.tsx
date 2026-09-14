@@ -17,6 +17,7 @@ const SOURCE: Record<string, string> = {
   condition: "조건매수",
   dca: "적립매수",
   manual: "수동",
+  strategy: "퀀트",
 };
 
 export function OrdersPanel({ state }: { state: PublicState }) {
@@ -54,7 +55,10 @@ export function OrdersPanel({ state }: { state: PublicState }) {
                   <TableCell>{SOURCE[order.source] ?? order.source}</TableCell>
                   <TableCell>
                     <div className="font-medium">{order.name}</div>
-                    <div className="text-xs text-muted-foreground">{order.code}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {order.code}
+                      {order.strategy ? ` · ${order.strategy}` : ""}
+                    </div>
                   </TableCell>
                   <TableCell className={order.side === "buy" ? "text-up" : "text-down"}>
                     {sideLabel(order.side)}

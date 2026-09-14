@@ -10,6 +10,7 @@ export async function POST(request: Request) {
     code?: string;
     side?: Side;
     qty?: number;
+    strategy?: string;
   };
   const stock = findStock(body.code ?? "");
   if (!stock) {
@@ -30,6 +31,7 @@ export async function POST(request: Request) {
     }
     const applied = applyFill(current, {
       source: "manual",
+      strategy: body.strategy ?? "Level1_Stable",
       code: stock.code,
       name: stock.name,
       side,

@@ -9,6 +9,7 @@ export type StockSeed = {
 
 /** Realistic 2025–2026-era starting prices for the paper book. */
 export const UNIVERSE: StockSeed[] = [
+  { code: "069500", name: "KODEX 200", market: "KOSPI", prevClose: 41250 },
   { code: "005930", name: "삼성전자", market: "KOSPI", prevClose: 74800 },
   { code: "000660", name: "SK하이닉스", market: "KOSPI", prevClose: 187000 },
   { code: "373220", name: "LG에너지솔루션", market: "KOSPI", prevClose: 382000 },

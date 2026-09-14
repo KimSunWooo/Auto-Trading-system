@@ -48,8 +48,9 @@ export function GuidePanel({
             <li>정규장은 09:00–15:30(KST)만 감시됩니다. PC를 꺼도 서버가 주문을 냅니다.</li>
           </ol>
           <p className="text-muted-foreground">
-            로보링크는 일임/주문대리 매체이며 일반 개인 Open API가 아닙니다. 프로그래밍으로 실계좌를
-            돌리려면 한국투자증권 Open API 등 개인용 REST를 제공하는 증권사가 필요합니다.
+            퀀트 탭의 전략은 <strong>IBroker</strong>만 호출합니다. 기본값은 MockBroker(모의체결)이고,
+            한국투자증권 실연동은 KisBroker 골격에 Open API를 채운 뒤{" "}
+            <code className="rounded bg-muted px-1">BROKER=kis</code> 로 교체합니다.
           </p>
         </CardContent>
       </Card>

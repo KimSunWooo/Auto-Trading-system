@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   BookOpenIcon,
   CalendarClockIcon,
+  GaugeIcon,
   LayoutDashboardIcon,
   MenuIcon,
   RadarIcon,
@@ -23,12 +24,14 @@ import { DcaPanel } from "@/components/dca-panel";
 import { GuidePanel } from "@/components/guide-panel";
 import { MarketBadge, OverviewPanel } from "@/components/overview-panel";
 import { OrdersPanel } from "@/components/orders-panel";
+import { StrategiesPanel } from "@/components/strategies-panel";
 import { useTrading } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
 
 const TABS = [
   { value: "overview", label: "대시보드", icon: LayoutDashboardIcon },
+  { value: "quant", label: "퀀트", icon: GaugeIcon },
   { value: "conditions", label: "조건매수", icon: RadarIcon },
   { value: "dca", label: "적립매수", icon: CalendarClockIcon },
   { value: "orders", label: "체결내역", icon: ReceiptIcon },
@@ -113,7 +116,7 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
           </div>
         ) : null}
         <Tabs value={tab} onValueChange={(value) => setTab(String(value ?? "overview"))}>
-          <TabsList className="mb-4 hidden w-full max-w-xl md:flex">
+          <TabsList className="mb-4 hidden w-full max-w-3xl md:flex">
             {TABS.map((item) => (
               <TabsTrigger key={item.value} value={item.value}>
                 <item.icon />
@@ -123,6 +126,9 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
           </TabsList>
           <TabsContent value="overview">
             <OverviewPanel state={state} onState={setState} />
+          </TabsContent>
+          <TabsContent value="quant">
+            <StrategiesPanel state={state} onState={setState} />
           </TabsContent>
           <TabsContent value="conditions">
             <ConditionsPanel state={state} onState={setState} />
