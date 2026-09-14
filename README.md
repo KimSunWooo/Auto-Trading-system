@@ -35,8 +35,8 @@ src/
     reconcile.ts        # 체결내역 반영 · 잔량 취소
     balance-sync.ts     # inquire-balance vs 로컬 버킷
   strategies/
-    params.ts               # 기본 파라미터 (종목·주기·이평·K)
-    config.ts               # data/strategy-config.json 로드 / 버킷 meta 덮어쓰기
+    params.ts               # 기본값 · 병합 · 검증 (UI에서도 import)
+    config.ts               # data/strategy-config.json 로드/저장 · 버킷 meta 덮어쓰기
     RiskLevel1Strategy.ts   # 안정 적립
     RiskLevel5Strategy.ts   # 이평 스윙
     RiskLevel10Strategy.ts  # 변동성 추격
@@ -141,10 +141,30 @@ KIS_ACCOUNT_NO=12345678-01
 ## 화면
 
 - **대시보드** — 관심종목·잔고. KIS 모드에서는 실제 현재가와 증권사 실잔고를 갱신합니다.
-- **퀀트** — 버킷 on/off, 전략 파라미터(`data/strategy-config.json`), 브로커 상태
+- **퀀트** — 버킷 on/off, 전략 파라미터 폼(`GET/PUT/PATCH /api/strategy-config` → `data/strategy-config.json`), 브로커 상태
 - **조건매수 / 적립매수** — 조건이 맞으면 같은 브로커로 주문
 - **체결내역** — 로컬에 기록된 체결(KIS 주문번호 포함)
 - **안내** — 모의/실전 설정과 계좌 초기화(로컬 장부만 지웁니다)
+
+## 전략 파라미터 API
+
+퀀트 탭 폼이 같은 엔드포인트를 씁니다. 저장값은 `data/strategy-config.json` 입니다.
+
+| 메서드 | 경로 | 설명 |
+| --- | --- | --- |
+| `GET` | `/api/strategy-config` | `{ config, defaults }` |
+| `PUT` | `/api/strategy-config` | 전체 교체(빠진 필드는 기본값). 성공 시 공개 상태 JSON |
+| `PATCH` | `/api/strategy-config` | 현재 파일 위에 부분 병합. 성공 시 공개 상태 JSON |
+
+예시:
+
+```bash
+curl -X PATCH http://127.0.0.1:43147/api/strategy-config \
+  -H 'Content-Type: application/json' \
+  -d '{"Level1_Stable":{"intervalMs":50000}}'
+```
+
+검증 실패(이평 역전, 주기 1초 미만, 빈 유니버스 등)는 `400` 과 `{ error }` 입니다.
 
 ## 주의
 

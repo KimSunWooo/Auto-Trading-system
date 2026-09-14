@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   getStrategyConfig,
   mergeStrategyConfig,
+  patchStrategyConfig,
   resolveLevel1,
   resolveLevel10,
   resolveLevel5,
@@ -67,6 +68,34 @@ test("saveStrategyConfig keeps a valid patch in memory during tests", () => {
     assert.equal(saved.Level1_Stable.intervalMs, 30_000);
     assert.equal(getStrategyConfig().Level1_Stable.intervalMs, 30_000);
     assert.equal(getStrategyConfig().Level1_Stable.sliceKrw, 150_000);
+  } finally {
+    setStrategyConfigForTest(null);
+  }
+});
+
+test("patchStrategyConfig overlays onto the current config, not defaults", () => {
+  try {
+    saveStrategyConfig({
+      Level1_Stable: { ticker: "069500", intervalMs: 30_000 },
+    });
+    const patched = patchStrategyConfig({
+      Level10_Aggressive: { k: 0.55 },
+    });
+    assert.equal(patched.Level1_Stable.intervalMs, 30_000);
+    assert.equal(patched.Level10_Aggressive.k, 0.55);
+    assert.equal(patched.Level10_Aggressive.cooldownMs, 120_000);
+    assert.equal(patched.Level5_Swing.fastMa, 5);
+    assert.deepEqual(patched.Level10_Aggressive.universe, DEFAULT_STRATEGY_CONFIG.Level10_Aggressive.universe);
+  } finally {
+    setStrategyConfigForTest(null);
+  }
+});
+
+test("patchStrategyConfig rejects inverted moving averages", () => {
+  try {
+    saveStrategyConfig(DEFAULT_STRATEGY_CONFIG);
+    assert.throws(() => patchStrategyConfig({ Level5_Swing: { fastMa: 30 } }), /이평/);
+    assert.equal(getStrategyConfig().Level5_Swing.fastMa, 5);
   } finally {
     setStrategyConfigForTest(null);
   }
