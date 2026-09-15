@@ -15,6 +15,7 @@ export const KIS_TR = {
   price: "FHKST01010100",
   daily: "FHKST03010100",
   dailyCcld: { demo: "VTTC8001R", real: "TTTC8001R" },
+  openOrders: { demo: "VTTC8438R", real: "TTTC8438R" },
   cancel: { demo: "VTTC0803U", real: "TTTC0803U" },
   balance: { demo: "VTTC8434R", real: "TTTC8434R" },
 } as const;

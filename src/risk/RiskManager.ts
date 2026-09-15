@@ -15,6 +15,7 @@ import { createBroker } from "@/src/brokers/index";
 import { sellBandSlices } from "@/src/accounts/execution-policy";
 import { getRuleConfig } from "@/src/rules/config";
 import { autoRunAllowed } from "@/src/rules/disclaimer";
+import { blockSafety, safetyOf } from "@/src/runtime/safety";
 
 function riskOf(state: AppState): ProductRisk {
   return state.settings?.risk ?? DEFAULT_PRODUCT_RISK;
@@ -108,7 +109,7 @@ export class RiskManager {
 
   /** Sync freeze: stop new trades and drop local pending that never got an ODNO. */
   static freezeForKill(state: AppState): AppState {
-    return {
+    const frozen: AppState = {
       ...state,
       settings: {
         ...state.settings,
@@ -136,6 +137,125 @@ export class RiskManager {
           : order,
       ),
     };
+    return blockSafety(frozen, "emergency_stop", "긴급 정지로 신규 주문을 막았습니다.", {
+      tradingAllowed: false,
+    });
+  }
+
+  /** New orders off + cancel KIS working tickets. Does not flatten positions. */
+  static async emergencyStop(
+    box: StateBox,
+    opts: { kis?: KisApi | null } = {},
+  ): Promise<AppState> {
+    const notes: string[] = [];
+    const frozen = RiskManager.freezeForKill(box.current);
+    box.current = {
+      ...frozen,
+      settings: { ...frozen.settings, liquidating: false },
+    };
+    await persist(box);
+
+    const kis =
+      opts.kis === undefined
+        ? brokerDriver() === "kis"
+          ? getSharedKisClient()
+          : null
+        : opts.kis;
+
+    let cancelled = 0;
+    if (kis?.configured) {
+      try {
+        const open = await kis.inquireOpenOrders();
+        for (const row of open) {
+          if (!row.orderNo || row.unfilledQty < 1) continue;
+          try {
+            await kis.cancelOrder({
+              orderNo: row.orderNo,
+              krxOrgNo: "",
+              ordDvsn: "limit",
+            });
+            cancelled += 1;
+          } catch (err) {
+            notes.push(
+              `${row.ticker} 취소 실패: ${err instanceof Error ? err.message : "알 수 없음"}`,
+            );
+          }
+        }
+        await settleOpenOrders(box, kis, nowMs(), { cancelImmediately: true });
+      } catch (err) {
+        notes.push(`미체결 조회 실패: ${err instanceof Error ? err.message : "알 수 없음"}`);
+      }
+      await persist(box);
+    } else {
+      notes.push("로컬 모의는 증권사 미체결 취소 대상이 없습니다.");
+    }
+
+    box.current = {
+      ...box.current,
+      killReport: {
+        cancelled,
+        flattened: 0,
+        overwritten: false,
+        notes: ["emergency-stop: 신규 주문 중단 + 미체결 취소", ...notes],
+      },
+    };
+    await persist(box);
+    return box.current;
+  }
+
+  /** Flatten positions only. Does not mix with emergency-stop. */
+  static async emergencyFlatten(
+    box: StateBox,
+    opts: { kis?: KisApi | null } = {},
+  ): Promise<AppState> {
+    box.current = {
+      ...box.current,
+      settings: { ...box.current.settings, liquidating: true, autoTrading: false },
+    };
+    await persist(box);
+    const kis =
+      opts.kis === undefined
+        ? brokerDriver() === "kis"
+          ? getSharedKisClient()
+          : null
+        : opts.kis;
+    const broker = kis?.configured ? new KisBroker(box, kis) : new MockBroker(box);
+    let flattened = 0;
+    const notes: string[] = [];
+    const snapshot = [...box.current.positions];
+    for (const pos of snapshot) {
+      if (pos.qty < 1) continue;
+      const live = box.current.positions.find(
+        (row) => row.code === pos.code && row.ruleId === pos.ruleId,
+      );
+      if (!live || live.qty < 1) continue;
+      const last = box.current.quotes[pos.code]?.price ?? 0;
+      const fill =
+        last > 0
+          ? await sellBandSlices(
+              broker.forRule(pos.ruleId),
+              pos.code,
+              live.qty,
+              last,
+              box.current.quotes[pos.code]?.prevClose,
+            )
+          : await broker.forRule(pos.ruleId).sellMarket(pos.code, live.qty);
+      if (fill.ok || fill.status === "pending") flattened += 1;
+      else notes.push(`${pos.name} 청산 실패: ${fill.reason ?? "알 수 없음"}`);
+      await persist(box);
+    }
+    box.current = {
+      ...box.current,
+      settings: { ...box.current.settings, liquidating: false },
+      killReport: {
+        cancelled: 0,
+        flattened,
+        overwritten: false,
+        notes: ["emergency-flatten: 포지션 청산만 수행", ...notes],
+      },
+    };
+    await persist(box);
+    return box.current;
   }
 
   static stopAllTrading(state: AppState): AppState {
@@ -313,8 +433,15 @@ export class RiskManager {
       const label = takeHit ? "익절" : "손절";
       const pct = takeHit ? takePct : stopPct;
       await sellBandSlices(root.forRule(pos.ruleId), pos.code, pos.qty, last, quote?.prevClose);
+      const key = `${pos.ruleId}:${pos.code}`;
+      const prevSafety = safetyOf(this.box.current);
       this.box.current = {
         ...this.box.current,
+        safety: {
+          ...prevSafety,
+          closedByStop: { ...prevSafety.closedByStop, [key]: seoulDay() },
+          blockedBuys: [...prevSafety.blockedBuys, key],
+        },
         allocations: this.box.current.allocations.map((row) =>
           row.ruleId === pos.ruleId
             ? {

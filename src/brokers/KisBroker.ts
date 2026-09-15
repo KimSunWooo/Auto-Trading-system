@@ -1,12 +1,12 @@
 import { OrderManager } from "@/src/accounts/OrderManager";
 import type { StateBox } from "@/src/accounts/StateBox";
-import type { BrokerFill, BrokerQuote, IBroker } from "@/src/brokers/IBroker";
+import type { BrokerFill, BrokerQuote, IBroker, IntentMeta } from "@/src/brokers/IBroker";
 import { canFillLimit } from "@/src/accounts/fills";
 import type { KisApi } from "@/src/brokers/kis-client";
 import { findStock } from "@/lib/universe";
 import { tickSize } from "@/lib/tick-size";
 import type { OrderSource, Quote } from "@/lib/types";
-import { isIndeterminateError } from "@/src/risk/errors";
+import { isIndeterminateError, BrokerRejectError } from "@/src/risk/errors";
 import { tradingBlocked } from "@/src/risk/circuit";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { CASH_RULE_ID } from "@/src/rules/params";
@@ -16,6 +16,11 @@ import {
   sellBandSlices,
   sessionBlockReason,
 } from "@/src/accounts/execution-policy";
+import { isLiveLike, liveOrdersLocked } from "@/src/runtime/trading-mode";
+import { findOrderByIntent } from "@/src/runtime/intents";
+import { nowMs } from "@/src/clock";
+import { blockSafety } from "@/src/runtime/safety";
+import { holdsWorkerLock } from "@/src/runtime/worker-lock";
 
 /**
  * 한국투자증권 Open API adapter.
@@ -31,18 +36,26 @@ export class KisBroker implements IBroker {
     private readonly ruleKey: string = CASH_RULE_ID,
     private readonly source: OrderSource = "rule",
     private readonly sourceId?: string,
+    private readonly intent?: IntentMeta,
   ) {}
 
   forRule(ruleKey: string): KisBroker {
-    return new KisBroker(this.box, this.client, ruleKey, this.source, this.sourceId);
+    return new KisBroker(this.box, this.client, ruleKey, this.source, this.sourceId, this.intent);
   }
 
   withSource(source: OrderSource, sourceId?: string): KisBroker {
-    return new KisBroker(this.box, this.client, this.ruleKey, source, sourceId);
+    return new KisBroker(this.box, this.client, this.ruleKey, source, sourceId, this.intent);
+  }
+
+  withIntent(meta: IntentMeta): KisBroker {
+    return new KisBroker(this.box, this.client, this.ruleKey, this.source, this.sourceId, meta);
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
-    if (!this.client.configured) return this.fromBook(ticker);
+    if (!this.client.configured) {
+      if (isLiveLike()) return null;
+      return this.fromBook(ticker);
+    }
     try {
       const [live, daily] = await Promise.all([
         this.client.inquirePrice(ticker),
@@ -70,7 +83,14 @@ export class KisBroker implements IBroker {
       };
       this.remember(quote);
       return quote;
-    } catch {
+    } catch (err) {
+      if (isLiveLike()) {
+        const reason = err instanceof Error ? err.message : "KIS 시세 조회 실패";
+        this.box.current = blockSafety(this.box.current, "market_data_unavailable", reason, {
+          quoteOk: false,
+        });
+        return null;
+      }
       return this.fromBook(ticker);
     }
   }
@@ -80,10 +100,18 @@ export class KisBroker implements IBroker {
     if (!quote) {
       throw new Error(`${ticker} 시세를 한국투자증권에서 가져오지 못했습니다.`);
     }
+    if (isLiveLike()) {
+      const book = this.box.current.quotes[ticker];
+      if (book?.source !== "kis" || !book.freshAt || nowMs() - book.freshAt > 15_000) {
+        throw new Error(`${ticker} 실시간 시세가 없어 주문하지 않습니다.`);
+      }
+    }
     return quote.price;
   }
 
   async buyMarket(ticker: string, amount: number): Promise<BrokerFill> {
+    const existing = this.peekIntent();
+    if (existing) return existing;
     try {
       const last = await this.getCurrentPrice(ticker);
       const intent = resolveMarketIntent(ticker, "buy", last);
@@ -119,6 +147,8 @@ export class KisBroker implements IBroker {
   }
 
   async sellMarket(ticker: string, qty: number): Promise<BrokerFill> {
+    const existing = this.peekIntent();
+    if (existing) return existing;
     const blocked = this.precheck(ticker, "sell");
     if (blocked) return blocked;
     try {
@@ -140,11 +170,12 @@ export class KisBroker implements IBroker {
     limitPrice?: number,
     qtyOverride?: number,
   ): Promise<BrokerFill> {
+    const orders = new OrderManager(this.box);
+    const existing = this.existingIntentFill(orders);
+    if (existing) return existing;
     const blocked = this.precheck(ticker, "buy");
     if (blocked) return blocked;
-
     let price = 0;
-    const orders = new OrderManager(this.box);
     try {
       const last = await this.getCurrentPrice(ticker);
       price = ordDvsn === "limit" && limitPrice ? limitPrice : last;
@@ -155,7 +186,16 @@ export class KisBroker implements IBroker {
         source: this.source,
         sourceId: this.sourceId,
         ordDvsn,
+        intentId: this.intent?.intentId,
       });
+      if (
+        pending.brokerOrderNo ||
+        pending.status === "unknown" ||
+        pending.status === "filled" ||
+        pending.status === "rejected"
+      ) {
+        return orders.toFill(pending);
+      }
       await persistNow(this.box.current);
       try {
         const placed = await this.client.orderCash({
@@ -178,10 +218,10 @@ export class KisBroker implements IBroker {
         return latest ? orders.toFill(latest) : working;
       } catch (err) {
         const reason = err instanceof Error ? err.message : "한국투자증권 주문에 실패했습니다.";
-        if (isIndeterminateError(err)) {
-          return orders.unknown(pending.id, reason);
+        if (err instanceof BrokerRejectError && !isIndeterminateError(err)) {
+          return orders.rejectRemote(pending.id, reason);
         }
-        return orders.rejectRemote(pending.id, reason);
+        return orders.unknown(pending.id, reason);
       }
     } catch (err) {
       return this.fail(ticker, "buy", err, price);
@@ -194,10 +234,11 @@ export class KisBroker implements IBroker {
     ordDvsn: "market" | "limit" = "market",
     limitPrice?: number,
   ): Promise<BrokerFill> {
+    const orders = new OrderManager(this.box);
+    const existing = this.existingIntentFill(orders);
+    if (existing) return existing;
     const blocked = this.precheck(ticker, "sell");
     if (blocked) return blocked;
-
-    const orders = new OrderManager(this.box);
     const gate = orders.canSell(this.ruleKey, ticker, qty, {
       liquidation: this.box.current.settings.liquidating,
     });
@@ -210,7 +251,16 @@ export class KisBroker implements IBroker {
         source: this.source,
         sourceId: this.sourceId,
         ordDvsn,
+        intentId: this.intent?.intentId,
       });
+      if (
+        pending.brokerOrderNo ||
+        pending.status === "unknown" ||
+        pending.status === "filled" ||
+        pending.status === "rejected"
+      ) {
+        return orders.toFill(pending);
+      }
       await persistNow(this.box.current);
       try {
         const placed = await this.client.orderCash({
@@ -233,10 +283,10 @@ export class KisBroker implements IBroker {
         return latest ? orders.toFill(latest) : working;
       } catch (err) {
         const reason = err instanceof Error ? err.message : "한국투자증권 주문에 실패했습니다.";
-        if (isIndeterminateError(err)) {
-          return orders.unknown(pending.id, reason);
+        if (err instanceof BrokerRejectError && !isIndeterminateError(err)) {
+          return orders.rejectRemote(pending.id, reason);
         }
-        return orders.rejectRemote(pending.id, reason);
+        return orders.unknown(pending.id, reason);
       }
     } catch (err) {
       return this.fail(ticker, "sell", err, price);
@@ -244,6 +294,11 @@ export class KisBroker implements IBroker {
   }
 
   private precheck(ticker: string, side: "buy" | "sell"): BrokerFill | null {
+    const liveLock = liveOrdersLocked();
+    if (liveLock) return this.reject(ticker, side, liveLock);
+    if (isLiveLike() && !holdsWorkerLock()) {
+      return this.reject(ticker, side, "트레이딩 워커 락이 없어 주문하지 않습니다.");
+    }
     if (!this.client.configured) {
       return this.reject(
         ticker,
@@ -308,11 +363,25 @@ export class KisBroker implements IBroker {
       bid: quote.bid,
       ask: quote.ask,
       history: quote.history,
+      source: "kis",
+      freshAt: nowMs(),
     };
     this.box.current = {
       ...this.box.current,
       quotes: { ...this.box.current.quotes, [quote.ticker]: next },
     };
+  }
+
+  private peekIntent(): BrokerFill | null {
+    return this.existingIntentFill(new OrderManager(this.box));
+  }
+
+  private existingIntentFill(orders: OrderManager): BrokerFill | null {
+    const intentId = this.intent?.intentId;
+    if (!intentId) return null;
+    const existing = findOrderByIntent(this.box.current, intentId);
+    if (!existing) return null;
+    return orders.toFill(existing);
   }
 
   private reject(ticker: string, side: "buy" | "sell", reason: string): BrokerFill {

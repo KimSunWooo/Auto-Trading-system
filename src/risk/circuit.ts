@@ -1,5 +1,7 @@
 import type { AppState, CircuitKind, CircuitState, Order } from "@/lib/types";
 
+import { safetyBlocksTrading } from "@/src/runtime/safety";
+
 export function emptyCircuit(): CircuitState {
   return { halted: false, unknownCount: 0 };
 }
@@ -12,6 +14,8 @@ export function hasOpenRisk(state: AppState): boolean {
 }
 
 export function tradingBlocked(state: AppState): string | null {
+  const safety = safetyBlocksTrading(state);
+  if (safety) return safety;
   if (state.circuit?.halted) {
     return state.circuit.reason ?? "서킷 브레이커가 열려 주문을 차단했습니다.";
   }

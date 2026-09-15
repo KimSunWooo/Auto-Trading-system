@@ -1,5 +1,6 @@
 import type { RuleConfigFile } from "@/src/rules/params";
 import type { ProductRisk } from "@/src/risk/product";
+import type { SafetyState } from "@/src/runtime/safety";
 
 export type Market = "KOSPI" | "KOSDAQ";
 export type Side = "buy" | "sell";
@@ -31,6 +32,8 @@ export type Quote = {
   bid: number;
   ask: number;
   history: number[];
+  source?: "mock" | "kis" | "seed";
+  freshAt?: number;
 };
 
 export type Position = {
@@ -116,7 +119,54 @@ export type Order = {
   parentOrderId?: string;
 };
 
-export type CircuitKind = "unknown" | "daily-loss" | "kill" | "balance" | "hard";
+export type CircuitKind =
+  | "unknown"
+  | "daily-loss"
+  | "kill"
+  | "balance"
+  | "hard"
+  | "recon"
+  | "data";
+
+export type OrderIntentStatus =
+  | "pending"
+  | "submitted"
+  | "filled"
+  | "rejected"
+  | "unknown"
+  | "cancelled";
+
+export type OrderIntent = {
+  intentId: string;
+  signalId: string;
+  ruleId: string;
+  ticker: string;
+  side: Side;
+  qty: number;
+  price: number;
+  createdAt: string;
+  reason: string;
+  status: OrderIntentStatus;
+  orderId?: string;
+  brokerOrderNo?: string;
+};
+
+export type RuntimePublic = {
+  tradingMode: "mock" | "paper" | "live_test" | "live";
+  allowLiveTrading: boolean;
+  httpTickAllowed: boolean;
+  tradingStatus: "running" | "blocked" | "stopped";
+  worker: "healthy" | "unhealthy";
+  brokerLink: "connected" | "disconnected";
+  marketStatus: "open" | "closed" | "unknown";
+  risk: "normal" | "warning" | "blocked";
+  reconciliation: "synced" | "mismatch" | "unavailable" | "pending";
+  lastTickAt?: number;
+  lastOrderAt?: number;
+  lastError?: string;
+  lastErrorAt?: string;
+  ordersAllowed: boolean;
+};
 
 export type CircuitState = {
   halted: boolean;
@@ -187,6 +237,8 @@ export type AppState = {
   equityHistory: number[];
   kisBalance?: KisBalanceSnapshot;
   killReport?: KillReport;
+  intents?: OrderIntent[];
+  safety?: SafetyState;
 };
 
 export type BrokerPublicStatus = {
@@ -208,4 +260,5 @@ export type PublicState = AppState & {
   };
   broker: BrokerPublicStatus;
   ruleConfig: RuleConfigFile;
+  runtime: RuntimePublic;
 };

@@ -20,6 +20,11 @@ import { watchedTickersFrom } from "@/src/rules/config";
 import { autoRunAllowed } from "@/src/rules/disclaimer";
 import { CASH_RULE_ID } from "@/src/rules/params";
 import { guardLog } from "@/src/rules/guard-log";
+import { emptySafety, safetyOf, clearSafetyBlock } from "@/src/runtime/safety";
+import { isLiveLike } from "@/src/runtime/trading-mode";
+import { recoverExternalOrders, markInquiryFailure, resetRecoverableHalt } from "@/src/runtime/recovery";
+import { makeSignalId } from "@/src/runtime/intents";
+import { nowMs } from "@/src/clock";
 
 const HISTORY_LEN = 40;
 
@@ -42,6 +47,7 @@ export function seedQuote(code: string, prevClose = 10_000, name?: string): Quot
     bid: roundToTick(Math.max(tick, price - tick)),
     ask: roundToTick(price + tick),
     history: Array.from({ length: HISTORY_LEN }, () => price),
+    source: "seed",
   };
 }
 
@@ -75,6 +81,8 @@ export function createInitialState(): AppState {
     circuit: emptyCircuit(),
     dayStart: { date: seoulDay(), equity: TOTAL_DEPOSIT },
     equityHistory: [TOTAL_DEPOSIT],
+    intents: [],
+    safety: emptySafety(),
   };
 }
 
@@ -122,6 +130,7 @@ export function advanceQuotes(
       bid,
       ask,
       history,
+      source: "mock",
     };
   }
   return next;
@@ -148,14 +157,20 @@ function watchedTickers(state: AppState): string[] {
   return watchedTickersFrom(state);
 }
 
-async function refreshLiveQuotes(box: StateBox, broker: IBroker) {
+async function refreshLiveQuotes(box: StateBox, broker: IBroker): Promise<boolean> {
+  let ok = true;
   for (const code of watchedTickers(box.current)) {
     try {
-      await broker.getQuote(code);
+      const quote = await broker.getQuote(code);
+      if (!quote) ok = false;
     } catch {
-      // keep the last cached quote
+      ok = false;
     }
   }
+  if (!ok && isLiveLike()) {
+    box.current = markInquiryFailure(box.current, "data", "KIS 시세 조회에 실패해 신규 주문을 막았습니다.");
+  }
+  return ok;
 }
 
 export async function evaluateConditions(state: AppState, nowIso: string): Promise<AppState> {
@@ -190,7 +205,12 @@ export async function evaluateConditions(state: AppState, nowIso: string): Promi
 
     const broker = root
       .forRule(cond.ruleId ?? CASH_RULE_ID)
-      .withSource("condition", cond.id);
+      .withSource("condition", cond.id)
+      .withIntent({
+        intentId: makeSignalId(["sig", "cond", cond.id]),
+        signalId: makeSignalId(["sig", "cond", cond.id]),
+        reason: "condition",
+      });
     const fill =
       cond.side === "sell"
         ? await broker.sellMarket(cond.code, cond.qty)
@@ -275,6 +295,11 @@ export async function evaluateDca(state: AppState, nowIso: string): Promise<AppS
     const fill = await root
       .forRule(plan.ruleId ?? CASH_RULE_ID)
       .withSource("dca", plan.id)
+      .withIntent({
+        intentId: makeSignalId(["sig", "dca", plan.id, scheduled.runCount]),
+        signalId: makeSignalId(["sig", "dca", plan.id, scheduled.runCount]),
+        reason: "dca",
+      })
       .buyMarket(plan.code, plan.amountKrw);
 
     const updatedPlan: DcaPlan = {
@@ -295,12 +320,16 @@ export async function evaluateDca(state: AppState, nowIso: string): Promise<AppS
   return box.current;
 }
 
-export async function tickState(state: AppState, now = new Date()): Promise<AppState> {
+export async function tickState(state: AppState, now = new Date(nowMs())): Promise<AppState> {
+  if (state.safety && state.safety.kind === "store_corrupt") {
+    return state;
+  }
   if (state.lastEngineAt && now.getTime() - state.lastEngineAt < HARD_LIMITS.minTickMs) {
     return state;
   }
 
   const clock = getMarketClock(now);
+  const prevSafety = safetyOf(state);
   const box: StateBox = {
     current: {
       ...ensureUniverseQuotes(state),
@@ -312,15 +341,49 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
         broker: brokerDriver(),
       },
       circuit: state.circuit ?? emptyCircuit(),
+      safety: {
+        ...prevSafety,
+        lastTickAt: now.getTime(),
+        blockedBuys: [],
+        persistable: prevSafety.persistable,
+      },
     },
   };
   const root = createBroker(box);
+  let liveReady = true;
 
   if (root.driver === "kis") {
     expireStaleInFlight(box);
-    await settleOpenOrders(box, getSharedKisClient());
-    await syncKisBalance(box, getSharedKisClient(), now.getTime());
-    await refreshLiveQuotes(box, root);
+    const settled = await settleOpenOrders(box, getSharedKisClient());
+    if (!settled.ok) {
+      box.current = markInquiryFailure(
+        box.current,
+        "recon",
+        settled.error ?? "당일 체결 조회에 실패했습니다.",
+      );
+      liveReady = false;
+    } else {
+      const recovered = await recoverExternalOrders(box, getSharedKisClient());
+      if (!recovered.ok) {
+        box.current = markInquiryFailure(box.current, "recon", recovered.error);
+        liveReady = false;
+      }
+    }
+    const synced = await syncKisBalance(box, getSharedKisClient(), now.getTime(), { force: isLiveLike() });
+    if (!synced.ok) {
+      box.current = markInquiryFailure(box.current, "broker", synced.error ?? "잔고 조회에 실패했습니다.");
+      liveReady = false;
+    }
+    const quotesOk = await refreshLiveQuotes(box, root);
+    if (!quotesOk && isLiveLike()) liveReady = false;
+    if (liveReady && isLiveLike()) {
+      box.current = clearSafetyBlock(resetRecoverableHalt(box.current), {
+        quoteOk: true,
+        brokerConnected: true,
+        reconciliation: box.current.kisBalance?.matched === false ? "mismatch" : "synced",
+        workerHealthy: true,
+      });
+    }
   } else {
     if (box.current.settings.ignoreMarketHours || clock.open) {
       box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };
@@ -338,7 +401,10 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
   }
 
   const tradingAllowed =
-    sessionOk && tradingOn && !tradingBlocked(box.current);
+    sessionOk &&
+    tradingOn &&
+    !tradingBlocked(box.current) &&
+    (root.driver !== "kis" || liveReady);
   if (tradingAllowed) {
     box.current = await evaluateConditions(box.current, clock.iso);
     box.current = await evaluateDca(box.current, clock.iso);

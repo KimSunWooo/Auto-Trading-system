@@ -58,6 +58,10 @@ class FakeKis implements KisApi {
     return this.fills.map((row) => ({ ...row }));
   }
 
+  async inquireOpenOrders() {
+    return this.fills.filter((row) => row.unfilledQty > 0).map((row) => ({ ...row }));
+  }
+
   async inquireBalance(): Promise<KisAccountBalance> {
     return {
       cash: this.balance.cash,

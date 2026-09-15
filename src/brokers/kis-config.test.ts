@@ -60,6 +60,11 @@ test("cancel TR ids are the KIS revise-cancel codes", () => {
   assert.equal(KIS_TR.cancel.real, "TTTC0803U");
 });
 
+test("open order TR ids are the KIS inquire-nccs codes", () => {
+  assert.equal(KIS_TR.openOrders.demo, "VTTC8438R");
+  assert.equal(KIS_TR.openOrders.real, "TTTC8438R");
+});
+
 test("balance TR ids are the KIS inquire-balance codes", () => {
   assert.equal(KIS_TR.balance.demo, "VTTC8434R");
   assert.equal(KIS_TR.balance.real, "TTTC8434R");

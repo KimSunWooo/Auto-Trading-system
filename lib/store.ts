@@ -1,4 +1,3 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInitialState, ensureUniverseQuotes, accountValue, tickState } from "./engine";
 import { getMarketClock } from "./market-hours";
@@ -10,9 +9,15 @@ import { brokerDriver, getBrokerPublicStatus } from "@/src/brokers/kis-config";
 import { cashAllocation, getRuleConfig } from "@/src/rules/config";
 import { CASH_RULE_ID, isLegacyPlaybookId } from "@/src/rules/params";
 import type { Allocation, AppState, Position, PublicState } from "./types";
+import { JsonStateRepository } from "@/src/persistence/json-state-repository";
+import { emptySafety, safetyOf, blockSafety } from "@/src/runtime/safety";
+import { httpTickAllowed, isLiveLike } from "@/src/runtime/trading-mode";
+import { holdsWorkerLock } from "@/src/runtime/worker-lock";
+import { buildRuntimePublic } from "@/src/runtime/status";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const STORE_PATH = path.join(DATA_DIR, "paper-account.json");
+const repository = new JsonStateRepository(STORE_PATH);
 
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -81,6 +86,8 @@ function migrateState(parsed: AppState): AppState {
     kisBalance: parsed.kisBalance,
     dayStart: parsed.dayStart ?? { date: seoulDay(), equity: totalDeposit },
     equityHistory: parsed.equityHistory ?? [totalDeposit],
+    intents: parsed.intents ?? [],
+    safety: parsed.safety ?? emptySafety(),
   });
   if (!merged.dayStart?.equity) {
     merged.dayStart = { date: seoulDay(), equity: accountValue(merged) };
@@ -88,22 +95,53 @@ function migrateState(parsed: AppState): AppState {
   return merged;
 }
 
-async function loadState(): Promise<AppState> {
-  try {
-    const raw = await readFile(STORE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as AppState;
-    if (!parsed.quotes || !parsed.settings) {
-      return createInitialState();
-    }
-    return migrateState(parsed);
-  } catch {
+export function hydratePersistedState(
+  loaded: Awaited<ReturnType<JsonStateRepository["load"]>>,
+): AppState {
+  if (!loaded.ok && loaded.reason === "missing") {
     return createInitialState();
   }
+  if (!loaded.ok) {
+    const blocked = createInitialState();
+    blocked.settings.autoTrading = false;
+    return blockSafety(
+      blocked,
+      "store_corrupt",
+      "장부 JSON이 손상되어 초기화하지 않고 매매를 막았습니다.",
+      { persistable: false, tradingAllowed: false },
+    );
+  }
+  const parsed = loaded.value;
+  if (!parsed.quotes || !parsed.settings) {
+    const blocked = createInitialState();
+    blocked.settings.autoTrading = false;
+    return blockSafety(
+      blocked,
+      "store_corrupt",
+      "장부 형식이 올바르지 않아 초기화하지 않고 매매를 막았습니다.",
+      { persistable: false, tradingAllowed: false },
+    );
+  }
+  const migrated = migrateState(parsed);
+  if (loaded.source === "backup") {
+    return {
+      ...migrated,
+      safety: {
+        ...safetyOf(migrated),
+        lastError: "백업 장부에서 복구했습니다.",
+        lastErrorAt: new Date().toISOString(),
+      },
+    };
+  }
+  return migrated;
+}
+
+async function loadState(): Promise<AppState> {
+  return hydratePersistedState(await repository.load());
 }
 
 async function saveState(state: AppState) {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(STORE_PATH, JSON.stringify(state, null, 2), "utf8");
+  await repository.save(state);
 }
 
 export function withStore<T>(fn: (state: AppState) => T | Promise<T>): Promise<T> {
@@ -147,6 +185,7 @@ export function toPublic(state: AppState): PublicState {
     },
     broker: getBrokerPublicStatus(),
     ruleConfig: getRuleConfig(),
+    runtime: buildRuntimePublic(state),
   };
 }
 
@@ -154,7 +193,16 @@ export async function getPublicState(): Promise<PublicState> {
   return withStore((state) => toPublic(state));
 }
 
-export async function tickAndGet(): Promise<PublicState> {
+export async function tickAndGet(
+  opts: { source?: "http" | "worker" } = {},
+): Promise<PublicState> {
+  const source = opts.source ?? "worker";
+  if (source === "http" && !httpTickAllowed()) {
+    return getPublicState();
+  }
+  if (source === "worker" && isLiveLike() && !holdsWorkerLock()) {
+    return getPublicState();
+  }
   const next = await mutateStore((state) => tickState(state));
   return toPublic(next);
 }

@@ -45,6 +45,8 @@ src/
 - 이용 동의 체크박스가 true가 아니면 KIS 주문과 자동 실행이 잠깁니다.
 - 신규 주문은 KST 정규장(09:00~15:20)만 허용합니다. 동시호가·주말·공휴일은 거부합니다.
 - 시장가 의도는 현재가 ±3% 지정가로 바꿔 내고, 같은 룰이 연속 실패/미체결이면 3분 정지합니다.
+- 기본 거래 모드는 `TRADING_MODE=MOCK` 입니다. 브라우저 `/api/tick` 은 MOCK/PAPER 에서만 엔진을 돌립니다. LIVE_TEST/LIVE 엔진은 워커 + 파일 락만 실행합니다.
+- Next가 죽어도 `npm run emergency:stop` 으로 신규 주문을 막고 KIS 미체결을 취소할 수 있습니다. 포지션 청산은 `npm run emergency:flatten` 입니다. 두 명령은 섞이지 않습니다.
 
 로컬 장부(`data/paper-account.json`)는 한도와 UI용입니다. KIS 모의·실전 잔고·수수료와 숫자가 다를 수 있습니다.
 

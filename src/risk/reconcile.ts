@@ -19,15 +19,8 @@ function openParents(box: StateBox): Order[] {
 }
 
 function findCcld(remote: KisDayOrder[], order: Order): KisDayOrder | undefined {
-  const byNo = remote.find((row) => sameOdno(row.orderNo, order.brokerOrderNo));
-  if (byNo) return byNo;
-  return remote.find(
-    (row) =>
-      row.ticker === order.code &&
-      row.side === order.side &&
-      row.qty === (order.orderedQty ?? order.qty) &&
-      row.filledQty > 0,
-  );
+  if (!order.brokerOrderNo) return undefined;
+  return remote.find((row) => sameOdno(row.orderNo, order.brokerOrderNo));
 }
 
 function remainingOf(order: Order, match: KisDayOrder | undefined): number {
@@ -123,15 +116,18 @@ export async function settleOpenOrders(
   client: KisApi,
   now = nowMs(),
   opts: { cancelImmediately?: boolean; bookOnly?: boolean } = {},
-) {
+): Promise<{ ok: boolean; error?: string }> {
   const open = openParents(box);
-  if (open.length === 0 || !client.configured) return;
+  if (open.length === 0 || !client.configured) return { ok: true };
 
   let remote: KisDayOrder[] = [];
   try {
     remote = await client.inquireDailyCcld();
-  } catch {
-    return;
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "당일 체결 조회에 실패했습니다.",
+    };
   }
 
   for (const snapshot of open) {
@@ -201,6 +197,7 @@ export async function settleOpenOrders(
     if (!final || (final.status !== "pending" && final.status !== "unknown")) continue;
     closeRemainder(box, final, final.filledQty ?? 0, final.orderedQty ?? final.qty);
   }
+  return { ok: true };
 }
 
 /** @deprecated Use settleOpenOrders. Kept for callers that still import the old name. */

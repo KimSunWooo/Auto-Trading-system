@@ -22,6 +22,7 @@ import { ConditionsPanel } from "@/components/conditions-panel";
 import { DcaPanel } from "@/components/dca-panel";
 import { GuidePanel } from "@/components/guide-panel";
 import { MarketBadge, OverviewPanel, BrokerBadge } from "@/components/overview-panel";
+import { RuntimeStatusStrip } from "@/components/runtime-status";
 import { OrdersPanel } from "@/components/orders-panel";
 import { RulesPanel } from "@/components/rules-panel";
 import { useTrading, api } from "@/hooks/use-trading";
@@ -111,6 +112,8 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
           </div>
         </div>
       </header>
+
+      <RuntimeStatusStrip state={state} />
 
       <div className="border-b bg-muted/40">
         <p className="mx-auto w-full max-w-7xl px-4 py-2 text-xs text-muted-foreground">

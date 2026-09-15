@@ -5,7 +5,7 @@ import {
   type KisMode,
 } from "@/src/brokers/kis-config";
 import { HARD_LIMITS } from "@/src/risk/limits";
-import { IndeterminateOrderError } from "@/src/risk/errors";
+import { BrokerRejectError, IndeterminateOrderError } from "@/src/risk/errors";
 
 export type KisPrice = {
   ticker: string;
@@ -63,6 +63,7 @@ export interface KisApi {
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
   inquireDailyCcld(): Promise<KisDayOrder[]>;
+  inquireOpenOrders(): Promise<KisDayOrder[]>;
   inquireBalance(): Promise<KisAccountBalance>;
   orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }>;
   cancelOrder(order: KisCancelOrder): Promise<void>;
@@ -234,6 +235,7 @@ export class KisClient implements KisApi {
       hashkey,
       body,
       timeoutMs: HARD_LIMITS.orderTimeoutMs,
+      kind: "order",
     });
     const out = (json.output ?? {}) as Record<string, unknown>;
     const orderNo = String(out.ODNO ?? json.odno ?? "").trim();
@@ -272,6 +274,7 @@ export class KisClient implements KisApi {
       hashkey,
       body,
       timeoutMs: HARD_LIMITS.orderTimeoutMs,
+      kind: "order",
     });
   }
 
@@ -324,6 +327,45 @@ export class KisClient implements KisApi {
         };
       })
       .filter((row) => row.orderNo || row.ticker);
+  }
+
+  async inquireOpenOrders(): Promise<KisDayOrder[]> {
+    this.assertConfigured();
+    const json = await this.uapi("GET", "/uapi/domestic-stock/v1/trading/inquire-nccs", {
+      trId: KIS_TR.openOrders[this.config.mode],
+      timeoutMs: HARD_LIMITS.quoteTimeoutMs,
+      query: {
+        CANO: this.config.cano,
+        ACNT_PRDT_CD: this.config.productCode,
+        INQR_DVSN: "00",
+        CTX_AREA_FK200: "",
+        CTX_AREA_NK200: "",
+      },
+    });
+    const raw = json.output1 ?? json.output ?? [];
+    const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+    return rows
+      .map((row) => {
+        const side: "buy" | "sell" =
+          String(row.sll_buy_dvsn_cd ?? "") === "01" ? "sell" : "buy";
+        const qty = asNumber(row.ord_qty);
+        const filledQty = asNumber(row.tot_ccld_qty);
+        const rawNccs = row.nccs_qty ?? row.NCCS_QTY;
+        const unfilledQty =
+          rawNccs === undefined || rawNccs === null || String(rawNccs).trim() === ""
+            ? Math.max(0, qty - filledQty)
+            : asNumber(rawNccs);
+        return {
+          orderNo: String(row.odno ?? row.ODNO ?? "").trim(),
+          ticker: String(row.pdno ?? row.PDNO ?? "").padStart(6, "0"),
+          side,
+          qty,
+          filledQty,
+          unfilledQty,
+          avgPrice: asNumber(row.avg_prvs) || asNumber(row.ord_unpr),
+        };
+      })
+      .filter((row) => row.orderNo);
   }
 
   async inquireBalance(): Promise<KisAccountBalance> {
@@ -439,6 +481,7 @@ export class KisClient implements KisApi {
       body?: Record<string, string>;
       hashkey?: string;
       timeoutMs?: number;
+      kind?: "query" | "order";
     },
   ) {
     const token = await this.getAccessToken();
@@ -465,6 +508,7 @@ export class KisClient implements KisApi {
         body: opts.body ? JSON.stringify(opts.body) : undefined,
       },
       opts.timeoutMs ?? HARD_LIMITS.quoteTimeoutMs,
+      opts.kind ?? "query",
     );
   }
 
@@ -473,35 +517,66 @@ export class KisClient implements KisApi {
     url: string,
     init: { headers: Record<string, string>; body?: string },
     timeoutMs: number,
+    kind: "query" | "order" = "query",
   ): Promise<Record<string, unknown>> {
     return this.slot(async () => {
-      const res = await this.fetchImpl(url, {
-        method,
-        headers: init.headers,
-        body: method === "GET" ? undefined : init.body,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, {
+          method,
+          headers: init.headers,
+          body: method === "GET" ? undefined : init.body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (err) {
+        throw this.wrapTransportError(err, kind);
+      }
       const text = await res.text();
       let json: Record<string, unknown> = {};
       try {
         json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
       } catch {
-        throw new Error(`KIS 응답이 JSON이 아닙니다. HTTP ${res.status}`);
-      }
-      if (!res.ok) {
-        throw new Error(
-          String(json.msg1 ?? json.error_description ?? `KIS HTTP ${res.status}`),
-        );
+        throw this.httpFailure(kind, res.status, "KIS 응답이 JSON이 아닙니다.");
       }
       const rt = json.rt_cd;
+      const message = String(json.msg1 ?? json.error_description ?? json.msg_cd ?? `KIS HTTP ${res.status}`);
+      if (!res.ok) {
+        if (String(json.msg_cd ?? "").includes("EGW00123")) this.token = null;
+        throw this.httpFailure(kind, res.status, message);
+      }
       if (rt !== undefined && String(rt) !== "0") {
-        if (String(json.msg_cd ?? "").includes("EGW00123")) {
-          this.token = null;
-        }
-        throw new Error(String(json.msg1 ?? json.msg_cd ?? "KIS 오류"));
+        if (String(json.msg_cd ?? "").includes("EGW00123")) this.token = null;
+        if (kind === "order") throw new BrokerRejectError(message);
+        throw new Error(message);
       }
       return json;
     });
+  }
+
+  private wrapTransportError(err: unknown, kind: "query" | "order"): Error {
+    const name = err && typeof err === "object" && "name" in err ? String(err.name) : "";
+    const message = err instanceof Error ? err.message : "KIS 네트워크 오류";
+    if (kind === "order") {
+      return new IndeterminateOrderError(
+        name === "TimeoutError" || name === "AbortError" || /timeout|aborted/i.test(message)
+          ? "주문 응답 시간 초과. 체결 여부를 확인해야 합니다."
+          : `주문 전송 결과를 확인하지 못했습니다. ${message}`,
+      );
+    }
+    return err instanceof Error ? err : new Error(message);
+  }
+
+  private httpFailure(kind: "query" | "order", status: number, message: string): Error {
+    if (kind !== "order") {
+      return new Error(message);
+    }
+    if (status >= 500 || status === 0) {
+      return new IndeterminateOrderError(message);
+    }
+    if (status >= 400 && status < 500) {
+      return new BrokerRejectError(message);
+    }
+    return new IndeterminateOrderError(message);
   }
 
   private async slot<T>(fn: () => Promise<T>): Promise<T> {
@@ -518,11 +593,15 @@ export class KisClient implements KisApi {
   }
 }
 
-let shared: KisClient | null = null;
+let shared: KisApi | null = null;
 
-export function getSharedKisClient(): KisClient {
+export function getSharedKisClient(): KisApi {
   shared ??= KisClient.fromEnv();
   return shared;
+}
+
+export function setSharedKisClientForTest(client: KisApi | null) {
+  shared = client;
 }
 
 export function resetSharedKisClient() {

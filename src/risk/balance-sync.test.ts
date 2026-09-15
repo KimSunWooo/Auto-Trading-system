@@ -32,6 +32,9 @@ class FakeBalanceClient implements KisApi {
   async inquireDailyCcld(): Promise<KisDayOrder[]> {
     return [];
   }
+  async inquireOpenOrders(): Promise<KisDayOrder[]> {
+    return [];
+  }
   async inquireBalance(): Promise<KisAccountBalance> {
     this.calls += 1;
     if (this.fail) throw new Error("balance down");

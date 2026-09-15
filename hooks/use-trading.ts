@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PublicState } from "@/lib/types";
 
 export class ApiError extends Error {
@@ -41,12 +41,17 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export function useTrading(initialState: PublicState) {
   const [state, setState] = useState<PublicState>(initialState);
   const [error, setError] = useState<string | null>(null);
+  const tickAllowedRef = useRef(initialState.runtime?.httpTickAllowed !== false);
 
   const load = useCallback(async (tick = false) => {
     try {
-      const next = tick
+      const allowTick = tick && tickAllowedRef.current;
+      const next = allowTick
         ? await api<PublicState>("/api/tick", { method: "POST" })
         : await api<PublicState>("/api/state");
+      if (next.runtime) {
+        tickAllowedRef.current = next.runtime.httpTickAllowed !== false;
+      }
       setState(next);
       setError(null);
     } catch (err) {

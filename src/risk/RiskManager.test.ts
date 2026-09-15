@@ -148,6 +148,9 @@ class KillKis implements KisApi {
   async inquireDailyCcld(): Promise<KisDayOrder[]> {
     return this.fills.map((row) => ({ ...row }));
   }
+  async inquireOpenOrders(): Promise<KisDayOrder[]> {
+    return this.fills.filter((row) => row.unfilledQty > 0).map((row) => ({ ...row }));
+  }
   async inquireBalance(): Promise<KisAccountBalance> {
     return {
       cash: this.balance.cash,

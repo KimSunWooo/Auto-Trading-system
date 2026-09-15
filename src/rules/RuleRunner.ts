@@ -4,6 +4,8 @@ import type { IBroker } from "@/src/brokers/IBroker";
 import { sma } from "@/src/strategies/indicators";
 import { findStock } from "@/lib/universe";
 import type { UserRule } from "@/src/rules/params";
+import { makeSignalId } from "@/src/runtime/intents";
+import { seoulDay } from "@/src/risk/limits";
 
 export class RuleRunner {
   static async execute(broker: IBroker, bucket: AccountBucket, rule: UserRule): Promise<AccountBucket> {
@@ -26,7 +28,8 @@ async function runInterval(
   if (amount < rule.minAmountKrw) {
     return { ...bucket, lastMessage: "예수금이 적어 이번 주기를 건너뜁니다." };
   }
-  const fill = await broker.buyMarket(rule.ticker, amount);
+  const signalId = makeSignalId(["sig", "interval", rule.id, rule.ticker, Math.floor(now / Math.max(1, rule.intervalMs))]);
+  const fill = await broker.withIntent({ intentId: signalId, signalId, reason: "interval-buy" }).buyMarket(rule.ticker, amount);
   const name = findStock(rule.ticker)?.name ?? rule.ticker;
   return {
     ...bucket,
@@ -57,7 +60,8 @@ async function runMaCross(
 
   if (fast > slow && regime !== "long") {
     const amount = Math.min(rule.sliceKrw, Math.floor(bucket.balance * rule.buyPct));
-    const fill = await broker.buyMarket(rule.ticker, amount);
+    const signalId = makeSignalId(["sig", "ma", rule.id, rule.ticker, "long", seoulDay()]);
+    const fill = await broker.withIntent({ intentId: signalId, signalId, reason: "ma-buy" }).buyMarket(rule.ticker, amount);
     return {
       ...bucket,
       lastRunAt: nowIso(),
@@ -74,7 +78,8 @@ async function runMaCross(
   }
 
   if (fast < slow && regime === "long" && held && held.qty > 0) {
-    const fill = await broker.sellMarket(rule.ticker, held.qty);
+    const signalId = makeSignalId(["sig", "ma", rule.id, rule.ticker, "exit", seoulDay()]);
+    const fill = await broker.withIntent({ intentId: signalId, signalId, reason: "ma-sell" }).sellMarket(rule.ticker, held.qty);
     return {
       ...bucket,
       lastRunAt: nowIso(),

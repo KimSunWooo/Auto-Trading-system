@@ -1,5 +1,11 @@
 import type { OrderSource, OrderStatus } from "@/lib/types";
 
+export type IntentMeta = {
+  intentId: string;
+  signalId?: string;
+  reason?: string;
+};
+
 /**
  * Broker adapter contract.
  *
@@ -39,6 +45,7 @@ export interface IBroker {
   readonly driver: "mock" | "kis";
   forRule(ruleKey: string): IBroker;
   withSource(source: OrderSource, sourceId?: string): IBroker;
+  withIntent(meta: IntentMeta): IBroker;
   getCurrentPrice(ticker: string): Promise<number>;
   getQuote(ticker: string): Promise<BrokerQuote | null>;
   buyMarket(ticker: string, amount: number): Promise<BrokerFill>;

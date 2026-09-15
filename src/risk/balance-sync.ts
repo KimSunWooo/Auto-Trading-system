@@ -133,16 +133,19 @@ export async function syncKisBalance(
   client: KisApi,
   now = Date.now(),
   opts: { force?: boolean } = {},
-) {
-  if (!client.configured) return;
+): Promise<{ ok: boolean; error?: string }> {
+  if (!client.configured) return { ok: true };
   const last = box.current.lastBalanceSyncAt ?? 0;
-  if (!opts.force && now - last < HARD_LIMITS.balanceSyncMs) return;
+  if (!opts.force && now - last < HARD_LIMITS.balanceSyncMs) return { ok: true };
 
   let remote: KisAccountBalance;
   try {
     remote = await client.inquireBalance();
-  } catch {
-    return;
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "잔고 조회에 실패했습니다.",
+    };
   }
 
   const diff = diffLocalVsKis(box.current, remote);
@@ -165,7 +168,7 @@ export async function syncKisBalance(
   };
 
   if (diff.matched || hasOpenBrokerTicket(box.current) || box.current.circuit.halted) {
-    return;
+    return { ok: true };
   }
 
   box.current = openCircuit(
@@ -174,4 +177,5 @@ export async function syncKisBalance(
     undefined,
     "balance",
   );
+  return { ok: true };
 }

@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start --port 43147 --hostname 0.0.0.0",
     "lint": "eslint",
-    "test": "tsx --test lib/*.test.ts src/accounts/*.test.ts src/rules/*.test.ts src/brokers/*.test.ts src/risk/*.test.ts src/backtest/*.test.ts"
+    "test": "tsx --test --test-concurrency=1 lib/*.test.ts src/accounts/*.test.ts src/rules/*.test.ts src/brokers/*.test.ts src/risk/*.test.ts src/backtest/*.test.ts src/runtime/*.test.ts",
+    "emergency:stop": "tsx scripts/emergency-stop.ts",
+    "emergency:flatten": "tsx scripts/emergency-flatten.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

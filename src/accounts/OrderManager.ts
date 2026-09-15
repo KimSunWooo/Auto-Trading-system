@@ -16,6 +16,12 @@ import { RiskManager } from "@/src/risk/RiskManager";
 import { executionLocked } from "@/src/rules/disclaimer";
 import { guardLog } from "@/src/rules/guard-log";
 import { noteRuleOutcome, ruleThrottleReason } from "@/src/rules/throttle";
+import { seoulDay } from "@/src/risk/limits";
+import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/runtime/intents";
+import { safetyOf, stopKey } from "@/src/runtime/safety";
+import { isLiveLike } from "@/src/runtime/trading-mode";
+import { holdsWorkerLock } from "@/src/runtime/worker-lock";
+import { nowMs } from "@/src/clock";
 import {
   bandLimitPrice,
   forbidsMarketOrder,
@@ -53,6 +59,9 @@ export class OrderManager {
     if (this.box.current.settings.liquidating || this.box.current.circuit?.kind === "kill") {
       return { ok: false, reason: "긴급 정지로 신규 매수를 막았습니다." };
     }
+    if (isLiveLike() && !holdsWorkerLock()) {
+      return { ok: false, reason: "트레이딩 워커 락이 없어 주문하지 않습니다." };
+    }
     const locked = executionLocked(this.box.current);
     if (locked) return { ok: false, reason: locked };
     const session = sessionBlockReason(this.box.current);
@@ -78,6 +87,14 @@ export class OrderManager {
       if (throttle) {
         guardLog("룰 쿨다운", throttle);
         return { ok: false, reason: throttle };
+      }
+      const safety = safetyOf(this.box.current);
+      const key = stopKey(ruleId, ticker);
+      if (safety.blockedBuys.includes(key)) {
+        return { ok: false, reason: `${ticker} 손절 직후 같은 틱 재매수를 막았습니다.` };
+      }
+      if (safety.closedByStop[key] === seoulDay()) {
+        return { ok: false, reason: `${ticker} 손절 당일 재진입을 막았습니다.` };
       }
     }
     if (bucket.balance < net) {
@@ -128,6 +145,9 @@ export class OrderManager {
       return { ok: false, reason: session };
     }
     if (!opts.liquidation) {
+      if (isLiveLike() && !holdsWorkerLock()) {
+        return { ok: false, reason: "트레이딩 워커 락이 없어 주문하지 않습니다." };
+      }
       const locked = executionLocked(this.box.current);
       if (locked) return { ok: false, reason: locked };
       const blocked = tradingBlocked(this.box.current);
@@ -170,6 +190,49 @@ export class OrderManager {
     price: number,
     opts: OrderOpts = {},
   ): Order {
+    if (opts.intentId) {
+      const existing = findOrderByIntent(this.box.current, opts.intentId);
+      if (existing) return existing;
+      const prior = findIntent(this.box.current, opts.intentId);
+      if (prior?.orderId) {
+        const byId = this.box.current.orders.find((row) => row.id === prior.orderId);
+        if (byId) return byId;
+      }
+      const committed = upsertIntent(this.box.current, {
+        intentId: opts.intentId,
+        signalId: opts.intentId,
+        ruleId,
+        ticker,
+        side,
+        qty,
+        price,
+        reason: "order-intent",
+      });
+      this.box.current = committed.state;
+      if (committed.duplicate) {
+        const prev = findOrderByIntent(this.box.current, opts.intentId);
+        if (prev) return prev;
+        return {
+          id: committed.intent.orderId ?? committed.intent.intentId,
+          createdAt: committed.intent.createdAt,
+          source: opts.source ?? "rule",
+          sourceId: opts.sourceId,
+          ruleId,
+          code: ticker,
+          name: findStock(ticker)?.name ?? ticker,
+          side,
+          qty,
+          price,
+          amount: qty * price,
+          commission: 0,
+          tax: 0,
+          net: 0,
+          status: committed.intent.status === "rejected" ? "rejected" : "unknown",
+          intentId: opts.intentId,
+          reason: "동일 intent가 이미 있어 새 주문을 만들지 않습니다.",
+        };
+      }
+    }
     const stock = findStock(ticker);
     const started = recordPending(this.box.current, {
       id: opts.orderId,
@@ -185,6 +248,13 @@ export class OrderManager {
       ordDvsn: opts.ordDvsn,
     });
     this.box.current = started.state;
+    this.touchOrderClock();
+    if (opts.intentId) {
+      this.box.current = patchIntent(this.box.current, opts.intentId, {
+        status: "pending",
+        orderId: started.order.id,
+      });
+    }
     return started.order;
   }
 
@@ -339,6 +409,10 @@ export class OrderManager {
     price: number,
     opts: OrderOpts = {},
   ): BrokerFill {
+    if (opts.intentId) {
+      const existing = findOrderByIntent(this.box.current, opts.intentId);
+      if (existing) return this.toFill(existing);
+    }
     const converted = this.asLimit("buy", ticker, qty, price, opts);
     if ("reason" in converted) {
       return this.gateReject(ruleId, ticker, "buy", converted.reason);
@@ -353,6 +427,7 @@ export class OrderManager {
       source: converted.opts.source ?? "rule",
       sourceId: converted.opts.sourceId,
       ruleId,
+      intentId: converted.opts.intentId,
       code: ticker,
       name: stock?.name ?? ticker,
       side: "buy",
@@ -361,6 +436,8 @@ export class OrderManager {
       ordDvsn: converted.opts.ordDvsn,
     });
     this.box.current = applied.state;
+    this.touchOrderClock();
+    this.rememberIntent(opts.intentId, ruleId, ticker, "buy", converted.qty, converted.price, applied.order);
     const fill = this.toFill(applied.order);
     this.observe(ruleId, ticker, fill);
     return fill;
@@ -373,6 +450,10 @@ export class OrderManager {
     price: number,
     opts: OrderOpts = {},
   ): BrokerFill {
+    if (opts.intentId) {
+      const existing = findOrderByIntent(this.box.current, opts.intentId);
+      if (existing) return this.toFill(existing);
+    }
     const converted = this.asLimit("sell", ticker, qty, price, opts);
     if ("reason" in converted) {
       return this.gateReject(ruleId, ticker, "sell", converted.reason);
@@ -387,6 +468,7 @@ export class OrderManager {
       source: converted.opts.source ?? "rule",
       sourceId: converted.opts.sourceId,
       ruleId,
+      intentId: converted.opts.intentId,
       code: ticker,
       name: stock?.name ?? ticker,
       side: "sell",
@@ -395,8 +477,47 @@ export class OrderManager {
       ordDvsn: converted.opts.ordDvsn,
     });
     this.box.current = applied.state;
+    this.touchOrderClock();
+    this.rememberIntent(opts.intentId, ruleId, ticker, "sell", converted.qty, converted.price, applied.order);
     const fill = this.toFill(applied.order);
     if (!opts.liquidation) this.observe(ruleId, ticker, fill);
     return fill;
+  }
+
+  private touchOrderClock() {
+    this.box.current = {
+      ...this.box.current,
+      safety: {
+        ...safetyOf(this.box.current),
+        lastOrderAt: nowMs(),
+      },
+    };
+  }
+
+  private rememberIntent(
+    intentId: string | undefined,
+    ruleId: string,
+    ticker: string,
+    side: "buy" | "sell",
+    qty: number,
+    price: number,
+    order: Order,
+  ) {
+    if (!intentId) return;
+    const committed = upsertIntent(this.box.current, {
+      intentId,
+      signalId: intentId,
+      ruleId,
+      ticker,
+      side,
+      qty,
+      price,
+      reason: "order-intent",
+    });
+    this.box.current = patchIntent(committed.state, intentId, {
+      status: order.status === "filled" ? "filled" : order.status === "rejected" ? "rejected" : "submitted",
+      orderId: order.id,
+      brokerOrderNo: order.brokerOrderNo,
+    });
   }
 }

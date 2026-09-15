@@ -1,10 +1,15 @@
-import { tickAndGet } from "@/lib/store";
+import { getPublicState, tickAndGet } from "@/lib/store";
+import { httpTickAllowed } from "@/src/runtime/trading-mode";
 
 export const dynamic = "force-dynamic";
 
 export async function POST() {
   try {
-    const state = await tickAndGet();
+    if (!httpTickAllowed()) {
+      const state = await getPublicState();
+      return Response.json(state);
+    }
+    const state = await tickAndGet({ source: "http" });
     return Response.json(state);
   } catch (err) {
     return Response.json(
