@@ -115,8 +115,8 @@ export function OverviewPanel({
                     </CardDescription>
                     <CardTitle className="text-base">{book.summary}</CardTitle>
                   </div>
-                  <Badge variant={card.enabled ? "default" : "secondary"}>
-                    {card.enabled ? "가동" : "대기"}
+                  <Badge variant={card.enabled && state.settings.autoTrading ? "default" : "secondary"}>
+                    {card.enabled && state.settings.autoTrading ? "가동" : "대기"}
                   </Badge>
                 </div>
                 <p className="text-xs text-muted-foreground">{book.detail}</p>
