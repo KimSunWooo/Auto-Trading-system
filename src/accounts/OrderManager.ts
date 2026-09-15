@@ -14,6 +14,8 @@ import { checkHardLimits } from "@/src/risk/limits";
 import { openCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { RiskManager } from "@/src/risk/RiskManager";
 import { executionLocked } from "@/src/rules/disclaimer";
+import { guardLog } from "@/src/rules/guard-log";
+import { noteRuleOutcome, ruleThrottleReason } from "@/src/rules/throttle";
 import {
   bandLimitPrice,
   forbidsMarketOrder,
@@ -54,7 +56,10 @@ export class OrderManager {
     const locked = executionLocked(this.box.current);
     if (locked) return { ok: false, reason: locked };
     const session = sessionBlockReason(this.box.current);
-    if (session) return { ok: false, reason: session };
+    if (session) {
+      guardLog("정규장 아님", session);
+      return { ok: false, reason: session };
+    }
     const blocked = tradingBlocked(this.box.current);
     if (blocked) return { ok: false, reason: blocked };
     if (qty < 1) {
@@ -67,6 +72,13 @@ export class OrderManager {
     }
     if (!bucket.enabled) {
       return { ok: false, reason: `${ruleId} 버킷이 중지되어 있습니다.` };
+    }
+    if (ticker) {
+      const throttle = ruleThrottleReason(bucket, ticker);
+      if (throttle) {
+        guardLog("룰 쿨다운", throttle);
+        return { ok: false, reason: throttle };
+      }
     }
     if (bucket.balance < net) {
       return {
@@ -111,12 +123,21 @@ export class OrderManager {
     opts: Pick<OrderOpts, "liquidation"> = {},
   ): { ok: true } | { ok: false; reason: string } {
     const session = sessionBlockReason(this.box.current);
-    if (session) return { ok: false, reason: session };
+    if (session) {
+      guardLog("정규장 아님", session);
+      return { ok: false, reason: session };
+    }
     if (!opts.liquidation) {
       const locked = executionLocked(this.box.current);
       if (locked) return { ok: false, reason: locked };
       const blocked = tradingBlocked(this.box.current);
       if (blocked) return { ok: false, reason: blocked };
+      const bucket = this.box.current.allocations.find((a) => a.ruleId === ruleId);
+      const throttle = ruleThrottleReason(bucket, ticker);
+      if (throttle) {
+        guardLog("룰 쿨다운", throttle);
+        return { ok: false, reason: throttle };
+      }
     }
     if (qty < 1) {
       return { ok: false, reason: "매도 수량이 없습니다." };
@@ -184,7 +205,9 @@ export class OrderManager {
       return this.reject("", "buy", reason);
     }
     this.box.current = patched.state;
-    return this.toFill(patched.order);
+    const fill = this.toFill(patched.order);
+    this.observe(patched.order.ruleId, patched.order.code, fill);
+    return fill;
   }
 
   confirm(orderId: string, brokerOrderNo?: string): BrokerFill {
@@ -199,7 +222,9 @@ export class OrderManager {
       ...applied.state,
       orders: applied.state.orders.map((row) => (row.id === withNo.id ? withNo : row)),
     };
-    return this.toFill(withNo);
+    const fill = this.toFill(withNo);
+    this.observe(withNo.ruleId, withNo.code, fill);
+    return fill;
   }
 
   unknown(orderId: string, reason: string): BrokerFill {
@@ -215,7 +240,9 @@ export class OrderManager {
       `주문 결과를 확인하지 못했습니다. ${reason}`,
       patched.order,
     );
-    return this.toFill(patched.order);
+    const fill = this.toFill(patched.order);
+    this.observe(patched.order.ruleId, patched.order.code, fill);
+    return fill;
   }
 
   rejectRemote(orderId: string, reason: string): BrokerFill {
@@ -224,9 +251,28 @@ export class OrderManager {
       reason,
     });
     if (patched.order) this.box.current = patched.state;
-    return patched.order
+    const fill = patched.order
       ? this.toFill(patched.order)
       : this.reject("", "buy", reason);
+    if (patched.order) this.observe(patched.order.ruleId, patched.order.code, fill);
+    return fill;
+  }
+
+  gateReject(ruleId: string, ticker: string, side: "buy" | "sell", reason: string): BrokerFill {
+    const fill = this.reject(ticker, side, reason);
+    this.observe(ruleId, ticker, fill);
+    return fill;
+  }
+
+  observe(ruleId: string | undefined, ticker: string, fill: BrokerFill) {
+    if (!ruleId || !ticker) return;
+    this.box.current = noteRuleOutcome(this.box.current, {
+      ruleId,
+      ticker,
+      status: fill.status,
+      reason: fill.reason,
+      ok: fill.ok,
+    });
   }
 
   private reject(
@@ -263,6 +309,29 @@ export class OrderManager {
     };
   }
 
+  private asLimit(
+    side: "buy" | "sell",
+    ticker: string,
+    qty: number,
+    price: number,
+    opts: OrderOpts,
+  ): { qty: number; price: number; opts: OrderOpts } | { reason: string } {
+    if (opts.ordDvsn === "limit") {
+      return { qty, price, opts };
+    }
+    const quote = this.box.current.quotes[ticker];
+    const last = quote?.price && quote.price > 0 ? quote.price : price;
+    const band = bandLimitPrice(side, last, quote?.prevClose ?? last);
+    if (!(band > 0)) {
+      return { reason: "현재가가 없어 지정가 밴드를 계산하지 못했습니다." };
+    }
+    return {
+      qty,
+      price: last,
+      opts: { ...opts, ordDvsn: "limit" },
+    };
+  }
+
   buy(
     ruleId: string,
     ticker: string,
@@ -270,25 +339,31 @@ export class OrderManager {
     price: number,
     opts: OrderOpts = {},
   ): BrokerFill {
-    const gate = this.canBuy(ruleId, qty, price, ticker);
+    const converted = this.asLimit("buy", ticker, qty, price, opts);
+    if ("reason" in converted) {
+      return this.gateReject(ruleId, ticker, "buy", converted.reason);
+    }
+    const gate = this.canBuy(ruleId, converted.qty, converted.price, ticker);
     if (!gate.ok) {
-      return this.reject(ticker, "buy", gate.reason);
+      return this.gateReject(ruleId, ticker, "buy", gate.reason);
     }
     const stock = findStock(ticker);
     const applied = applyFill(this.box.current, {
       id: opts.orderId,
-      source: opts.source ?? "rule",
-      sourceId: opts.sourceId,
+      source: converted.opts.source ?? "rule",
+      sourceId: converted.opts.sourceId,
       ruleId,
       code: ticker,
       name: stock?.name ?? ticker,
       side: "buy",
-      qty,
-      price,
-      ordDvsn: opts.ordDvsn,
+      qty: converted.qty,
+      price: converted.price,
+      ordDvsn: converted.opts.ordDvsn,
     });
     this.box.current = applied.state;
-    return this.toFill(applied.order);
+    const fill = this.toFill(applied.order);
+    this.observe(ruleId, ticker, fill);
+    return fill;
   }
 
   sell(
@@ -298,24 +373,30 @@ export class OrderManager {
     price: number,
     opts: OrderOpts = {},
   ): BrokerFill {
-    const gate = this.canSell(ruleId, ticker, qty, opts);
+    const converted = this.asLimit("sell", ticker, qty, price, opts);
+    if ("reason" in converted) {
+      return this.gateReject(ruleId, ticker, "sell", converted.reason);
+    }
+    const gate = this.canSell(ruleId, ticker, converted.qty, opts);
     if (!gate.ok) {
-      return this.reject(ticker, "sell", gate.reason);
+      return this.gateReject(ruleId, ticker, "sell", gate.reason);
     }
     const stock = findStock(ticker);
     const applied = applyFill(this.box.current, {
       id: opts.orderId,
-      source: opts.source ?? "rule",
-      sourceId: opts.sourceId,
+      source: converted.opts.source ?? "rule",
+      sourceId: converted.opts.sourceId,
       ruleId,
       code: ticker,
       name: stock?.name ?? ticker,
       side: "sell",
-      qty,
-      price,
-      ordDvsn: opts.ordDvsn,
+      qty: converted.qty,
+      price: converted.price,
+      ordDvsn: converted.opts.ordDvsn,
     });
     this.box.current = applied.state;
-    return this.toFill(applied.order);
+    const fill = this.toFill(applied.order);
+    if (!opts.liquidation) this.observe(ruleId, ticker, fill);
+    return fill;
   }
 }

@@ -26,13 +26,14 @@ src/
     MockBroker.ts       # 로컬 페이퍼 북
     KisBroker.ts        # 한국투자증권 Open API
   accounts/
-    OrderManager.ts     # 버킷 게이트 · 정규장 인터셉터 · 면책 락
-    execution-policy.ts # ±3% 지정가 밴드 · 분할 · 고변동 시장가 금지
+    OrderManager.ts     # 버킷 게이트 · 정규장 락 · 면책 락 · 룰 쿨다운
+    execution-policy.ts # 정규장 검증 · ±3% 지정가 밴드 · 분할
   rules/
     params.ts           # UserRule · 빈 설정 · 면책 문구
     config.ts           # data/strategy-config.json 로드/저장
     RuleRunner.ts       # interval / ma-cross 조건 실행
     disclaimer.ts       # 동의 전까지 주문·엔진 잠금
+    throttle.ts         # ruleId+종목 연속 실패 시 3분 쿨다운
   engine/
     QuantEngine.ts      # 사용자가 저장한 조건식만 순회
 ```
@@ -41,6 +42,8 @@ src/
 - `data/strategy-config.json` 은 `{ "rules": [] }` 로 시작합니다. 폼에서 입력한 값만 저장됩니다.
 - 매수는 해당 조건식 `balance` 안에서만 승인된 뒤 브로커로 전달됩니다.
 - 이용 동의 체크박스가 true가 아니면 KIS 주문과 자동 실행이 잠깁니다.
+- 신규 주문은 KST 정규장(09:00~15:20)만 허용합니다. 동시호가·주말·공휴일은 거부합니다.
+- 시장가 의도는 현재가 ±3% 지정가로 바꿔 내고, 같은 룰이 연속 실패/미체결이면 3분 정지합니다.
 
 로컬 장부(`data/paper-account.json`)는 한도와 UI용입니다. KIS 모의·실전 잔고·수수료와 숫자가 다를 수 있습니다.
 

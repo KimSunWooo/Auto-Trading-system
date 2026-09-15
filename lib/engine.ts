@@ -19,6 +19,7 @@ import { getSharedKisClient } from "@/src/brokers/kis-client";
 import { watchedTickersFrom } from "@/src/rules/config";
 import { autoRunAllowed } from "@/src/rules/disclaimer";
 import { CASH_RULE_ID } from "@/src/rules/params";
+import { guardLog } from "@/src/rules/guard-log";
 
 const HISTORY_LEN = 40;
 
@@ -321,11 +322,13 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
     await syncKisBalance(box, getSharedKisClient(), now.getTime());
     await refreshLiveQuotes(box, root);
   } else {
-    box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };
+    if (box.current.settings.ignoreMarketHours || clock.open) {
+      box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };
+    }
   }
 
   const kisLiveSession = root.driver !== "kis" || clock.open;
-  const sessionOk = (box.current.settings.ignoreMarketHours || clock.open) && kisLiveSession;
+  const sessionOk = clock.open && kisLiveSession;
   box.current = RiskManager.rollDay(box.current, now);
 
   const tradingOn = autoRunAllowed(box.current);
@@ -340,6 +343,17 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
     box.current = await evaluateConditions(box.current, clock.iso);
     box.current = await evaluateDca(box.current, clock.iso);
     box.current = await QuantEngine.run(box.current);
+  } else if (tradingOn && !clock.open) {
+    const msg = `정규장 아님 (${clock.sessionLabel}) — 신규 주문 거부`;
+    const already = box.current.allocations.some((row) => row.lastMessage?.includes("정규장 아님"));
+    if (!already) guardLog("정규장 아님", clock.sessionLabel);
+    box.current = {
+      ...box.current,
+      allocations: box.current.allocations.map((row) => ({
+        ...row,
+        lastMessage: msg,
+      })),
+    };
   } else if (tradingBlocked(box.current) || !tradingOn) {
     const locked = !box.current.settings.disclaimerAccepted
       ? "이용 동의 전에는 매매 실행이 잠겨 있습니다."

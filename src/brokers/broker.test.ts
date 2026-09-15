@@ -130,7 +130,8 @@ test("KisBroker treats ODNO as working, not a full fill", async () => {
   assert.equal(fill.status, "pending");
   assert.equal(fill.qty, 2);
   assert.equal(client.orders.length, 1);
-  assert.equal(client.orders[0]?.ordDvsn, "market");
+  assert.equal(client.orders[0]?.ordDvsn, "limit");
+  assert.equal(client.orders[0]?.price, bandLimitPrice("buy", 70_000));
   const after = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   assert.equal(after, before);
   const parent = box.current.orders.find((o) => o.status === "pending");
@@ -264,7 +265,7 @@ test("settleOpenOrders cancels remaining qty after the timeout", async () => {
   ];
   await settleOpenOrders(box, client);
   assert.equal(client.cancels.length, 1);
-  assert.equal(client.cancels[0]?.ordDvsn, "market");
+  assert.equal(client.cancels[0]?.ordDvsn, "limit");
   const live = box.current.orders.find((o) => o.id === parent.id)!;
   assert.equal(live.status, "filled");
   assert.equal(live.filledQty, 1);
@@ -307,11 +308,12 @@ test("MockBroker getCurrentPrice reads the paper book", async () => {
   assert.ok(price > 0);
 });
 
-test("KisBroker converts 247540 market buy to a limit band", async () => {
+test("KisBroker converts any market buy to a ±3% limit band", async () => {
   const box = { current: createPaperState() };
   const client = new FakeKis();
-  const fill = await new KisBroker(box, client, "cash").buyMarket("247540", 140_000);
+  const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.status, "pending");
+  assert.equal(fill.qty, 2);
   assert.equal(client.orders[0]?.ordDvsn, "limit");
   assert.equal(client.orders[0]?.price, bandLimitPrice("buy", 70_000));
   assert.equal(box.current.orders[0]?.ordDvsn, "limit");

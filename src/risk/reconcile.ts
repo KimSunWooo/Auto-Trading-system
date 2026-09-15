@@ -7,6 +7,7 @@ import { isIndeterminateError } from "@/src/risk/errors";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { nowMs } from "@/src/clock";
 import type { Order } from "@/lib/types";
+import { noteRuleOutcome } from "@/src/rules/throttle";
 
 function openParents(box: StateBox): Order[] {
   return box.current.orders.filter(
@@ -69,7 +70,15 @@ function closeRemainder(box: StateBox, order: Order, filled: number, ordered: nu
       filledQty: filled,
       reason: "전량 체결",
     });
-    if (patched.order) box.current = patched.state;
+    if (patched.order) {
+      box.current = noteRuleOutcome(patched.state, {
+        ruleId: patched.order.ruleId,
+        ticker: patched.order.code,
+        status: patched.order.status,
+        reason: patched.order.reason,
+        ok: true,
+      });
+    }
     return;
   }
   if (filled > 0) {
@@ -78,7 +87,15 @@ function closeRemainder(box: StateBox, order: Order, filled: number, ordered: nu
       filledQty: filled,
       reason: `부분체결 ${filled}주, 잔량 취소`,
     });
-    if (patched.order) box.current = patched.state;
+    if (patched.order) {
+      box.current = noteRuleOutcome(patched.state, {
+        ruleId: patched.order.ruleId,
+        ticker: patched.order.code,
+        status: patched.order.status,
+        reason: patched.order.reason,
+        ok: true,
+      });
+    }
     return;
   }
   const patched = patchOrder(box.current, order.id, {
@@ -86,7 +103,15 @@ function closeRemainder(box: StateBox, order: Order, filled: number, ordered: nu
     filledQty: 0,
     reason: "미체결 잔량 취소",
   });
-  if (patched.order) box.current = patched.state;
+  if (patched.order) {
+    box.current = noteRuleOutcome(patched.state, {
+      ruleId: patched.order.ruleId,
+      ticker: patched.order.code,
+      status: patched.order.status,
+      reason: patched.order.reason,
+      ok: false,
+    });
+  }
 }
 
 /**

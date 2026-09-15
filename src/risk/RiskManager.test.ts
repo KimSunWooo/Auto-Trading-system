@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import { createPaperState } from "@/lib/engine";
 import { RiskManager } from "./RiskManager";
 import { seoulDay } from "./limits";
 import { tradingBlocked } from "./circuit";
 import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "@/src/brokers/kis-client";
+import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
+import { setNowMs } from "@/src/clock";
+
+before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
+after(() => setNowMs(null));
 
 test("RiskManager blocks a buy that would exceed 20% ticker weight", () => {
   const state = createPaperState();

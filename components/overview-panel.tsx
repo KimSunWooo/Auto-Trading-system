@@ -501,12 +501,15 @@ export function BrokerBadge({ state }: { state: PublicState }) {
 }
 
 export function MarketBadge({ state }: { state: PublicState }) {
-  const live = state.settings.ignoreMarketHours || state.market.open;
+  if (state.market.open) {
+    return <Badge variant="default">{state.market.sessionLabel}</Badge>;
+  }
+  if (state.settings.ignoreMarketHours) {
+    return <Badge variant="outline">시세상시 · 주문대기</Badge>;
+  }
   return (
-    <Badge variant={live ? "default" : "outline"}>
-      {state.settings.ignoreMarketHours
-        ? "상시개장"
-        : `${state.market.sessionLabel}${state.market.open ? "" : " · 주문대기"}`}
+    <Badge variant="outline">
+      {state.market.sessionLabel} · 주문대기
     </Badge>
   );
 }

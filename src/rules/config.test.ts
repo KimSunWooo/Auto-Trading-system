@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import {
   EMPTY_RULE_CONFIG,
   blankRule,
@@ -19,6 +19,11 @@ import { RuleRunner } from "@/src/rules/RuleRunner";
 import { MockBroker } from "@/src/brokers/MockBroker";
 import { toBucket } from "@/src/accounts/AccountBucket";
 import { QuantEngine } from "@/src/engine/QuantEngine";
+import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
+import { setNowMs } from "@/src/clock";
+
+before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
+after(() => setNowMs(null));
 
 test("empty user config has no tickers and no playbook ids", () => {
   assert.deepEqual(EMPTY_RULE_CONFIG, { rules: [] });
@@ -120,6 +125,7 @@ test("RuleRunner interval buy uses the ticker from the user rule", async () => {
     assert.match(after.lastMessage ?? "", /삼성전자|005930|조건 매수/);
     assert.equal(box.current.orders[0]?.code, "005930");
     assert.equal(box.current.orders[0]?.ruleId, "r-interval");
+    assert.equal(box.current.orders[0]?.ordDvsn, "limit");
   } finally {
     setRuleConfigForTest(null);
   }

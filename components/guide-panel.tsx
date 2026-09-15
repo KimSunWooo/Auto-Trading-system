@@ -85,16 +85,16 @@ export function GuidePanel({
         <CardHeader className="border-b">
           <CardTitle>장 운영 설정</CardTitle>
           <CardDescription>
-            로컬 모의는 주말·야간에도 시세를 움직입니다. KIS는 정규장(09:00~15:20) 밖 — 동시호가·시간외 — 신규 주문을
-            원천 차단합니다.
+            로컬 모의는 주말·야간에도 시세를 움직일 수 있습니다. 주문은 브로커와 관계없이 정규장(09:00~15:20 KST)만
+            허용합니다. 동시호가·주말·공휴일에는 조건이 맞아도 거부하고 로그만 남깁니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
           <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3">
             <div>
-              <Label htmlFor="hours">정규장 외에도 주문</Label>
+              <Label htmlFor="hours">정규장 외에도 시세</Label>
               <p className="text-xs text-muted-foreground">
-                로컬 모의만 해당. KIS 연결 시에는 09:00~15:20 밖 주문을 내지 않습니다.
+                로컬 모의 호가만 상시 갱신합니다. 신규 주문은 항상 09:00~15:20 정규장에서만 나갑니다.
               </p>
             </div>
             <Switch

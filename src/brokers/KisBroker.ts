@@ -87,20 +87,18 @@ export class KisBroker implements IBroker {
     try {
       const last = await this.getCurrentPrice(ticker);
       const intent = resolveMarketIntent(ticker, "buy", last);
-      if (intent.converted) {
-        return this.buyLimit(ticker, intent.price, amount);
-      }
+      const qty = Math.floor(amount / last);
+      return this.placeBuy(ticker, amount, "limit", intent.price, qty);
     } catch (err) {
       return this.fail(ticker, "buy", err);
     }
-    return this.placeBuy(ticker, amount, "market");
   }
 
   async buyLimit(ticker: string, price: number, amount: number): Promise<BrokerFill> {
     try {
       const last = await this.getCurrentPrice(ticker);
       if (!canFillLimit("buy", last, price)) {
-        return {
+        const fill: BrokerFill = {
           ok: false,
           status: "rejected",
           ticker,
@@ -111,6 +109,8 @@ export class KisBroker implements IBroker {
           net: 0,
           reason: `지정가 ${price.toLocaleString("ko-KR")}원보다 현재가 ${last.toLocaleString("ko-KR")}원이 높아 미체결입니다.`,
         };
+        new OrderManager(this.box).observe(this.ruleKey, ticker, fill);
+        return fill;
       }
     } catch (err) {
       return this.fail(ticker, "buy", err);
@@ -123,11 +123,7 @@ export class KisBroker implements IBroker {
     if (blocked) return blocked;
     try {
       const last = await this.getCurrentPrice(ticker);
-      const intent = resolveMarketIntent(ticker, "sell", last);
-      if (intent.converted) {
-        return sellBandSlices(this, ticker, qty, last);
-      }
-      return this.placeSell(ticker, qty, "market");
+      return sellBandSlices(this, ticker, qty, last);
     } catch (err) {
       return this.fail(ticker, "sell", err);
     }
@@ -142,6 +138,7 @@ export class KisBroker implements IBroker {
     amount: number,
     ordDvsn: "market" | "limit",
     limitPrice?: number,
+    qtyOverride?: number,
   ): Promise<BrokerFill> {
     const blocked = this.precheck(ticker, "buy");
     if (blocked) return blocked;
@@ -149,10 +146,11 @@ export class KisBroker implements IBroker {
     let price = 0;
     const orders = new OrderManager(this.box);
     try {
-      price = ordDvsn === "limit" && limitPrice ? limitPrice : await this.getCurrentPrice(ticker);
-      const qty = Math.floor(amount / price);
-      const gate = orders.canBuy(this.ruleKey, qty, price, ticker);
-      if (!gate.ok) return this.reject(ticker, "buy", gate.reason);
+      const last = await this.getCurrentPrice(ticker);
+      price = ordDvsn === "limit" && limitPrice ? limitPrice : last;
+      const qty = qtyOverride ?? Math.floor(amount / (limitPrice && limitPrice > 0 ? limitPrice : last));
+      const gate = orders.canBuy(this.ruleKey, qty, last, ticker);
+      if (!gate.ok) return orders.gateReject(this.ruleKey, ticker, "buy", gate.reason);
       const pending = orders.begin(this.ruleKey, ticker, "buy", qty, price, {
         source: this.source,
         sourceId: this.sourceId,
@@ -203,7 +201,7 @@ export class KisBroker implements IBroker {
     const gate = orders.canSell(this.ruleKey, ticker, qty, {
       liquidation: this.box.current.settings.liquidating,
     });
-    if (!gate.ok) return this.reject(ticker, "sell", gate.reason);
+    if (!gate.ok) return orders.gateReject(this.ruleKey, ticker, "sell", gate.reason);
 
     let price = 0;
     try {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getMarketClock, isRegularSession } from "./market-hours";
+import { getMarketClock, isKrHoliday, isRegularSession } from "./market-hours";
 
 function kst(isoUtc: string) {
   return getMarketClock(new Date(isoUtc));
@@ -32,4 +32,16 @@ test("opening auction and after-hours are not regular session", () => {
   const weekend = kst("2026-09-13T01:00:00.000Z"); // 10:00 KST Sun
   assert.equal(weekend.open, false);
   assert.equal(weekend.sessionLabel, "주말 휴장");
+});
+
+test("KRX holidays are closed even on a weekday", () => {
+  const hangul = kst("2026-10-09T01:00:00.000Z"); // 10:00 KST Fri
+  assert.equal(isKrHoliday(hangul.now), true);
+  assert.equal(hangul.open, false);
+  assert.equal(hangul.holiday, true);
+  assert.equal(hangul.sessionLabel, "공휴일 휴장");
+
+  const childrens = kst("2026-05-05T01:00:00.000Z");
+  assert.equal(childrens.open, false);
+  assert.equal(childrens.sessionLabel, "공휴일 휴장");
 });

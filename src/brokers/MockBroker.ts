@@ -29,7 +29,7 @@ export class MockBroker implements IBroker {
   }
 
   withSource(source: OrderSource, sourceId?: string): MockBroker {
-    return new MockBroker(this.box, this.ruleKey, source, sourceId);
+    return new MockBroker(this.box, this.ruleKey, source, this.sourceId);
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
@@ -61,23 +61,50 @@ export class MockBroker implements IBroker {
   }
 
   async buyMarket(ticker: string, amount: number): Promise<BrokerFill> {
-    const price = await this.getCurrentPrice(ticker);
-    const intent = resolveMarketIntent(ticker, "buy", price);
-    if (intent.converted) {
-      return this.buyLimit(ticker, intent.price, amount);
+    const last = await this.getCurrentPrice(ticker);
+    const intent = resolveMarketIntent(ticker, "buy", last);
+    const qty = Math.floor(amount / last);
+    if (qty < 1) {
+      const fill: BrokerFill = {
+        ok: false,
+        status: "rejected",
+        ticker,
+        side: "buy",
+        qty: 0,
+        price: last,
+        amount: 0,
+        net: 0,
+        reason: "1주 미만이라 주문하지 않습니다.",
+      };
+      new OrderManager(this.box).observe(this.ruleKey, ticker, fill);
+      return fill;
     }
-    const qty = Math.floor(amount / price);
-    return new OrderManager(this.box).buy(this.ruleKey, ticker, qty, price, {
+    if (!canFillLimit("buy", last, intent.price)) {
+      const fill: BrokerFill = {
+        ok: false,
+        status: "rejected",
+        ticker,
+        side: "buy",
+        qty: 0,
+        price: last,
+        amount: 0,
+        net: 0,
+        reason: `지정가 ${intent.price.toLocaleString("ko-KR")}원보다 현재가 ${last.toLocaleString("ko-KR")}원이 높아 미체결입니다.`,
+      };
+      new OrderManager(this.box).observe(this.ruleKey, ticker, fill);
+      return fill;
+    }
+    return new OrderManager(this.box).buy(this.ruleKey, ticker, qty, last, {
       source: this.source,
       sourceId: this.sourceId,
-      ordDvsn: "market",
+      ordDvsn: "limit",
     });
   }
 
   async buyLimit(ticker: string, price: number, amount: number): Promise<BrokerFill> {
     const last = await this.getCurrentPrice(ticker);
     if (!canFillLimit("buy", last, price)) {
-      return {
+      const fill: BrokerFill = {
         ok: false,
         status: "rejected",
         ticker,
@@ -88,9 +115,11 @@ export class MockBroker implements IBroker {
         net: 0,
         reason: `지정가 ${price.toLocaleString("ko-KR")}원보다 현재가 ${last.toLocaleString("ko-KR")}원이 높아 미체결입니다.`,
       };
+      new OrderManager(this.box).observe(this.ruleKey, ticker, fill);
+      return fill;
     }
     const qty = Math.floor(amount / price);
-    return new OrderManager(this.box).buy(this.ruleKey, ticker, qty, price, {
+    return new OrderManager(this.box).buy(this.ruleKey, ticker, qty, last, {
       source: this.source,
       sourceId: this.sourceId,
       ordDvsn: "limit",
@@ -98,22 +127,14 @@ export class MockBroker implements IBroker {
   }
 
   async sellMarket(ticker: string, qty: number): Promise<BrokerFill> {
-    const price = await this.getCurrentPrice(ticker);
-    const intent = resolveMarketIntent(ticker, "sell", price);
-    if (intent.converted) {
-      return sellBandSlices(this, ticker, qty, price);
-    }
-    return new OrderManager(this.box).sell(this.ruleKey, ticker, qty, price, {
-      source: this.source,
-      sourceId: this.sourceId,
-      ordDvsn: "market",
-    });
+    const last = await this.getCurrentPrice(ticker);
+    return sellBandSlices(this, ticker, qty, last);
   }
 
   async sellLimit(ticker: string, price: number, qty: number): Promise<BrokerFill> {
     const last = await this.getCurrentPrice(ticker);
     if (!canFillLimit("sell", last, price)) {
-      return {
+      const fill: BrokerFill = {
         ok: false,
         status: "rejected",
         ticker,
@@ -124,6 +145,8 @@ export class MockBroker implements IBroker {
         net: 0,
         reason: `지정가 ${price.toLocaleString("ko-KR")}원보다 현재가 ${last.toLocaleString("ko-KR")}원이 낮아 미체결입니다.`,
       };
+      new OrderManager(this.box).observe(this.ruleKey, ticker, fill);
+      return fill;
     }
     return new OrderManager(this.box).sell(this.ruleKey, ticker, qty, last, {
       source: this.source,

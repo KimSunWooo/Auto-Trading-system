@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import {
   applyFill,
   conditionMatches,
@@ -9,6 +9,11 @@ import {
 } from "./engine";
 import { floorToTick, roundToTick, tickSize } from "./tick-size";
 import type { AutoCondition, DcaPlan } from "./types";
+import { SEOUL_REGULAR_SESSION_MS } from "./market-hours";
+import { setNowMs } from "@/src/clock";
+
+before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
+after(() => setNowMs(null));
 
 test("tick size follows KRX bands", () => {
   assert.equal(tickSize(1500), 1);
@@ -87,6 +92,7 @@ test("price-below condition fires a market buy", async () => {
   assert.equal(next.conditions[0]?.status, "filled");
   assert.equal(next.orders[0]?.qty, 5);
   assert.equal(next.orders[0]?.source, "condition");
+  assert.equal(next.orders[0]?.ordDvsn, "limit");
 });
 
 test("DCA buys whole shares and schedules the next run", async () => {
@@ -106,5 +112,6 @@ test("DCA buys whole shares and schedules the next run", async () => {
   const next = await evaluateDca({ ...state, dcaPlans: [plan] }, new Date().toISOString());
   assert.equal(next.dcaPlans[0]?.runCount, 1);
   assert.equal(next.orders[0]?.source, "dca");
+  assert.equal(next.orders[0]?.ordDvsn, "limit");
   assert.ok((next.dcaPlans[0]?.nextRunAt ?? "") > plan.nextRunAt);
 });

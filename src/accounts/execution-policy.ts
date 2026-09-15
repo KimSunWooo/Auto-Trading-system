@@ -1,5 +1,4 @@
 import { nowMs } from "@/src/clock";
-import { brokerDriver } from "@/src/brokers/kis-config";
 import type { BrokerFill, IBroker } from "@/src/brokers/IBroker";
 import { getMarketClock } from "@/lib/market-hours";
 import { ceilToTick, clampDailyLimit, floorToTick } from "@/lib/tick-size";
@@ -9,10 +8,10 @@ import type { AppState, Side } from "@/lib/types";
  * Order-entry interceptor + protected execution.
  *
  * - New tickets only during KRX continuous session 09:00–15:20 KST.
- *   Opening/closing auction (동시호가) and after-hours (시간외) are blocked.
- * - Stop-loss / kill-switch sells use a ±3% limit band and slice size, never a
- *   naked market order (VI / thin book slippage).
- * - High-vol names (e.g. 247540) cannot go out as market; they rewrite to the band.
+ *   Opening/closing auction (동시호가), weekends, holidays, and after-hours
+ *   are blocked. ignoreMarketHours never bypasses this rail.
+ * - Every market intent is rewritten to a ±3% limit band (VI / thin-book shock).
+ * - Stop-loss / kill-switch sells use the same band and slice size.
  */
 export const EXECUTION_POLICY = {
   bandPct: 0.03,
@@ -22,7 +21,7 @@ export const EXECUTION_POLICY = {
   regularCloseHhmm: 1520,
 } as const;
 
-/** KOSDAQ high-vol names in this universe — market orders are rewritten to the band. */
+/** Historical high-vol names. All tickers now rewrite market → band; kept for tests/docs. */
 export const NO_MARKET_TICKERS = new Set(["247540", "086520", "196170"]);
 
 export type BandSlice = {
@@ -31,19 +30,17 @@ export type BandSlice = {
   ordDvsn: "limit";
 };
 
-export function forbidsMarketOrder(ticker: string): boolean {
-  return NO_MARKET_TICKERS.has(ticker.trim());
+export function forbidsMarketOrder(_ticker?: string): boolean {
+  return true;
 }
 
 export function sessionBlockReason(
-  state: Pick<AppState, "settings">,
+  _state?: Pick<AppState, "settings">,
   now = nowMs(),
-  opts: { forceRegularSession?: boolean } = {},
+  _opts: { forceRegularSession?: boolean } = {},
 ): string | null {
   const clock = getMarketClock(new Date(now));
   if (clock.open) return null;
-  const strict = opts.forceRegularSession || brokerDriver() === "kis";
-  if (!strict && state.settings.ignoreMarketHours) return null;
   return `정규장(09:00~15:20) 외에는 신규 주문을 낼 수 없습니다. 현재 세션: ${clock.sessionLabel}.`;
 }
 
@@ -87,15 +84,13 @@ export function resolveMarketIntent(
   side: Side,
   last: number,
   prevClose = last,
-): { ordDvsn: "market" | "limit"; price: number; converted: boolean; reason?: string } {
-  if (!forbidsMarketOrder(ticker)) {
-    return { ordDvsn: "market", price: last, converted: false };
-  }
+): { ordDvsn: "limit"; price: number; converted: boolean; reason: string } {
+  const pct = Math.round(EXECUTION_POLICY.bandPct * 100);
   return {
     ordDvsn: "limit",
     price: bandLimitPrice(side, last, prevClose),
     converted: true,
-    reason: `${ticker} 는 고변동 종목이라 시장가 주문을 받지 않습니다. 지정가 밴드(±${Math.round(EXECUTION_POLICY.bandPct * 100)}%)로 전환합니다.`,
+    reason: `${ticker} 시장가 충격을 막기 위해 현재가 ±${pct}% 지정가로 전환합니다.`,
   };
 }
 
