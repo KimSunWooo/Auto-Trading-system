@@ -12,6 +12,7 @@ import { findStock } from "@/lib/universe";
 import type { Order, OrderSource } from "@/lib/types";
 import { checkHardLimits } from "@/src/risk/limits";
 import { openCircuit, tradingBlocked } from "@/src/risk/circuit";
+import { RiskManager } from "@/src/risk/RiskManager";
 
 export type OrderOpts = {
   source?: OrderSource;
@@ -60,6 +61,13 @@ export class OrderManager {
         price,
       });
       if (hard) return { ok: false, reason: hard };
+      const product = RiskManager.checkBuy(this.box.current, {
+        side: "buy",
+        ticker,
+        qty,
+        price,
+      });
+      if (product) return { ok: false, reason: product };
       const working = this.box.current.orders.find(
         (order) =>
           !order.parentOrderId &&

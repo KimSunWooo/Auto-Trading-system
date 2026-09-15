@@ -1,3 +1,4 @@
+import { nowIso } from "@/src/clock";
 import type { AccountBucket } from "@/src/accounts/AccountBucket";
 import type { IBroker } from "@/src/brokers/IBroker";
 import type { IStrategy } from "@/src/strategies/IStrategy";
@@ -34,7 +35,7 @@ export class RiskLevel5Strategy implements IStrategy {
       const sent = fill.ok || fill.status === "pending" || fill.status === "unknown";
       return {
         ...bucket,
-        lastRunAt: new Date().toISOString(),
+        lastRunAt: nowIso(),
         lastMessage: fill.ok
           ? `골든크로스 매수 ${fill.qty}주`
           : fill.status === "pending"
@@ -52,7 +53,7 @@ export class RiskLevel5Strategy implements IStrategy {
       const fill = await broker.sellMarket(params.ticker, held.qty);
       return {
         ...bucket,
-        lastRunAt: new Date().toISOString(),
+        lastRunAt: nowIso(),
         lastMessage: fill.ok ? `데드크로스 전량 매도 ${fill.qty}주` : fill.reason ?? "매도 실패",
         meta: { ...bucket.meta, regime: fill.ok ? "flat" : regime },
       };

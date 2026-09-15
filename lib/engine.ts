@@ -3,17 +3,16 @@ import type { AppState, AutoCondition, DcaPlan, Quote } from "./types";
 import { UNIVERSE } from "./universe";
 import { getMarketClock } from "./market-hours";
 import { canFillLimit } from "@/src/accounts/fills";
-import {
-  cashFromAllocations,
-  DEFAULT_ALLOCATIONS,
-  TOTAL_DEPOSIT,
-} from "@/src/accounts/defaults";
+import { cashFromAllocations, DEFAULT_ALLOCATIONS, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
+import { portfolioValue } from "@/src/accounts/portfolio";
 import type { StateBox } from "@/src/accounts/StateBox";
 import { createBroker, brokerDriver } from "@/src/brokers/index";
 import type { IBroker } from "@/src/brokers/IBroker";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 import { emptyCircuit, tradingBlocked } from "@/src/risk/circuit";
-import { HARD_LIMITS } from "@/src/risk/limits";
+import { HARD_LIMITS, seoulDay } from "@/src/risk/limits";
+import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
+import { RiskManager } from "@/src/risk/RiskManager";
 import { expireStaleInFlight, settleOpenOrders } from "@/src/risk/reconcile";
 import { syncKisBalance } from "@/src/risk/balance-sync";
 import { getSharedKisClient } from "@/src/brokers/kis-client";
@@ -55,6 +54,9 @@ export function createInitialState(): AppState {
       ignoreMarketHours: true,
       startingCash: TOTAL_DEPOSIT,
       broker: brokerDriver(),
+      autoTrading: true,
+      onboardingComplete: false,
+      risk: { ...DEFAULT_PRODUCT_RISK },
     },
     totalDeposit: TOTAL_DEPOSIT,
     allocations,
@@ -65,6 +67,8 @@ export function createInitialState(): AppState {
     dcaPlans: [],
     orders: [],
     circuit: emptyCircuit(),
+    dayStart: { date: seoulDay(), equity: TOTAL_DEPOSIT },
+    equityHistory: [TOTAL_DEPOSIT],
   };
 }
 
@@ -312,31 +316,40 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
   }
 
   const kisLiveSession = root.driver !== "kis" || clock.open;
+  const sessionOk = (box.current.settings.ignoreMarketHours || clock.open) && kisLiveSession;
+  box.current = RiskManager.rollDay(box.current, now);
+
+  if (sessionOk && box.current.settings.autoTrading) {
+    await new RiskManager(box).enforceStopLoss();
+    box.current = RiskManager.checkDailyLoss(box.current);
+  }
+
   const tradingAllowed =
-    (box.current.settings.ignoreMarketHours || clock.open) &&
-    kisLiveSession &&
-    !tradingBlocked(box.current);
+    sessionOk && box.current.settings.autoTrading && !tradingBlocked(box.current);
   if (tradingAllowed) {
     box.current = await evaluateConditions(box.current, clock.iso);
     box.current = await evaluateDca(box.current, clock.iso);
     box.current = await QuantEngine.run(box.current);
-  } else if (tradingBlocked(box.current)) {
-    box.current = {
-      ...box.current,
-      allocations: box.current.allocations.map((row) => ({
-        ...row,
-        lastMessage: tradingBlocked(box.current) ?? row.lastMessage,
-      })),
-    };
+  } else if (tradingBlocked(box.current) || !box.current.settings.autoTrading) {
+    const message = !box.current.settings.autoTrading
+      ? "자동매매가 꺼져 있습니다."
+      : (tradingBlocked(box.current) ?? undefined);
+    if (message) {
+      box.current = {
+        ...box.current,
+        allocations: box.current.allocations.map((row) => ({
+          ...row,
+          lastMessage: message,
+        })),
+      };
+    }
   }
 
-  return box.current;
+  const equity = portfolioValue(box.current);
+  return {
+    ...box.current,
+    equityHistory: [...(box.current.equityHistory ?? []), equity].slice(-120),
+  };
 }
 
-export function portfolioValue(state: AppState): number {
-  const holdings = state.positions.reduce((sum, p) => {
-    const quote = state.quotes[p.code];
-    return sum + p.qty * (quote?.price ?? p.avgPrice);
-  }, 0);
-  return state.cash + holdings;
-}
+export { portfolioValue };

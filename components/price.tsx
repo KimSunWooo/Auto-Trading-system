@@ -42,13 +42,23 @@ export function Change({
   );
 }
 
-export function Sparkline({ values }: { values: number[] }) {
+export function Sparkline({
+  values,
+  width = 96,
+  height = 32,
+  className,
+}: {
+  values: number[];
+  width?: number;
+  height?: number;
+  className?: string;
+}) {
   if (values.length < 2) return null;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max - min || 1;
-  const w = 96;
-  const h = 32;
+  const w = width;
+  const h = height;
   const pts = values
     .map((v, i) => {
       const x = (i / (values.length - 1)) * w;
@@ -58,7 +68,13 @@ export function Sparkline({ values }: { values: number[] }) {
     .join(" ");
   const up = values[values.length - 1] >= values[0];
   return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden className="overflow-visible">
+    <svg
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      aria-hidden
+      className={cn("overflow-visible", className)}
+    >
       <polyline
         fill="none"
         stroke={up ? "var(--price-up)" : "var(--price-down)"}

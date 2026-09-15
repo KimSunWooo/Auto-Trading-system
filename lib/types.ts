@@ -1,4 +1,5 @@
 import type { StrategyConfigFile } from "@/src/strategies/params";
+import type { ProductRisk } from "@/src/risk/product";
 
 export type Market = "KOSPI" | "KOSDAQ";
 export type Side = "buy" | "sell";
@@ -105,6 +106,7 @@ export type Order = {
   tax: number;
   net: number;
   status: OrderStatus;
+  realizedPnl?: number;
   reason?: string;
   intentId?: string;
   brokerOrderNo?: string;
@@ -115,12 +117,20 @@ export type Order = {
   parentOrderId?: string;
 };
 
+export type CircuitKind = "unknown" | "daily-loss" | "kill" | "balance" | "hard";
+
 export type CircuitState = {
   halted: boolean;
+  kind?: CircuitKind;
   reason?: string;
   unknownCount: number;
   openedAt?: string;
   lastError?: string;
+};
+
+export type DayStartMark = {
+  date: string;
+  equity: number;
 };
 
 export type KisHolding = {
@@ -144,6 +154,9 @@ export type Settings = {
   ignoreMarketHours: boolean;
   startingCash: number;
   broker: BrokerDriver;
+  autoTrading: boolean;
+  onboardingComplete: boolean;
+  risk: ProductRisk;
 };
 
 export type AppState = {
@@ -161,6 +174,8 @@ export type AppState = {
   dcaPlans: DcaPlan[];
   orders: Order[];
   circuit: CircuitState;
+  dayStart: DayStartMark;
+  equityHistory: number[];
   kisBalance?: KisBalanceSnapshot;
 };
 

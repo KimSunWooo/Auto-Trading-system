@@ -109,5 +109,7 @@ export async function syncKisBalance(
   box.current = openCircuit(
     box.current,
     `KIS 실잔고와 로컬 장부가 어긋나 주문을 중지했습니다. ${snapshot.message}`,
+    undefined,
+    "balance",
   );
 }

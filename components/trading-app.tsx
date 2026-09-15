@@ -27,6 +27,7 @@ import { StrategiesPanel } from "@/components/strategies-panel";
 import { useTrading, api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
+import { OnboardingWizard } from "@/components/onboarding-wizard";
 import { toast } from "sonner";
 
 const TABS = [
@@ -42,6 +43,17 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
   const { state, setState, error, reload } = useTrading(initialState);
   const [tab, setTab] = useState<string>("overview");
   const [menu, setMenu] = useState(false);
+  const [guide, setGuide] = useState(!initialState.settings.onboardingComplete);
+
+  async function killSwitch() {
+    if (!window.confirm("모든 자동매매를 즉시 멈추고 대기 주문을 취소할까요?")) return;
+    try {
+      setState(await api<PublicState>("/api/risk/kill", { method: "POST" }));
+      toast.success("긴급 정지를 실행했습니다.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "긴급 정지에 실패했습니다.");
+    }
+  }
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -73,6 +85,12 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <Button variant="destructive" size="sm" onClick={() => void killSwitch()}>
+              긴급 정지
+            </Button>
+            <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => setGuide(true)}>
+              시작 가이드
+            </Button>
             <MarketBadge state={state} />
             <div className="hidden text-right sm:block">
               <div className="text-[11px] text-muted-foreground">예수금</div>
@@ -136,6 +154,26 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
                 {item.label}
               </Button>
             ))}
+            <Button
+              variant="outline"
+              className="justify-start"
+              onClick={() => {
+                setGuide(true);
+                setMenu(false);
+              }}
+            >
+              시작 가이드
+            </Button>
+            <Button
+              variant="destructive"
+              className="justify-start"
+              onClick={() => {
+                setMenu(false);
+                void killSwitch();
+              }}
+            >
+              긴급 정지
+            </Button>
           </nav>
         </SheetContent>
       </Sheet>
@@ -149,6 +187,13 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             </Button>
           </div>
         ) : null}
+        {guide ? (
+          <OnboardingWizard
+            state={state}
+            onState={setState}
+            onClose={() => setGuide(false)}
+          />
+        ) : (
         <Tabs value={tab} onValueChange={(value) => setTab(String(value ?? "overview"))}>
           <TabsList className="mb-4 hidden w-full max-w-3xl md:flex">
             {TABS.map((item) => (
@@ -177,6 +222,7 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             <GuidePanel state={state} onState={setState} />
           </TabsContent>
         </Tabs>
+        )}
       </main>
     </div>
   );

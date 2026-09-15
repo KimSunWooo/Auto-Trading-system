@@ -32,8 +32,11 @@ src/
   risk/
     limits.ts           # 주문·일일·비중 하드 캡
     circuit.ts          # 서킷 브레이커
+    RiskManager.ts      # 일일손실·20% 비중·손절·긴급정지
     reconcile.ts        # 체결내역 반영 · 잔량 취소
     balance-sync.ts     # inquire-balance vs 로컬 버킷
+  backtest/
+    BacktestRunner.ts   # 일봉 재생 · 수익률/MDD/승률
   strategies/
     params.ts               # 기본값 · 병합 · 검증 (UI에서도 import)
     config.ts               # data/strategy-config.json 로드/저장 · 버킷 meta 덮어쓰기
@@ -140,11 +143,13 @@ KIS_ACCOUNT_NO=12345678-01
 
 ## 화면
 
-- **대시보드** — 관심종목·잔고. KIS 모드에서는 실제 현재가와 증권사 실잔고를 갱신합니다.
-- **퀀트** — 버킷 on/off, 전략 파라미터 폼(`GET/PUT/PATCH /api/strategy-config` → `data/strategy-config.json`), 브로커 상태
+- **대시보드** — 총자산·평가손익·당일 매매·승률, 안정형/중립형/공격형 카드, 자동매매 토글
+- **퀀트** — 버킷 on/off, 전략 파라미터, 백테스트, 브로커 상태
 - **조건매수 / 적립매수** — 조건이 맞으면 같은 브로커로 주문
 - **체결내역** — 로컬에 기록된 체결(KIS 주문번호 포함)
 - **안내** — 모의/실전 설정과 계좌 초기화(로컬 장부만 지웁니다)
+- 상단 **긴급 정지** — 자동매매·조건·적립을 즉시 끄고 로컬 대기 주문을 취소
+- 첫 방문 **시작 가이드** — 증권사 → 투자금 → 전략 → 백테스트 → 시작
 
 ## 전략 파라미터 API
 
@@ -165,6 +170,17 @@ curl -X PATCH http://127.0.0.1:43147/api/strategy-config \
 ```
 
 검증 실패(이평 역전, 주기 1초 미만, 빈 유니버스 등)는 `400` 과 `{ error }` 입니다.
+
+상품 리스크·백테스트·온보딩:
+
+| 메서드 | 경로 | 설명 |
+| --- | --- | --- |
+| `POST` | `/api/backtest` | `{ strategies, totalDeposit, years }` → 수익률·MDD·승률·자산곡선 |
+| `POST` | `/api/onboarding` | 예산·전략 배분 저장, 선택 시 자동매매 시작 |
+| `POST` | `/api/risk/kill` | 긴급 정지 |
+| `PATCH` | `/api/settings` | `autoTrading`, `onboardingComplete`, `ignoreMarketHours` |
+
+방향은 `docs/PRODUCT_PLAN.md` 를 따릅니다. Broker·Account·Strategy·QuantEngine 경계는 유지합니다.
 
 ## 주의
 

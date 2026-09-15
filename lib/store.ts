@@ -4,6 +4,8 @@ import { createInitialState, ensureUniverseQuotes, portfolioValue, tickState } f
 import { getMarketClock } from "./market-hours";
 import { cashFromAllocations, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
 import { emptyCircuit } from "@/src/risk/circuit";
+import { seoulDay } from "@/src/risk/limits";
+import { mergeProductRisk } from "@/src/risk/product";
 import { brokerDriver, getBrokerPublicStatus } from "@/src/brokers/kis-config";
 import { getStrategyConfig } from "@/src/strategies/config";
 import type { Allocation, AppState, Position, PublicState } from "./types";
@@ -49,14 +51,16 @@ function migrateState(parsed: AppState): AppState {
   }));
 
   const totalDeposit = parsed.totalDeposit ?? parsed.settings?.startingCash ?? TOTAL_DEPOSIT;
-
-  return ensureUniverseQuotes({
+  const merged = ensureUniverseQuotes({
     ...createInitialState(),
     ...parsed,
     settings: {
       ignoreMarketHours: parsed.settings?.ignoreMarketHours ?? true,
       startingCash: parsed.settings?.startingCash ?? totalDeposit,
       broker: brokerDriver(),
+      autoTrading: parsed.settings?.autoTrading ?? true,
+      onboardingComplete: parsed.settings?.onboardingComplete ?? false,
+      risk: mergeProductRisk(parsed.settings?.risk),
     },
     totalDeposit,
     allocations,
@@ -66,7 +70,13 @@ function migrateState(parsed: AppState): AppState {
     lastEngineAt: parsed.lastEngineAt,
     lastBalanceSyncAt: parsed.lastBalanceSyncAt,
     kisBalance: parsed.kisBalance,
+    dayStart: parsed.dayStart ?? { date: seoulDay(), equity: totalDeposit },
+    equityHistory: parsed.equityHistory ?? [totalDeposit],
   });
+  if (!merged.dayStart?.equity) {
+    merged.dayStart = { date: seoulDay(), equity: portfolioValue(merged) };
+  }
+  return merged;
 }
 
 async function loadState(): Promise<AppState> {

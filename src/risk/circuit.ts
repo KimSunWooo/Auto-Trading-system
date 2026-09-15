@@ -1,4 +1,4 @@
-import type { AppState, CircuitState, Order } from "@/lib/types";
+import type { AppState, CircuitKind, CircuitState, Order } from "@/lib/types";
 
 export function emptyCircuit(): CircuitState {
   return { halted: false, unknownCount: 0 };
@@ -28,12 +28,18 @@ export function tradingBlocked(state: AppState): string | null {
   return null;
 }
 
-export function openCircuit(state: AppState, reason: string, order?: Order): AppState {
+export function openCircuit(
+  state: AppState,
+  reason: string,
+  order?: Order,
+  kind: CircuitKind = order?.status === "unknown" ? "unknown" : "hard",
+): AppState {
   const unknownCount = (state.circuit?.unknownCount ?? 0) + (order?.status === "unknown" ? 1 : 0);
   return {
     ...state,
     circuit: {
       halted: true,
+      kind,
       reason,
       unknownCount: Math.max(unknownCount, 1),
       openedAt: state.circuit?.openedAt ?? new Date().toISOString(),
@@ -55,6 +61,7 @@ export function resetCircuit(state: AppState): { state: AppState; error?: string
       ...state,
       circuit: {
         halted: false,
+        kind: undefined,
         unknownCount: state.circuit?.unknownCount ?? 0,
         lastError: undefined,
         reason: undefined,

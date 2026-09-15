@@ -1,3 +1,4 @@
+import { nowIso, nowMs } from "@/src/clock";
 import type { AccountBucket } from "@/src/accounts/AccountBucket";
 import type { IBroker } from "@/src/brokers/IBroker";
 import type { IStrategy } from "@/src/strategies/IStrategy";
@@ -12,8 +13,9 @@ export class RiskLevel10Strategy implements IStrategy {
 
   async execute(broker: IBroker, bucket: AccountBucket): Promise<AccountBucket> {
     const params = resolveLevel10(bucket.meta);
+    const now = nowMs();
     const lastFire = Number(bucket.meta.firedAt ?? 0);
-    if (Date.now() - lastFire < params.cooldownMs) {
+    if (now - lastFire < params.cooldownMs) {
       return { ...bucket, lastMessage: "추격 매수 쿨다운" };
     }
 
@@ -39,7 +41,7 @@ export class RiskLevel10Strategy implements IStrategy {
     const sent = fill.ok || fill.status === "unknown" || fill.status === "pending";
     return {
       ...bucket,
-      lastRunAt: new Date().toISOString(),
+      lastRunAt: nowIso(),
       lastMessage: fill.ok
         ? `${best.ticker} 변동성 돌파 추격 ${fill.qty}주 (${(best.score * 100).toFixed(2)}%)`
         : fill.status === "pending"
@@ -47,7 +49,7 @@ export class RiskLevel10Strategy implements IStrategy {
           : fill.reason ?? "추격 실패",
       meta: {
         ...bucket.meta,
-        firedAt: sent ? Date.now() : lastFire,
+        firedAt: sent ? now : lastFire,
         lastTicker: best.ticker,
       },
     };

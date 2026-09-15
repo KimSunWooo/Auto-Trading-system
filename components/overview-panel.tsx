@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -16,7 +17,10 @@ import {
 } from "@/components/ui/table";
 import { Change, Price, Sparkline } from "@/components/price";
 import { api } from "@/hooks/use-trading";
-import { formatSeoul, formatWon } from "@/lib/format";
+import { formatPct, formatSeoul, formatWon } from "@/lib/format";
+import { dashboardStats, strategyCardModel } from "@/lib/dashboard";
+import { PLAYBOOKS } from "@/lib/playbooks";
+import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
 import type { PublicState, Quote } from "@/lib/types";
 
 function holdingRows(state: PublicState) {
@@ -44,55 +48,98 @@ export function OverviewPanel({
   state: PublicState;
   onState: (next: PublicState) => void;
 }) {
+  const stats = dashboardStats(state);
+  const pnl = stats.pnl;
   const quotes = useMemo(
-    () => Object.values(state.quotes).sort((a, b) => a.market.localeCompare(b.market) || a.name.localeCompare(b.name, "ko")),
+    () =>
+      Object.values(state.quotes).sort(
+        (a, b) => a.market.localeCompare(b.market) || a.name.localeCompare(b.name, "ko"),
+      ),
     [state.quotes],
   );
-
-  const pnl = state.equity - state.settings.startingCash;
-  const holdings = state.positions.reduce((sum, p) => {
-    const q = state.quotes[p.code];
-    return sum + p.qty * (q?.price ?? p.avgPrice);
-  }, 0);
   const kisHoldingRows = state.kisBalance ? holdingRows(state) : [];
+  const risk = state.settings.risk ?? DEFAULT_PRODUCT_RISK;
+
+  async function setAutoTrading(autoTrading: boolean) {
+    try {
+      onState(
+        await api<PublicState>("/api/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ autoTrading }),
+        }),
+      );
+      toast.success(autoTrading ? "자동매매를 켰습니다." : "자동매매를 멈췄습니다.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "자동매매를 바꾸지 못했습니다.");
+    }
+  }
 
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="평가금액" value={formatWon(state.equity)} hint="현금 + 보유주식" />
-        <Stat label="예수금" value={formatWon(state.cash)} hint="버킷 가용 합계" />
-        <Stat label="보유주식" value={formatWon(holdings)} hint={`${state.positions.length}종목`} />
+        <Stat label="총 자산" value={formatWon(stats.equity)} hint="현금 + 보유주식 평가" />
         <Stat
-          label="누적손익"
+          label="평가손익"
           value={`${pnl >= 0 ? "+" : ""}${formatWon(pnl)}`}
-          hint="시작 1,000만원 대비"
+          hint={`시작 대비 ${formatPct(stats.pnlPct)}`}
           tone={pnl}
+        />
+        <Stat label="당일 매매" value={`${stats.tradesToday}건`} hint="오늘 체결된 주문" />
+        <Stat
+          label="당일 승률"
+          value={stats.winRatePct == null ? "—" : `${stats.winRatePct.toFixed(0)}%`}
+          hint={stats.winRatePct == null ? "청산된 매도가 없습니다" : "당일 매도 기준"}
         />
       </div>
 
-      {state.allocations.length > 0 ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          {state.allocations.map((row) => (
-            <Card key={row.strategy} size="sm">
+      {(state.equityHistory?.length ?? 0) > 2 ? (
+        <Card size="sm">
+          <CardHeader>
+            <CardDescription>최근 평가금액</CardDescription>
+            <Sparkline values={state.equityHistory} width={720} height={56} className="w-full" />
+          </CardHeader>
+        </Card>
+      ) : null}
+
+      <div className="grid gap-3 md:grid-cols-3">
+        {PLAYBOOKS.map((book) => {
+          const card = strategyCardModel(state, book.id);
+          return (
+            <Card key={book.id} size="sm">
               <CardHeader>
-                <CardDescription>
-                  {row.strategy} · 리스크 {row.riskLevel}
-                  {row.enabled ? "" : " · 중지"}
-                </CardDescription>
-                <CardTitle className="text-base tabular-nums">
-                  {formatWon(row.balance)}
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
-                    / {formatWon(row.budget)}
-                  </span>
-                </CardTitle>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <CardDescription>
+                      {book.label} · {book.tone}
+                      {card.allocated ? (card.enabled ? "" : " · 중지") : " · 미배정"}
+                    </CardDescription>
+                    <CardTitle className="text-base">{book.summary}</CardTitle>
+                  </div>
+                  <Badge variant={card.enabled ? "default" : "secondary"}>
+                    {card.enabled ? "가동" : "대기"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">{book.detail}</p>
+                <div className="grid grid-cols-2 gap-2 pt-1 text-sm">
+                  <div>
+                    <div className="text-[11px] text-muted-foreground">할당</div>
+                    <div className="tabular-nums">{formatWon(card.budget)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-muted-foreground">수익률</div>
+                    <div className={`tabular-nums ${card.returnPct >= 0 ? "text-up" : "text-down"}`}>
+                      {formatPct(card.returnPct)}
+                    </div>
+                  </div>
+                </div>
                 <p className="truncate text-xs text-muted-foreground">
-                  {row.lastMessage ?? "퀀트 탭에서 전략을 켜 두세요."}
+                  {card.lastMessage ?? "시작 가이드에서 이 전략을 배정하세요."}
                 </p>
               </CardHeader>
             </Card>
-          ))}
-        </div>
-      ) : null}
+          );
+        })}
+      </div>
 
       {state.kisBalance ? (
         <Card>
@@ -148,6 +195,28 @@ export function OverviewPanel({
           </CardContent>
         </Card>
       ) : null}
+
+      <Card className="border-primary/30">
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle>자동매매</CardTitle>
+            <CardDescription>
+              일일 손실 {Math.round(risk.dailyLossPct * 100)}% · 종목 비중{" "}
+              {Math.round(risk.maxTickerWeight * 100)}% · 손절 {Math.round(risk.stopLossPct * 100)}%.
+              긴급 정지는 상단 버튼을 쓰세요.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium">
+              {state.settings.autoTrading ? "가동 중" : "정지"}
+            </span>
+            <Switch
+              checked={state.settings.autoTrading}
+              onCheckedChange={(checked) => void setAutoTrading(Boolean(checked))}
+            />
+          </div>
+        </CardHeader>
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <Watchlist

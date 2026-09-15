@@ -12,11 +12,15 @@ import { api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
 import type { Allocation, PublicState } from "@/lib/types";
 import { DEFAULT_STRATEGY_CONFIG, type StrategyConfigFile } from "@/src/strategies/params";
+import { playbookByRisk } from "@/lib/playbooks";
+import { BacktestPreview } from "@/components/backtest-preview";
+import type { PlaybookId } from "@/lib/playbooks";
 
 function playbook(level: number, config: StrategyConfigFile): string {
-  if (level <= 3) return `${config.Level1_Stable.ticker} 정액 적립`;
-  if (level <= 7) return `${config.Level5_Swing.ticker} 이평 스윙`;
-  return "변동성 돌파 추격";
+  const book = playbookByRisk(level);
+  if (book.id === "Level1_Stable") return `${book.label} · ${config.Level1_Stable.ticker} 정액 적립`;
+  if (book.id === "Level5_Swing") return `${book.label} · ${config.Level5_Swing.ticker} 이평 스윙`;
+  return `${book.label} · 변동성 돌파 추격`;
 }
 
 export function StrategiesPanel({
@@ -162,6 +166,26 @@ export function StrategiesPanel({
         config={state.strategyConfig ?? DEFAULT_STRATEGY_CONFIG}
         onState={onState}
       />
+      <Card>
+        <CardHeader>
+          <CardTitle>백테스트</CardTitle>
+          <CardDescription>
+            켜 둔 전략을 과거 1년 일봉에 재생합니다. 실전 수익이 아닙니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <BacktestPreview
+            strategies={
+              (state.allocations.filter((row) => row.enabled).map((row) => row.strategy) as PlaybookId[])
+                .length
+                ? (state.allocations.filter((row) => row.enabled).map((row) => row.strategy) as PlaybookId[])
+                : ["Level1_Stable"]
+            }
+            totalDeposit={state.totalDeposit}
+            years={1}
+          />
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>브로커</CardTitle>

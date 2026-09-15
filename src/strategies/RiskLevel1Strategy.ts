@@ -1,3 +1,4 @@
+import { nowMs } from "@/src/clock";
 import type { AccountBucket } from "@/src/accounts/AccountBucket";
 import type { IBroker } from "@/src/brokers/IBroker";
 import type { IStrategy } from "@/src/strategies/IStrategy";
@@ -12,7 +13,7 @@ export class RiskLevel1Strategy implements IStrategy {
 
   async execute(broker: IBroker, bucket: AccountBucket): Promise<AccountBucket> {
     const params = resolveLevel1(bucket.meta);
-    const now = Date.now();
+    const now = nowMs();
     const last = bucket.lastRunAt ? new Date(bucket.lastRunAt).getTime() : 0;
     if (now - last < params.intervalMs) {
       return { ...bucket, lastMessage: "적립 주기 대기 중" };

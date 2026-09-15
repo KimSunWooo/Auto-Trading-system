@@ -1,3 +1,4 @@
+import { nowIso } from "@/src/clock";
 import { cashFromAllocations } from "@/src/accounts/defaults";
 import type { AppState, Order, OrderSource, Position, Side } from "@/lib/types";
 
@@ -40,7 +41,7 @@ export function applyFill(
   const fees = feeBreakdown(draft.side, amount);
   const order: Order = {
     id: draft.id ?? crypto.randomUUID(),
-    createdAt: draft.createdAt ?? new Date().toISOString(),
+    createdAt: draft.createdAt ?? nowIso(),
     source: draft.source,
     sourceId: draft.sourceId,
     strategy: draft.strategy,
@@ -132,7 +133,10 @@ export function applyFill(
     a.strategy === creditTo ? { ...a, balance: a.balance + fees.net } : a,
   );
   const remaining = positions.filter((p) => p.qty > 0);
-  const filled: Order = { ...order, strategy: creditTo };
+  const realizedPnl = Math.round(
+    (draft.price - existing.avgPrice) * draft.qty - fees.commission - fees.tax,
+  );
+  const filled: Order = { ...order, strategy: creditTo, realizedPnl };
   return {
     state: {
       ...state,
@@ -180,7 +184,7 @@ export function recordPending(
   const fees = feeBreakdown(draft.side, amount);
   const order: Order = {
     id: draft.id ?? crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso(),
     source: draft.source,
     sourceId: draft.sourceId,
     strategy: draft.strategy,
@@ -234,7 +238,7 @@ export function confirmPendingFill(
   if (!pending) {
     const rejected: Order = {
       id: orderId,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso(),
       source: "strategy",
       code: "",
       name: "",
@@ -288,7 +292,7 @@ export function bookReportedFill(
       state,
       parent: {
         id: parentId,
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso(),
         source: "strategy",
         code: "",
         name: "",
