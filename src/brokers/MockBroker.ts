@@ -4,6 +4,10 @@ import type { BrokerFill, BrokerQuote, IBroker } from "@/src/brokers/IBroker";
 import { canFillLimit } from "@/src/accounts/fills";
 import { findStock } from "@/lib/universe";
 import type { OrderSource } from "@/lib/types";
+import {
+  resolveMarketIntent,
+  sellBandSlices,
+} from "@/src/accounts/execution-policy";
 
 /**
  * Local paper broker. Quotes come from the simulated book; fills go through
@@ -57,10 +61,15 @@ export class MockBroker implements IBroker {
 
   async buyMarket(ticker: string, amount: number): Promise<BrokerFill> {
     const price = await this.getCurrentPrice(ticker);
+    const intent = resolveMarketIntent(ticker, "buy", price);
+    if (intent.converted) {
+      return this.buyLimit(ticker, intent.price, amount);
+    }
     const qty = Math.floor(amount / price);
     return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price, {
       source: this.source,
       sourceId: this.sourceId,
+      ordDvsn: "market",
     });
   }
 
@@ -83,14 +92,42 @@ export class MockBroker implements IBroker {
     return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price, {
       source: this.source,
       sourceId: this.sourceId,
+      ordDvsn: "limit",
     });
   }
 
   async sellMarket(ticker: string, qty: number): Promise<BrokerFill> {
     const price = await this.getCurrentPrice(ticker);
+    const intent = resolveMarketIntent(ticker, "sell", price);
+    if (intent.converted) {
+      return sellBandSlices(this, ticker, qty, price);
+    }
     return new OrderManager(this.box).sell(this.strategyKey, ticker, qty, price, {
       source: this.source,
       sourceId: this.sourceId,
+      ordDvsn: "market",
+    });
+  }
+
+  async sellLimit(ticker: string, price: number, qty: number): Promise<BrokerFill> {
+    const last = await this.getCurrentPrice(ticker);
+    if (!canFillLimit("sell", last, price)) {
+      return {
+        ok: false,
+        status: "rejected",
+        ticker,
+        side: "sell",
+        qty: 0,
+        price: last,
+        amount: 0,
+        net: 0,
+        reason: `지정가 ${price.toLocaleString("ko-KR")}원보다 현재가 ${last.toLocaleString("ko-KR")}원이 낮아 미체결입니다.`,
+      };
+    }
+    return new OrderManager(this.box).sell(this.strategyKey, ticker, qty, last, {
+      source: this.source,
+      sourceId: this.sourceId,
+      ordDvsn: "limit",
     });
   }
 }

@@ -71,8 +71,10 @@ export function GuidePanel({
             남긴 뒤 서킷을 엽니다. 로컬 0.015% 수수료는 참고용이며, 30초마다 KIS 잔고조회와 버킷·보유수량을
             비교해 어긋나면 주문을 중지합니다. 퀀트 종목·주기·이평·K값은{" "}
             <code className="rounded bg-muted px-1">data/strategy-config.json</code> 과 퀀트 탭에서
-            바꿉니다. 일일 손실 3%·종목 비중 20%·평단 -5% 손절은 상품 리스크입니다. 상단{" "}
-            <strong>긴급 정지</strong>는 미체결을 즉시 취소하고 보유를 시장가 청산한 뒤 KIS 실잔고로 장부를
+            바꿉니다. 일일 손실 3%·종목 비중 20%·평단 -5% 손절은 상품 리스크입니다. 손절과 긴급 정지는
+            시장가 대신 현재가 ±3% 지정가 밴드로 분할 매도합니다. 에코프로비엠(247540) 같은 고변동 종목은
+            시장가 주문을 받지 않고 같은 밴드로 전환합니다. 상단{" "}
+            <strong>긴급 정지</strong>는 미체결을 즉시 취소하고 보유를 지정가 밴드 청산한 뒤 KIS 실잔고로 장부를
             맞춥니다. 시작 가이드에서 전략 백테스트를 볼 수 있습니다. 상단 빨간 띠가 보이면 신규 주문은
             나가지 않습니다.
           </p>
@@ -83,8 +85,8 @@ export function GuidePanel({
         <CardHeader className="border-b">
           <CardTitle>장 운영 설정</CardTitle>
           <CardDescription>
-            로컬 모의는 주말·야간에도 시세를 움직입니다. KIS 실전은 정규장 외 주문이 거절될 수 있으니
-            끄는 것을 권장합니다.
+            로컬 모의는 주말·야간에도 시세를 움직입니다. KIS는 정규장(09:00~15:20) 밖 — 동시호가·시간외 — 신규 주문을
+            원천 차단합니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
@@ -92,7 +94,7 @@ export function GuidePanel({
             <div>
               <Label htmlFor="hours">정규장 외에도 주문</Label>
               <p className="text-xs text-muted-foreground">
-                로컬 모의만 해당. KIS 연결 시에는 정규장 외 주문을 내지 않습니다.
+                로컬 모의만 해당. KIS 연결 시에는 09:00~15:20 밖 주문을 내지 않습니다.
               </p>
             </div>
             <Switch

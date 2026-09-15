@@ -47,7 +47,7 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
 
   async function killSwitch() {
     if (!window.confirm(
-      "긴급 정지를 실행할까요? 신규 매매를 막고, KIS 미체결을 즉시 취소한 뒤 보유 종목을 시장가 전량 매도합니다. 그다음 증권사 실잔고로 로컬 장부를 덮어씁니다.",
+      "긴급 정지를 실행할까요? 신규 매매를 막고, KIS 미체결을 즉시 취소한 뒤 보유 종목을 현재가 -3% 지정가 밴드로 분할 매도합니다. 정규장(09:00~15:20) 밖이면 청산 주문은 나가지 않습니다. 그다음 증권사 실잔고로 로컬 장부를 덮어씁니다.",
     )) return;
     try {
       setState(await api<PublicState>("/api/risk/kill", { method: "POST" }));

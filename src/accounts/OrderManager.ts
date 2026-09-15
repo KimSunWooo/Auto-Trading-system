@@ -13,12 +13,19 @@ import type { Order, OrderSource } from "@/lib/types";
 import { checkHardLimits } from "@/src/risk/limits";
 import { openCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { RiskManager } from "@/src/risk/RiskManager";
+import {
+  bandLimitPrice,
+  forbidsMarketOrder,
+  planBandSlices,
+  sessionBlockReason,
+} from "@/src/accounts/execution-policy";
 
 export type OrderOpts = {
   source?: OrderSource;
   sourceId?: string;
   orderId?: string;
   intentId?: string;
+  ordDvsn?: "market" | "limit";
   /** Kill-switch flatten: skip circuit/unknown gates, still checks qty. */
   liquidation?: boolean;
 };
@@ -30,6 +37,11 @@ export type OrderOpts = {
 export class OrderManager {
   constructor(private readonly box: StateBox) {}
 
+  static sessionBlockReason = sessionBlockReason;
+  static forbidsMarketOrder = forbidsMarketOrder;
+  static bandLimitPrice = bandLimitPrice;
+  static planBandSlices = planBandSlices;
+
   canBuy(
     strategy: string,
     qty: number,
@@ -39,6 +51,8 @@ export class OrderManager {
     if (this.box.current.settings.liquidating || this.box.current.circuit?.kind === "kill") {
       return { ok: false, reason: "긴급 정지로 신규 매수를 막았습니다." };
     }
+    const session = sessionBlockReason(this.box.current);
+    if (session) return { ok: false, reason: session };
     const blocked = tradingBlocked(this.box.current);
     if (blocked) return { ok: false, reason: blocked };
     if (qty < 1) {
@@ -94,6 +108,8 @@ export class OrderManager {
     qty: number,
     opts: Pick<OrderOpts, "liquidation"> = {},
   ): { ok: true } | { ok: false; reason: string } {
+    const session = sessionBlockReason(this.box.current);
+    if (session) return { ok: false, reason: session };
     if (!opts.liquidation) {
       const blocked = tradingBlocked(this.box.current);
       if (blocked) return { ok: false, reason: blocked };
@@ -141,6 +157,7 @@ export class OrderManager {
       side,
       qty,
       price,
+      ordDvsn: opts.ordDvsn,
     });
     this.box.current = started.state;
     return started.order;
@@ -264,6 +281,7 @@ export class OrderManager {
       side: "buy",
       qty,
       price,
+      ordDvsn: opts.ordDvsn,
     });
     this.box.current = applied.state;
     return this.toFill(applied.order);
@@ -291,6 +309,7 @@ export class OrderManager {
       side: "sell",
       qty,
       price,
+      ordDvsn: opts.ordDvsn,
     });
     this.box.current = applied.state;
     return this.toFill(applied.order);

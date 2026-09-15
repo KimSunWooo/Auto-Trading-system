@@ -43,6 +43,30 @@ test("stop-loss triggers at -5% vs average price", () => {
   assert.equal(RiskManager.shouldStopLoss(10_000, 9_600, 0.05), false);
 });
 
+test("stop-loss sells with a -3% limit band in slices, not market", async () => {
+  const state = createInitialState();
+  const quote = state.quotes["005930"]!;
+  quote.price = 70_000;
+  quote.prevClose = 70_000;
+  state.positions = [
+    { code: "005930", name: "삼성전자", qty: 10, avgPrice: 80_000, strategy: "Level1_Stable" },
+  ];
+  state.allocations = state.allocations.map((row) =>
+    row.strategy === "Level1_Stable" ? { ...row, balance: row.balance - 800_000 } : row,
+  );
+  state.cash = state.allocations.reduce((sum, row) => sum + row.balance, 0);
+  const box = { current: state };
+  await new RiskManager(box).enforceStopLoss();
+  const sells = box.current.orders.filter((row) => row.side === "sell");
+  assert.equal(sells.length, 2);
+  assert.ok(sells.every((row) => row.ordDvsn === "limit"));
+  assert.deepEqual(
+    sells.map((row) => row.qty).sort((a, b) => b - a),
+    [7, 3],
+  );
+  assert.equal(box.current.positions.length, 0);
+});
+
 test("kill switch disables buckets and auto trading", () => {
   const state = createInitialState();
   state.orders = [
@@ -69,7 +93,7 @@ test("kill switch disables buckets and auto trading", () => {
   assert.equal(stopped.orders[0]?.status, "cancelled");
 });
 
-test("executeKillSwitch market-sells mock positions then halts", async () => {
+test("executeKillSwitch band-limit sells mock positions then halts", async () => {
   const state = createInitialState();
   state.positions = [
     { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
@@ -87,6 +111,7 @@ test("executeKillSwitch market-sells mock positions then halts", async () => {
   assert.equal(after.killReport?.flattened, 1);
   assert.equal(after.killReport?.overwritten, false);
   assert.ok((after.allocations.find((row) => row.strategy === "Level1_Stable")?.balance ?? 0) > 6_800_000);
+  assert.ok(after.orders.filter((row) => row.side === "sell").every((row) => row.ordDvsn === "limit"));
 });
 
 class KillKis implements KisApi {

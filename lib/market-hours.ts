@@ -1,11 +1,15 @@
 export type MarketClock = {
   now: Date;
   iso: string;
+  /** Continuous regular session only: weekday 09:00 ≤ t < 15:20 KST. */
   open: boolean;
   sessionLabel: string;
   weekday: number;
   hhmm: number;
 };
+
+/** Tuesday 2026-09-15 10:00 Asia/Seoul — deterministic in-session clock for tests. */
+export const SEOUL_REGULAR_SESSION_MS = Date.UTC(2026, 8, 15, 1, 0, 0);
 
 function seoulParts(date: Date) {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -44,24 +48,31 @@ function seoulParts(date: Date) {
   };
 }
 
+export function isRegularSession(now = new Date()): boolean {
+  return getMarketClock(now).open;
+}
+
 export function getMarketClock(now = new Date()): MarketClock {
   const p = seoulParts(now);
   const hhmm = p.hour * 100 + p.minute;
   const weekday = p.weekday;
   const weekend = weekday === 0 || weekday === 6;
-  const inSession = hhmm >= 900 && hhmm < 1530;
-  const open = !weekend && inSession;
+  const regular = !weekend && hhmm >= 900 && hhmm < 1520;
+  const openingAuction = !weekend && hhmm >= 830 && hhmm < 900;
+  const closingAuction = !weekend && hhmm >= 1520 && hhmm < 1530;
+  const afterHours = !weekend && hhmm >= 1530 && hhmm < 1800;
 
   let sessionLabel = "정규장 종료";
   if (weekend) sessionLabel = "주말 휴장";
-  else if (hhmm < 900) sessionLabel = "장 시작 전";
-  else if (inSession) sessionLabel = "정규장";
-  else sessionLabel = "정규장 종료";
+  else if (openingAuction || closingAuction) sessionLabel = "동시호가";
+  else if (regular) sessionLabel = "정규장";
+  else if (afterHours) sessionLabel = "시간외";
+  else if (hhmm < 830) sessionLabel = "장 시작 전";
 
   return {
     now,
     iso: now.toISOString(),
-    open,
+    open: regular,
     sessionLabel,
     weekday,
     hhmm,

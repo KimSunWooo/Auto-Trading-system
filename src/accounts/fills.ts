@@ -178,6 +178,7 @@ export function recordPending(
     qty: number;
     price: number;
     intentId?: string;
+    ordDvsn?: "market" | "limit";
   },
 ): { state: AppState; order: Order } {
   const amount = draft.qty * draft.price;
@@ -202,6 +203,7 @@ export function recordPending(
     reason: "증권사 응답 대기",
     orderedQty: draft.qty,
     filledQty: 0,
+    ordDvsn: draft.ordDvsn,
   };
   return {
     state: {

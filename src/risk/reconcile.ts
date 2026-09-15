@@ -5,6 +5,7 @@ import { sameOdno } from "@/src/brokers/kis-client";
 import { openCircuit } from "@/src/risk/circuit";
 import { isIndeterminateError } from "@/src/risk/errors";
 import { HARD_LIMITS } from "@/src/risk/limits";
+import { nowMs } from "@/src/clock";
 import type { Order } from "@/lib/types";
 
 function openParents(box: StateBox): Order[] {
@@ -95,7 +96,7 @@ function closeRemainder(box: StateBox, order: Order, filled: number, ordered: nu
 export async function settleOpenOrders(
   box: StateBox,
   client: KisApi,
-  now = Date.now(),
+  now = nowMs(),
   opts: { cancelImmediately?: boolean; bookOnly?: boolean } = {},
 ) {
   const open = openParents(box);
@@ -183,7 +184,7 @@ export async function reconcileUnknownOrders(box: StateBox, client: KisApi) {
 }
 
 export function expireStaleInFlight(box: StateBox, maxAgeMs = 15_000) {
-  const now = Date.now();
+  const now = nowMs();
   for (const order of box.current.orders) {
     if (order.status !== "pending" || order.brokerOrderNo) continue;
     if (now - new Date(order.createdAt).getTime() < maxAgeMs) continue;

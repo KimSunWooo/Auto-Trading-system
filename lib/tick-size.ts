@@ -15,6 +15,16 @@ export function roundToTick(price: number): number {
   return Math.max(tick, Math.round(price / tick) * tick);
 }
 
+export function floorToTick(price: number): number {
+  const tick = tickSize(price);
+  return Math.max(tick, Math.floor(price / tick) * tick);
+}
+
+export function ceilToTick(price: number): number {
+  const tick = tickSize(price);
+  return Math.max(tick, Math.ceil(price / tick) * tick);
+}
+
 export function clampDailyLimit(next: number, prevClose: number): number {
   const limit = prevClose * 0.3;
   const lo = roundToTick(prevClose - limit);

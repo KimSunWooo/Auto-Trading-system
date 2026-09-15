@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, before, test } from "node:test";
 import { KisBroker } from "./KisBroker";
 import { MockBroker } from "./MockBroker";
 import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "./kis-client";
@@ -7,6 +7,12 @@ import { padOdno, sameOdno } from "./kis-client";
 import { createInitialState } from "@/lib/engine";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { HARD_LIMITS } from "@/src/risk/limits";
+import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
+import { setNowMs, nowMs, withNow } from "@/src/clock";
+import { bandLimitPrice } from "@/src/accounts/execution-policy";
+
+before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
+after(() => setNowMs(null));
 
 function fakePrice(ticker: string, price = 70_000): KisPrice {
   return {
@@ -244,7 +250,7 @@ test("settleOpenOrders cancels remaining qty after the timeout", async () => {
   const client = new FakeKis();
   await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
-  parent.createdAt = new Date(Date.now() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
+  parent.createdAt = new Date(nowMs() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
   client.fills = [
     {
       orderNo: "0000000123",
@@ -272,7 +278,7 @@ test("settleOpenOrders cancels a still-unfilled ticket with no fills", async () 
   const client = new FakeKis();
   await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
-  parent.createdAt = new Date(Date.now() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
+  parent.createdAt = new Date(nowMs() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
   client.fills = [
     {
       orderNo: "0000000123",
@@ -299,4 +305,39 @@ test("MockBroker getCurrentPrice reads the paper book", async () => {
   const broker = new MockBroker(box, "Level1_Stable");
   const price = await broker.getCurrentPrice("005930");
   assert.ok(price > 0);
+});
+
+test("KisBroker converts 247540 market buy to a limit band", async () => {
+  const box = { current: createInitialState() };
+  const client = new FakeKis();
+  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("247540", 140_000);
+  assert.equal(fill.status, "pending");
+  assert.equal(client.orders[0]?.ordDvsn, "limit");
+  assert.equal(client.orders[0]?.price, bandLimitPrice("buy", 70_000));
+  assert.equal(box.current.orders[0]?.ordDvsn, "limit");
+});
+
+test("KisBroker rejects a new order during closing auction", async () => {
+  await withNow(Date.UTC(2026, 8, 15, 6, 20, 0), async () => {
+    const box = { current: createInitialState() };
+    const client = new FakeKis();
+    const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+    assert.equal(fill.ok, false);
+    assert.match(fill.reason ?? "", /09:00~15:20|동시호가/);
+    assert.equal(client.orders.length, 0);
+  });
+});
+
+test("KisBroker sellLimit sends a limit cash order", async () => {
+  const box = { current: createInitialState() };
+  box.current.positions = [
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
+  ];
+  const client = new FakeKis();
+  const limit = bandLimitPrice("sell", 70_000);
+  const fill = await new KisBroker(box, client, "Level1_Stable").sellLimit("005930", limit, 2);
+  assert.equal(fill.status, "pending");
+  assert.equal(client.orders[0]?.ordDvsn, "limit");
+  assert.equal(client.orders[0]?.price, limit);
+  assert.equal(client.orders[0]?.qty, 2);
 });

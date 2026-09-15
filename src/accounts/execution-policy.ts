@@ -1,0 +1,141 @@
+import { nowMs } from "@/src/clock";
+import { brokerDriver } from "@/src/brokers/kis-config";
+import type { BrokerFill, IBroker } from "@/src/brokers/IBroker";
+import { getMarketClock } from "@/lib/market-hours";
+import { ceilToTick, clampDailyLimit, floorToTick } from "@/lib/tick-size";
+import type { AppState, Side } from "@/lib/types";
+
+/**
+ * Order-entry interceptor + protected execution.
+ *
+ * - New tickets only during KRX continuous session 09:00–15:20 KST.
+ *   Opening/closing auction (동시호가) and after-hours (시간외) are blocked.
+ * - Stop-loss / kill-switch sells use a ±3% limit band and slice size, never a
+ *   naked market order (VI / thin book slippage).
+ * - High-vol names (e.g. 247540) cannot go out as market; they rewrite to the band.
+ */
+export const EXECUTION_POLICY = {
+  bandPct: 0.03,
+  maxSliceKrw: 500_000,
+  regularOpenHhmm: 900,
+  /** Exclusive. 15:20 is closing auction, not continuous trading. */
+  regularCloseHhmm: 1520,
+} as const;
+
+/** KOSDAQ high-vol names in this universe — market orders are rewritten to the band. */
+export const NO_MARKET_TICKERS = new Set(["247540", "086520", "196170"]);
+
+export type BandSlice = {
+  qty: number;
+  price: number;
+  ordDvsn: "limit";
+};
+
+export function forbidsMarketOrder(ticker: string): boolean {
+  return NO_MARKET_TICKERS.has(ticker.trim());
+}
+
+export function sessionBlockReason(
+  state: Pick<AppState, "settings">,
+  now = nowMs(),
+  opts: { forceRegularSession?: boolean } = {},
+): string | null {
+  const clock = getMarketClock(new Date(now));
+  if (clock.open) return null;
+  const strict = opts.forceRegularSession || brokerDriver() === "kis";
+  if (!strict && state.settings.ignoreMarketHours) return null;
+  return `정규장(09:00~15:20) 외에는 신규 주문을 낼 수 없습니다. 현재 세션: ${clock.sessionLabel}.`;
+}
+
+export function bandLimitPrice(side: Side, last: number, prevClose = last): number {
+  if (!(last > 0)) return 0;
+  const raw = side === "buy" ? last * (1 + EXECUTION_POLICY.bandPct) : last * (1 - EXECUTION_POLICY.bandPct);
+  const aligned = side === "buy" ? ceilToTick(raw) : floorToTick(raw);
+  return clampDailyLimit(aligned, prevClose > 0 ? prevClose : last);
+}
+
+export function splitQty(qty: number, price: number, maxSliceKrw = EXECUTION_POLICY.maxSliceKrw): number[] {
+  if (qty < 1 || !(price > 0)) return [];
+  const maxQtyPerSlice = Math.max(1, Math.floor(maxSliceKrw / price));
+  const slices: number[] = [];
+  let left = qty;
+  while (left > 0) {
+    const take = Math.min(left, maxQtyPerSlice);
+    slices.push(take);
+    left -= take;
+  }
+  return slices;
+}
+
+export function planBandSlices(
+  side: Side,
+  qty: number,
+  last: number,
+  prevClose = last,
+): BandSlice[] {
+  const price = bandLimitPrice(side, last, prevClose);
+  if (!(price > 0)) return [];
+  return splitQty(qty, last).map((sliceQty) => ({
+    qty: sliceQty,
+    price,
+    ordDvsn: "limit" as const,
+  }));
+}
+
+export function resolveMarketIntent(
+  ticker: string,
+  side: Side,
+  last: number,
+  prevClose = last,
+): { ordDvsn: "market" | "limit"; price: number; converted: boolean; reason?: string } {
+  if (!forbidsMarketOrder(ticker)) {
+    return { ordDvsn: "market", price: last, converted: false };
+  }
+  return {
+    ordDvsn: "limit",
+    price: bandLimitPrice(side, last, prevClose),
+    converted: true,
+    reason: `${ticker} 는 고변동 종목이라 시장가 주문을 받지 않습니다. 지정가 밴드(±${Math.round(EXECUTION_POLICY.bandPct * 100)}%)로 전환합니다.`,
+  };
+}
+
+/**
+ * Stop-loss / kill-switch path. Caps slippage at the band and does not treat
+ * a broker ack as a fill — each slice goes through IBroker.sellLimit.
+ */
+export async function sellBandSlices(
+  broker: Pick<IBroker, "sellLimit">,
+  ticker: string,
+  qty: number,
+  last: number,
+  prevClose = last,
+): Promise<BrokerFill> {
+  const slices = planBandSlices("sell", qty, last, prevClose);
+  if (slices.length === 0) {
+    return {
+      ok: false,
+      status: "rejected",
+      ticker,
+      side: "sell",
+      qty: 0,
+      price: last,
+      amount: 0,
+      net: 0,
+      reason: "분할할 매도 수량이 없습니다.",
+    };
+  }
+
+  let lastFill: BrokerFill | undefined;
+  for (const slice of slices) {
+    const fill = await broker.sellLimit(ticker, slice.price, slice.qty);
+    if (fill.status === "unknown") return fill;
+    if (fill.ok || fill.status === "pending") {
+      lastFill = fill;
+      continue;
+    }
+    if (lastFill) return lastFill;
+    lastFill = fill;
+    break;
+  }
+  return lastFill!;
+}

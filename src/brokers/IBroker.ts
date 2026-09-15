@@ -44,4 +44,5 @@ export interface IBroker {
   buyMarket(ticker: string, amount: number): Promise<BrokerFill>;
   buyLimit(ticker: string, price: number, amount: number): Promise<BrokerFill>;
   sellMarket(ticker: string, qty: number): Promise<BrokerFill>;
+  sellLimit(ticker: string, price: number, qty: number): Promise<BrokerFill>;
 }

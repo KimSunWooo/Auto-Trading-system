@@ -7,7 +7,7 @@ import {
   evaluateConditions,
   evaluateDca,
 } from "./engine";
-import { roundToTick, tickSize } from "./tick-size";
+import { floorToTick, roundToTick, tickSize } from "./tick-size";
 import type { AutoCondition, DcaPlan } from "./types";
 
 test("tick size follows KRX bands", () => {
@@ -18,6 +18,8 @@ test("tick size follows KRX bands", () => {
   assert.equal(tickSize(74800), 100);
   assert.equal(tickSize(382000), 500);
   assert.equal(roundToTick(74830), 74800);
+  assert.equal(floorToTick(67900), 67900);
+  assert.equal(floorToTick(67940), 67900);
 });
 
 test("buy fill updates cash and average price", () => {

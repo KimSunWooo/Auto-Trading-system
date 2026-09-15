@@ -236,7 +236,7 @@ export function OnboardingWizard({
             <ul className="list-disc space-y-1 pl-5">
               <li>일일 최대 손실 {Math.round(risk.dailyLossPct * 100)}%</li>
               <li>종목당 투자 비중 {Math.round(risk.maxTickerWeight * 100)}%</li>
-              <li>종목 손절 {Math.round(risk.stopLossPct * 100)}% (평단 대비 시장가 매도)</li>
+              <li>종목 손절 {Math.round(risk.stopLossPct * 100)}% (평단 대비, 현재가 -3% 지정가 밴드 분할 매도)</li>
             </ul>
             <div className="flex items-center justify-between rounded-xl border px-3 py-2">
               <div>

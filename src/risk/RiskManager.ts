@@ -1,4 +1,4 @@
-import { nowIso } from "@/src/clock";
+import { nowIso, nowMs } from "@/src/clock";
 import { portfolioValue } from "@/src/accounts/portfolio";
 import type { StateBox } from "@/src/accounts/StateBox";
 import { MockBroker } from "@/src/brokers/MockBroker";
@@ -12,6 +12,7 @@ import { DEFAULT_PRODUCT_RISK, type ProductRisk } from "@/src/risk/product";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { applyKisSnapshot } from "@/src/risk/balance-sync";
 import { createBroker } from "@/src/brokers/index";
+import { sellBandSlices } from "@/src/accounts/execution-policy";
 
 function riskOf(state: AppState): ProductRisk {
   return state.settings?.risk ?? DEFAULT_PRODUCT_RISK;
@@ -149,7 +150,7 @@ export class RiskManager {
   }
 
   /**
-   * 1) freeze  2) cancel KIS working now  3) market-sell positions
+   * 1) freeze  2) cancel KIS working now  3) band-limit sell positions
    * 4) overwrite local book from inquire-balance
    * ODNO is never treated as a fill. Indeterminate cancel skips flatten/overwrite.
    */
@@ -170,7 +171,7 @@ export class RiskManager {
         : opts.kis;
 
     if (kis?.configured) {
-      await settleOpenOrders(box, kis, Date.now(), { cancelImmediately: true });
+      await settleOpenOrders(box, kis, nowMs(), { cancelImmediately: true });
       await persist(box);
     }
 
@@ -188,13 +189,21 @@ export class RiskManager {
         (row) => row.code === pos.code && row.strategy === pos.strategy,
       );
       if (!live || live.qty < 1) continue;
-      const fill = await broker.forStrategy(pos.strategy).sellMarket(pos.code, live.qty);
+      const last = box.current.quotes[pos.code]?.price ?? 0;
+      const fill =
+        last > 0
+          ? await sellBandSlices(
+              broker.forStrategy(pos.strategy),
+              pos.code,
+              live.qty,
+              last,
+              box.current.quotes[pos.code]?.prevClose,
+            )
+          : await broker.forStrategy(pos.strategy).sellMarket(pos.code, live.qty);
       if (fill.ok || fill.status === "pending") {
         flattened += 1;
         notes.push(
-          fill.ok
-            ? `${pos.name} ${fill.qty}주 시장가 청산`
-            : `${pos.name} ${fill.qty}주 시장가 청산 접수`,
+          fill.ok ? `${pos.name} 지정가 밴드 청산` : `${pos.name} 지정가 밴드 청산 접수`,
         );
       } else {
         notes.push(`${pos.name} 청산 실패: ${fill.reason ?? "알 수 없음"}`);
@@ -204,7 +213,7 @@ export class RiskManager {
 
     let overwritten = false;
     if (kis?.configured) {
-      await settleOpenOrders(box, kis, Date.now(), { bookOnly: true });
+      await settleOpenOrders(box, kis, nowMs(), { bookOnly: true });
       try {
         const remote = await kis.inquireBalance();
         box.current = applyKisSnapshot(box.current, remote);
@@ -218,7 +227,7 @@ export class RiskManager {
       await persist(box);
 
       if (box.current.orders.some((order) => order.status === "pending" && order.brokerOrderNo)) {
-        await settleOpenOrders(box, kis, Date.now(), { cancelImmediately: true });
+        await settleOpenOrders(box, kis, nowMs(), { cancelImmediately: true });
         try {
           const remote = await kis.inquireBalance();
           box.current = applyKisSnapshot(box.current, remote);
@@ -293,7 +302,7 @@ export class RiskManager {
       const quote = this.box.current.quotes[pos.code];
       const last = quote?.price ?? pos.avgPrice;
       if (!RiskManager.shouldStopLoss(pos.avgPrice, last, pct)) continue;
-      await root.forStrategy(pos.strategy).sellMarket(pos.code, pos.qty);
+      await sellBandSlices(root.forStrategy(pos.strategy), pos.code, pos.qty, last, quote?.prevClose);
       this.box.current = {
         ...this.box.current,
         allocations: this.box.current.allocations.map((row) =>

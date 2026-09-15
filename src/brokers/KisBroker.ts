@@ -9,6 +9,11 @@ import type { OrderSource, Quote } from "@/lib/types";
 import { isIndeterminateError } from "@/src/risk/errors";
 import { tradingBlocked } from "@/src/risk/circuit";
 import { settleOpenOrders } from "@/src/risk/reconcile";
+import {
+  resolveMarketIntent,
+  sellBandSlices,
+  sessionBlockReason,
+} from "@/src/accounts/execution-policy";
 
 /**
  * 한국투자증권 Open API adapter.
@@ -77,6 +82,15 @@ export class KisBroker implements IBroker {
   }
 
   async buyMarket(ticker: string, amount: number): Promise<BrokerFill> {
+    try {
+      const last = await this.getCurrentPrice(ticker);
+      const intent = resolveMarketIntent(ticker, "buy", last);
+      if (intent.converted) {
+        return this.buyLimit(ticker, intent.price, amount);
+      }
+    } catch (err) {
+      return this.fail(ticker, "buy", err);
+    }
     return this.placeBuy(ticker, amount, "market");
   }
 
@@ -103,7 +117,22 @@ export class KisBroker implements IBroker {
   }
 
   async sellMarket(ticker: string, qty: number): Promise<BrokerFill> {
-    return this.placeSell(ticker, qty);
+    const blocked = this.precheck(ticker, "sell");
+    if (blocked) return blocked;
+    try {
+      const last = await this.getCurrentPrice(ticker);
+      const intent = resolveMarketIntent(ticker, "sell", last);
+      if (intent.converted) {
+        return sellBandSlices(this, ticker, qty, last);
+      }
+      return this.placeSell(ticker, qty, "market");
+    } catch (err) {
+      return this.fail(ticker, "sell", err);
+    }
+  }
+
+  async sellLimit(ticker: string, price: number, qty: number): Promise<BrokerFill> {
+    return this.placeSell(ticker, qty, "limit", price);
   }
 
   private async placeBuy(
@@ -125,6 +154,7 @@ export class KisBroker implements IBroker {
       const pending = orders.begin(this.strategyKey, ticker, "buy", qty, price, {
         source: this.source,
         sourceId: this.sourceId,
+        ordDvsn,
       });
       await persistNow(this.box.current);
       try {
@@ -158,7 +188,12 @@ export class KisBroker implements IBroker {
     }
   }
 
-  private async placeSell(ticker: string, qty: number): Promise<BrokerFill> {
+  private async placeSell(
+    ticker: string,
+    qty: number,
+    ordDvsn: "market" | "limit" = "market",
+    limitPrice?: number,
+  ): Promise<BrokerFill> {
     const blocked = this.precheck(ticker, "sell");
     if (blocked) return blocked;
 
@@ -170,10 +205,11 @@ export class KisBroker implements IBroker {
 
     let price = 0;
     try {
-      price = await this.getCurrentPrice(ticker);
+      price = ordDvsn === "limit" && limitPrice ? limitPrice : await this.getCurrentPrice(ticker);
       const pending = orders.begin(this.strategyKey, ticker, "sell", qty, price, {
         source: this.source,
         sourceId: this.sourceId,
+        ordDvsn,
       });
       await persistNow(this.box.current);
       try {
@@ -181,14 +217,14 @@ export class KisBroker implements IBroker {
           ticker,
           side: "sell",
           qty,
-          ordDvsn: "market",
-          price: 0,
+          ordDvsn,
+          price: ordDvsn === "limit" ? price : 0,
         });
         const working = orders.ackWorking(
           pending.id,
           placed.orderNo,
           `주문 접수(${placed.orderNo}). 체결수량은 체결내역으로만 반영합니다.`,
-          { krxOrgNo: placed.krxOrgNo, ordDvsn: "market" },
+          { krxOrgNo: placed.krxOrgNo, ordDvsn },
         );
         await persistNow(this.box.current);
         await settleOpenOrders(this.box, this.client);
@@ -225,6 +261,8 @@ export class KisBroker implements IBroker {
     if (this.box.current.settings.liquidating && side === "buy") {
       return this.reject(ticker, side, "긴급 정지로 신규 매수를 막았습니다.");
     }
+    const hours = sessionBlockReason(this.box.current, undefined, { forceRegularSession: true });
+    if (hours) return this.reject(ticker, side, hours);
     if (this.box.current.settings.liquidating && side === "sell") {
       return null;
     }
