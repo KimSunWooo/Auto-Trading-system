@@ -4,6 +4,26 @@
 
 기본값은 **로컬 페이퍼 북**입니다. 앱키를 넣기 전에는 실제 주문이 나가지 않습니다. 엔진은 빈 사용자 설정에서 시작합니다.
 
+## 현재 진행
+
+| 단계 | 결과 |
+| --- | --- |
+| Gate 1 (거래 코어 정적 분석) | PASS |
+| Gate 2 (VTS 장부 격리 · 테스트 하네스) | CONDITIONAL PASS |
+| Gate 2.5 (변경 범위 감사) | PASS |
+| VTS-A (실제 KIS 모의투자 읽기 전용) | FAIL — 모의투자 앱키/시크릿/계좌가 `.env.local`에 없음. Trading Core 결함 아님 |
+| VTS-B (제한 주문 1건) | 미실행. `VTS-B 진행` 요청 전까지 대기 |
+| Gate 3 / REAL | 잠금. 진행하지 않음 |
+
+로컬 검증: TypeScript PASS, `npm test` 146 pass / 10 skip / 0 fail, build PASS.
+
+유지 중인 안전장치:
+
+- `npm test`는 실제 KIS 주문을 내지 않습니다.
+- REAL(`KIS_MODE=real`, `ALLOW_LIVE_TRADING=true`, `KIS_LIVE_CONFIRM`)은 꺼 둡니다.
+- 주문 opt-in(`RUN_KIS_VTS_ORDER_TESTS`, `RUN_KIS_VTS_FLATTEN_TEST`)은 꺼 둡니다.
+- timeout → UNKNOWN, 맹목 재시도 없음, ODNO exact mapping, recon 실패 시 신규 주문 차단.
+
 ## 아키텍처
 
 ```
@@ -79,17 +99,26 @@ ALLOW_LIVE_TRADING=false
 KIS_MODE=demo
 ```
 
-VTS 검증은 `.env.local`에만 키를 넣고, **모의투자 앱키**와 `KIS_MODE=demo`만 사용합니다. 값은 Git에 넣지 않습니다. 상세 시나리오는 [docs/VTS_TEST_MANUAL.md](docs/VTS_TEST_MANUAL.md)를 따릅니다.
+VTS 검증은 `.env.local`에만 키를 넣고, **모의투자 앱키**와 `KIS_MODE=demo`만 사용합니다. 값은 Git에 넣지 않습니다.
+
+VTS-A(읽기 전용)용 `.env.local` 예. 앱키·시크릿·계좌는 직접 채우세요. 채팅이나 README에 실제 값을 적지 마세요.
 
 ```
 BROKER=kis
 TRADING_MODE=live_test
 ALLOW_LIVE_TRADING=false
 KIS_MODE=demo
-KIS_APP_KEY=<모의 앱키>
-KIS_APP_SECRET=<모의 시크릿>
-KIS_ACCOUNT_NO=<모의계좌 8자리-상품코드>
+RUN_KIS_VTS_TESTS=true
+KIS_APP_KEY=
+KIS_APP_SECRET=
+KIS_ACCOUNT_NO=
 ```
+
+`KIS_ACCOUNT_NO`는 8자리 계좌 + 2자리 상품코드입니다. 예: `12345678-01`.
+
+넣지 마세요: `KIS_MODE=real`, `ALLOW_LIVE_TRADING=true`, `KIS_LIVE_CONFIRM`, `RUN_KIS_VTS_ORDER_TESTS=true`, `RUN_KIS_VTS_FLATTEN_TEST=true`.
+
+키가 없으면 VTS-A는 API를 호출하지 않고 FAIL합니다. 키가 있으면 인증 → 시세 → 잔고 → 포지션 → 미체결 → 체결 → 초기 recon만 조회합니다. 매수·매도·취소는 VTS-A에서 하지 않습니다.
 
 ```bash
 cp .env.example .env.local
@@ -97,11 +126,13 @@ cp .env.example .env.local
 npm run dev
 ```
 
-화면 상단 배지가 **KIS 모의** / `LIVE_TEST` 인지 확인합니다. `KIS_MODE=real`, `KIS_LIVE_CONFIRM`, `ALLOW_LIVE_TRADING=true` 는 VTS 단계에서 설정하지 않습니다. 실전 호스트로 주문이 나가지 않도록 코드가 `TRADING_MODE=live_test`에서 실전 주문을 거절합니다.
+화면 상단 배지가 **KIS 모의** / `LIVE_TEST` 인지 확인합니다. `TRADING_MODE=live_test`에서는 실전 호스트 주문을 거절합니다.
 
 LIVE_TEST 한도(서버 `OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다.
 
 `npm test`는 실제 KIS 주문을 내지 않습니다. 읽기 전용 VTS는 `RUN_KIS_VTS_TESTS=true`, 주문은 `RUN_KIS_VTS_ORDER_TESTS=true`가 추가로 있을 때만 실행됩니다. REAL 관련 플래그가 보이면 테스트를 ABORT 합니다. VTS 장부는 `data/vts-test/<testRunId>/`에만 쌓이며 운영 `paper-account.json`과 섞이지 않습니다.
+
+테스트 계층: Layer A 기존 단위 테스트, Layer B FakeKis 실패 주입(`src/runtime/vts-failure-injection.test.ts`), Layer C 실VTS(`src/runtime/vts-lifecycle.test.ts`, 기본 SKIP).
 
 검증이 끝나면 `.env.local`을 다시 Mock 기본값으로 되돌리세요.
 
