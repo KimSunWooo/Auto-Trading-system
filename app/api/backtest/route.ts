@@ -6,35 +6,35 @@ import { createInitialState } from "@/lib/engine";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as {
-    years?: number;
-    totalDeposit?: number;
-  };
-  const years = body.years === 1 ? 1 : 2;
-  const totalDeposit = Math.max(100_000, Math.round(body.totalDeposit ?? TOTAL_DEPOSIT));
-  const rules = getRuleConfig().rules;
-  if (rules.length === 0) {
-    return Response.json({
-      years,
-      ruleIds: [],
-      metrics: {
-        startEquity: totalDeposit,
-        endEquity: totalDeposit,
-        totalReturnPct: 0,
-        mddPct: 0,
-        trades: 0,
-        winRatePct: null,
-        avgWin: null,
-        avgLoss: null,
-        wins: 0,
-        losses: 0,
-      },
-      equityCurve: [{ t: Date.now(), equity: totalDeposit }],
-      tradeLog: [],
-    });
-  }
-  const seed = syncAllocationsToRules({ ...createInitialState(), totalDeposit }, rules);
   try {
+    const body = (await request.json().catch(() => ({}))) as {
+      years?: number;
+      totalDeposit?: number;
+    };
+    const years = body.years === 1 ? 1 : 2;
+    const totalDeposit = Math.max(100_000, Math.round(body.totalDeposit ?? TOTAL_DEPOSIT));
+    const rules = getRuleConfig().rules;
+    if (rules.length === 0) {
+      return Response.json({
+        years,
+        ruleIds: [],
+        metrics: {
+          startEquity: totalDeposit,
+          endEquity: totalDeposit,
+          totalReturnPct: 0,
+          mddPct: 0,
+          trades: 0,
+          winRatePct: null,
+          avgWin: null,
+          avgLoss: null,
+          wins: 0,
+          losses: 0,
+        },
+        equityCurve: [{ t: Date.now(), equity: totalDeposit }],
+        tradeLog: [],
+      });
+    }
+    const seed = syncAllocationsToRules({ ...createInitialState(), totalDeposit }, rules);
     const result = await BacktestRunner.run({
       years,
       totalDeposit,

@@ -23,12 +23,14 @@ test("admin presets restore KODEX 200 DCA, Samsung MA, and 6-name breakout", () 
   assert.equal(swing.fastMa, "5");
   assert.equal(swing.slowMa, "20");
   assert.equal(swing.buyPct, "35");
+  assert.equal(swing.budget, "2000000");
 
   const aggressive = applyAdminPreset("Level10_Aggressive");
   assert.equal(aggressive.ticker, "005930");
   assert.equal(aggressive.kind, "interval");
   assert.equal(aggressive.intervalSec, "120");
   assert.equal(aggressive.buyPct, "25");
+  assert.equal(aggressive.budget, "1000000");
   assert.deepEqual(AGGRESSIVE_UNIVERSE, [
     "005930",
     "000660",

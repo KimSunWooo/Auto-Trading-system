@@ -74,20 +74,27 @@ function persistConfig(next: RuleConfigFile) {
   cache = { mtimeMs: fileMtimeMs() || Date.now(), value: next };
 }
 
-export function saveRuleConfig(raw: unknown): RuleConfigFile {
+export function parseRuleConfig(raw: unknown): RuleConfigFile {
   const next = mergeRuleConfig(raw);
   const invalid = validateRuleConfig(next);
   if (invalid) throw new Error(invalid);
+  return next;
+}
+
+export function commitRuleConfig(next: RuleConfigFile): RuleConfigFile {
   persistConfig(next);
   return cloneConfig(next);
+}
+
+export function saveRuleConfig(raw: unknown): RuleConfigFile {
+  return commitRuleConfig(parseRuleConfig(raw));
 }
 
 export function patchRuleConfig(raw: unknown): RuleConfigFile {
   const next = overlayRuleConfig(getRuleConfig(), raw);
   const invalid = validateRuleConfig(next);
   if (invalid) throw new Error(invalid);
-  persistConfig(next);
-  return cloneConfig(next);
+  return commitRuleConfig(next);
 }
 
 export function setRuleConfigForTest(value: RuleConfigFile | null) {

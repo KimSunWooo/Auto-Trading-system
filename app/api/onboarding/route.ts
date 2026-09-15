@@ -1,7 +1,7 @@
 import { AllocationEngine } from "@/src/accounts/index";
 import { ensureUniverseQuotes } from "@/lib/engine";
 import { mutateStore, toPublic } from "@/lib/store";
-import { saveRuleConfig, syncAllocationsToRules } from "@/src/rules/config";
+import { commitRuleConfig, parseRuleConfig, syncAllocationsToRules } from "@/src/rules/config";
 import { parseUserRule, DISCLAIMER_TEXT } from "@/src/rules/params";
 import { TOTAL_DEPOSIT } from "@/src/accounts/defaults";
 import { resetCircuit } from "@/src/risk/circuit";
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
   }
   if (rule && rule.budget <= 0) rule.budget = totalDeposit;
   try {
-    const config = saveRuleConfig({ rules: rule ? [rule] : [] });
+    const config = parseRuleConfig({ rules: rule ? [rule] : [] });
     const state = await mutateStore((current) => {
       let next = AllocationEngine.rebalance(
         { ...current, totalDeposit },
@@ -57,6 +57,7 @@ export async function POST(request: Request) {
         const reset = resetCircuit(next);
         if (!reset.error) next = { ...reset.state, settings: next.settings };
       }
+      commitRuleConfig(config);
       return ensureUniverseQuotes(next);
     });
     return Response.json(toPublic(state));

@@ -37,6 +37,7 @@ export function AdminPresetBar({
           <div className="text-sm font-medium">🛠 관리자 프리셋</div>
           <p className="text-xs text-muted-foreground">
             로컬·ADMIN_MODE 전용. 일반 배포에는 이 영역이 렌더링되지 않습니다. 클릭하면 아래 입력칸만 채웁니다.
+            세 개를 모두 저장할 경우 기본 예수금 1,000만 원 기준 7M / 2M / 1M 으로 맞춰 두었습니다.
           </p>
         </div>
       </div>

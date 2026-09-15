@@ -94,6 +94,18 @@ test("patchRuleConfig overlays a single rule onto the current file", () => {
   }
 });
 
+test("syncAllocationsToRules rejects budgets over the deposit", () => {
+  assert.throws(
+    () =>
+      syncAllocationsToRules(createInitialState(), [
+        blankRule({ ticker: "069500", budget: 7_000_000 }),
+        blankRule({ ticker: "005930", budget: 5_000_000 }),
+        blankRule({ ticker: "000660", budget: 3_000_000 }),
+      ]),
+    /예수금/,
+  );
+});
+
 test("syncAllocationsToRules starts from cash-only when there are no rules", () => {
   const next = syncAllocationsToRules(createInitialState(), []);
   assert.equal(next.allocations.length, 1);
