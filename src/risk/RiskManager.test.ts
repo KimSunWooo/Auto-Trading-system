@@ -4,6 +4,7 @@ import { createInitialState } from "@/lib/engine";
 import { RiskManager } from "./RiskManager";
 import { seoulDay } from "./limits";
 import { tradingBlocked } from "./circuit";
+import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "@/src/brokers/kis-client";
 
 test("RiskManager blocks a buy that would exceed 20% ticker weight", () => {
   const state = createInitialState();
@@ -66,4 +67,144 @@ test("kill switch disables buckets and auto trading", () => {
   assert.equal(stopped.circuit.kind, "kill");
   assert.ok(stopped.allocations.every((row) => !row.enabled));
   assert.equal(stopped.orders[0]?.status, "cancelled");
+});
+
+test("executeKillSwitch market-sells mock positions then halts", async () => {
+  const state = createInitialState();
+  state.positions = [
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
+  ];
+  state.allocations = state.allocations.map((row) =>
+    row.strategy === "Level1_Stable" ? { ...row, balance: row.balance - 140_000 } : row,
+  );
+  state.cash = state.allocations.reduce((sum, row) => sum + row.balance, 0);
+  const box = { current: state };
+  const after = await RiskManager.executeKillSwitch(box, { kis: null });
+  assert.equal(after.settings.autoTrading, false);
+  assert.equal(after.settings.liquidating, false);
+  assert.equal(after.circuit.kind, "kill");
+  assert.equal(after.positions.length, 0);
+  assert.equal(after.killReport?.flattened, 1);
+  assert.equal(after.killReport?.overwritten, false);
+  assert.ok((after.allocations.find((row) => row.strategy === "Level1_Stable")?.balance ?? 0) > 6_800_000);
+});
+
+class KillKis implements KisApi {
+  readonly mode = "demo" as const;
+  configured = true;
+  liveEnabled = true;
+  issues: string[] = [];
+  cancels: KisCancelOrder[] = [];
+  orders: KisCashOrder[] = [];
+  fills: KisDayOrder[] = [];
+  balance: KisAccountBalance = { cash: 8_500_000, d2Cash: 8_500_000, holdings: [] };
+  failCancel: string | null = null;
+
+  async inquirePrice(ticker: string): Promise<KisPrice> {
+    return {
+      ticker,
+      name: "삼성전자",
+      price: 70_000,
+      open: 70_000,
+      high: 71_000,
+      low: 69_000,
+      prevClose: 69_500,
+      volume: 1,
+    };
+  }
+  async inquireDailyCloses(): Promise<number[]> {
+    return [];
+  }
+  async inquireDailyCcld(): Promise<KisDayOrder[]> {
+    return this.fills.map((row) => ({ ...row }));
+  }
+  async inquireBalance(): Promise<KisAccountBalance> {
+    return {
+      cash: this.balance.cash,
+      d2Cash: this.balance.d2Cash,
+      holdings: this.balance.holdings.map((row) => ({ ...row })),
+    };
+  }
+  async orderCash(order: KisCashOrder) {
+    this.orders.push(order);
+    return { orderNo: "0000000123", krxOrgNo: "06010" };
+  }
+  async cancelOrder(order: KisCancelOrder) {
+    if (this.failCancel) {
+      const err = new Error(this.failCancel);
+      err.name = "TimeoutError";
+      this.failCancel = null;
+      throw err;
+    }
+    this.cancels.push(order);
+  }
+}
+
+test("executeKillSwitch cancels KIS working orders immediately and overwrites the book", async () => {
+  const state = createInitialState();
+  state.orders = [
+    {
+      id: "k1",
+      createdAt: new Date().toISOString(),
+      source: "strategy",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 70_000,
+      amount: 70_000,
+      commission: 0,
+      tax: 0,
+      net: 70_000,
+      status: "pending",
+      brokerOrderNo: "0000000123",
+      krxOrgNo: "06010",
+      ordDvsn: "market",
+      orderedQty: 1,
+      filledQty: 0,
+    },
+  ];
+  const client = new KillKis();
+  const after = await RiskManager.executeKillSwitch({ current: state }, { kis: client });
+  assert.equal(client.cancels.length, 1);
+  assert.equal(after.orders.find((row) => row.id === "k1")?.status, "cancelled");
+  assert.equal(after.killReport?.overwritten, true);
+  assert.equal(after.cash, 8_500_000);
+  assert.equal(after.circuit.kind, "kill");
+});
+
+test("executeKillSwitch skips flatten when a cancel stays unknown", async () => {
+  const state = createInitialState();
+  state.positions = [
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
+  ];
+  state.orders = [
+    {
+      id: "u1",
+      createdAt: new Date().toISOString(),
+      source: "strategy",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 70_000,
+      amount: 70_000,
+      commission: 0,
+      tax: 0,
+      net: 70_000,
+      status: "pending",
+      brokerOrderNo: "0000000456",
+      krxOrgNo: "06010",
+      orderedQty: 1,
+      filledQty: 0,
+    },
+  ];
+  const client = new KillKis();
+  client.failCancel = "cancel timeout";
+  const after = await RiskManager.executeKillSwitch({ current: state }, { kis: client });
+  assert.equal(after.orders.find((row) => row.id === "u1")?.status, "unknown");
+  assert.equal(after.positions.length, 1);
+  assert.equal(after.killReport?.overwritten, false);
+  assert.equal(after.killReport?.flattened, 0);
+  assert.match(after.killReport?.notes.join(" ") ?? "", /미확인/);
 });

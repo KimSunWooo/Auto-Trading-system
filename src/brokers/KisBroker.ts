@@ -163,7 +163,9 @@ export class KisBroker implements IBroker {
     if (blocked) return blocked;
 
     const orders = new OrderManager(this.box);
-    const gate = orders.canSell(this.strategyKey, ticker, qty);
+    const gate = orders.canSell(this.strategyKey, ticker, qty, {
+      liquidation: this.box.current.settings.liquidating,
+    });
     if (!gate.ok) return this.reject(ticker, "sell", gate.reason);
 
     let price = 0;
@@ -219,6 +221,12 @@ export class KisBroker implements IBroker {
         side,
         "실전 주문이 잠겨 있습니다. KIS_LIVE_CONFIRM=I_UNDERSTAND 를 설정하세요.",
       );
+    }
+    if (this.box.current.settings.liquidating && side === "buy") {
+      return this.reject(ticker, side, "긴급 정지로 신규 매수를 막았습니다.");
+    }
+    if (this.box.current.settings.liquidating && side === "sell") {
+      return null;
     }
     const halted = tradingBlocked(this.box.current);
     if (halted) return this.reject(ticker, side, halted);

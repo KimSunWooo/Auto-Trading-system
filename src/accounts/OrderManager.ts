@@ -19,6 +19,8 @@ export type OrderOpts = {
   sourceId?: string;
   orderId?: string;
   intentId?: string;
+  /** Kill-switch flatten: skip circuit/unknown gates, still checks qty. */
+  liquidation?: boolean;
 };
 
 /**
@@ -34,6 +36,9 @@ export class OrderManager {
     price: number,
     ticker = "",
   ): { ok: true; net: number } | { ok: false; reason: string } {
+    if (this.box.current.settings.liquidating || this.box.current.circuit?.kind === "kill") {
+      return { ok: false, reason: "긴급 정지로 신규 매수를 막았습니다." };
+    }
     const blocked = tradingBlocked(this.box.current);
     if (blocked) return { ok: false, reason: blocked };
     if (qty < 1) {
@@ -87,9 +92,12 @@ export class OrderManager {
     strategy: string,
     ticker: string,
     qty: number,
+    opts: Pick<OrderOpts, "liquidation"> = {},
   ): { ok: true } | { ok: false; reason: string } {
-    const blocked = tradingBlocked(this.box.current);
-    if (blocked) return { ok: false, reason: blocked };
+    if (!opts.liquidation) {
+      const blocked = tradingBlocked(this.box.current);
+      if (blocked) return { ok: false, reason: blocked };
+    }
     if (qty < 1) {
       return { ok: false, reason: "매도 수량이 없습니다." };
     }
@@ -97,16 +105,18 @@ export class OrderManager {
     if (!existing || existing.qty < qty) {
       return { ok: false, reason: "매도 가능 수량이 부족합니다." };
     }
-    const working = this.box.current.orders.find(
-      (order) =>
-        !order.parentOrderId &&
-        (order.status === "pending" || order.status === "unknown") &&
-        order.strategy === strategy &&
-        order.code === ticker &&
-        order.side === "sell",
-    );
-    if (working) {
-      return { ok: false, reason: `${ticker} 미체결 매도가 있어 대기합니다.` };
+    if (!opts.liquidation) {
+      const working = this.box.current.orders.find(
+        (order) =>
+          !order.parentOrderId &&
+          (order.status === "pending" || order.status === "unknown") &&
+          order.strategy === strategy &&
+          order.code === ticker &&
+          order.side === "sell",
+      );
+      if (working) {
+        return { ok: false, reason: `${ticker} 미체결 매도가 있어 대기합니다.` };
+      }
     }
     return { ok: true };
   }
@@ -266,7 +276,7 @@ export class OrderManager {
     price: number,
     opts: OrderOpts = {},
   ): BrokerFill {
-    const gate = this.canSell(strategy, ticker, qty);
+    const gate = this.canSell(strategy, ticker, qty, opts);
     if (!gate.ok) {
       return this.reject(ticker, "sell", gate.reason);
     }

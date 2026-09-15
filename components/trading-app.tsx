@@ -46,7 +46,9 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
   const [guide, setGuide] = useState(!initialState.settings.onboardingComplete);
 
   async function killSwitch() {
-    if (!window.confirm("모든 자동매매를 즉시 멈추고 대기 주문을 취소할까요?")) return;
+    if (!window.confirm(
+      "긴급 정지를 실행할까요? 신규 매매를 막고, KIS 미체결을 즉시 취소한 뒤 보유 종목을 시장가 전량 매도합니다. 그다음 증권사 실잔고로 로컬 장부를 덮어씁니다.",
+    )) return;
     try {
       setState(await api<PublicState>("/api/risk/kill", { method: "POST" }));
       toast.success("긴급 정지를 실행했습니다.");
@@ -116,6 +118,11 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             <p>
               {state.circuit?.reason ??
                 "미확인 주문이 있어 신규 매매를 차단했습니다. 증권사 체결내역을 확인하세요."}
+              {state.killReport?.notes?.length ? (
+                <span className="block text-xs opacity-80">
+                  {state.killReport.notes.join(" · ")}
+                </span>
+              ) : null}
             </p>
             <Button
               size="sm"

@@ -56,6 +56,7 @@ export function createInitialState(): AppState {
       broker: brokerDriver(),
       autoTrading: true,
       onboardingComplete: false,
+      liquidating: false,
       risk: { ...DEFAULT_PRODUCT_RISK },
     },
     totalDeposit: TOTAL_DEPOSIT,

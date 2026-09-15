@@ -60,6 +60,7 @@ function migrateState(parsed: AppState): AppState {
       broker: brokerDriver(),
       autoTrading: parsed.settings?.autoTrading ?? true,
       onboardingComplete: parsed.settings?.onboardingComplete ?? false,
+      liquidating: false,
       risk: mergeProductRisk(parsed.settings?.risk),
     },
     totalDeposit,

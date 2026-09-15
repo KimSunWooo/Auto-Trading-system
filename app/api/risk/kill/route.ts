@@ -4,6 +4,10 @@ import { RiskManager } from "@/src/risk/RiskManager";
 export const dynamic = "force-dynamic";
 
 export async function POST() {
-  const state = await mutateStore((current) => RiskManager.stopAllTrading(current));
+  const state = await mutateStore(async (current) => {
+    const box = { current };
+    await RiskManager.executeKillSwitch(box);
+    return box.current;
+  });
   return Response.json(toPublic(state));
 }

@@ -2,7 +2,8 @@ import type { StateBox } from "@/src/accounts/StateBox";
 import type { KisAccountBalance, KisApi } from "@/src/brokers/kis-client";
 import { openCircuit } from "@/src/risk/circuit";
 import { HARD_LIMITS } from "@/src/risk/limits";
-import type { AppState, KisBalanceSnapshot } from "@/lib/types";
+import { cashFromAllocations } from "@/src/accounts/defaults";
+import type { AppState, KisBalanceSnapshot, Position } from "@/lib/types";
 
 function padTicker(code: string): string {
   return code.replace(/\D/g, "").slice(-6).padStart(6, "0");
@@ -51,6 +52,66 @@ export function diffLocalVsKis(
   }
 
   return { matched: reasons.length === 0, cashDelta, reasons };
+}
+
+/** Replace local buckets/positions with KIS inquire-balance. Does not invent fills. */
+export function applyKisSnapshot(
+  state: AppState,
+  remote: KisAccountBalance,
+  now = Date.now(),
+): AppState {
+  const fallback =
+    [...state.allocations].sort((a, b) => b.budget - a.budget)[0]?.strategy ?? "Level1_Stable";
+  const positions: Position[] = remote.holdings
+    .filter((row) => row.qty > 0)
+    .map((row) => {
+      const code = padTicker(row.ticker);
+      const prev = state.positions.find((pos) => padTicker(pos.code) === code);
+      return {
+        code,
+        name: row.name || prev?.name || code,
+        qty: row.qty,
+        avgPrice: row.avgPrice > 0 ? row.avgPrice : (prev?.avgPrice ?? 0),
+        strategy: prev?.strategy ?? fallback,
+      };
+    });
+
+  const cash = Math.max(0, Math.round(remote.cash));
+  const weightSum = Math.max(
+    1,
+    state.allocations.reduce((sum, row) => sum + Math.max(0, row.budget), 0),
+  );
+  let leftover = cash;
+  const allocations = state.allocations.map((row, index) => {
+    const last = index === state.allocations.length - 1;
+    const share = last ? leftover : Math.round((cash * Math.max(0, row.budget)) / weightSum);
+    leftover -= share;
+    return {
+      ...row,
+      enabled: false,
+      balance: Math.max(0, share),
+      lastMessage: "긴급 정지 · KIS 잔고로 장부를 맞췄습니다.",
+    };
+  });
+
+  const snapshot: KisBalanceSnapshot = {
+    syncedAt: new Date(now).toISOString(),
+    cash: remote.cash,
+    d2Cash: remote.d2Cash,
+    holdings: remote.holdings,
+    cashDelta: 0,
+    matched: true,
+    message: "긴급 정지로 KIS 실잔고를 로컬 장부에 덮어썼습니다.",
+  };
+
+  return {
+    ...state,
+    allocations,
+    cash: cashFromAllocations(allocations),
+    positions,
+    lastBalanceSyncAt: now,
+    kisBalance: snapshot,
+  };
 }
 
 function hasOpenBrokerTicket(state: AppState): boolean {

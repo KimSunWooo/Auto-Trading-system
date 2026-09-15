@@ -128,6 +128,13 @@ export type CircuitState = {
   lastError?: string;
 };
 
+export type KillReport = {
+  cancelled: number;
+  flattened: number;
+  overwritten: boolean;
+  notes: string[];
+};
+
 export type DayStartMark = {
   date: string;
   equity: number;
@@ -156,6 +163,7 @@ export type Settings = {
   broker: BrokerDriver;
   autoTrading: boolean;
   onboardingComplete: boolean;
+  liquidating: boolean;
   risk: ProductRisk;
 };
 
@@ -177,6 +185,7 @@ export type AppState = {
   dayStart: DayStartMark;
   equityHistory: number[];
   kisBalance?: KisBalanceSnapshot;
+  killReport?: KillReport;
 };
 
 export type BrokerPublicStatus = {

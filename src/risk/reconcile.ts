@@ -96,6 +96,7 @@ export async function settleOpenOrders(
   box: StateBox,
   client: KisApi,
   now = Date.now(),
+  opts: { cancelImmediately?: boolean; bookOnly?: boolean } = {},
 ) {
   const open = openParents(box);
   if (open.length === 0 || !client.configured) return;
@@ -129,8 +130,10 @@ export async function settleOpenOrders(
       continue;
     }
 
+    if (opts.bookOnly) continue;
+
     const age = now - new Date(current.createdAt).getTime();
-    if (age < HARD_LIMITS.cancelUnfilledAfterMs) continue;
+    if (!opts.cancelImmediately && age < HARD_LIMITS.cancelUnfilledAfterMs) continue;
     if (!current.brokerOrderNo) continue;
 
     try {

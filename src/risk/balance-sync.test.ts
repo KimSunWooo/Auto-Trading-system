@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { diffLocalVsKis, syncKisBalance } from "./balance-sync";
+import { applyKisSnapshot, diffLocalVsKis, syncKisBalance } from "./balance-sync";
 import type { KisAccountBalance, KisApi, KisCashOrder, KisDayOrder, KisPrice } from "@/src/brokers/kis-client";
 import { createInitialState } from "@/lib/engine";
 import { HARD_LIMITS } from "@/src/risk/limits";
@@ -91,6 +91,24 @@ test("diffLocalVsKis sums strategy buckets per ticker", () => {
   });
   assert.equal(bad.matched, false);
   assert.match(bad.reasons.join(" "), /005930/);
+});
+
+test("applyKisSnapshot overwrites local cash and holdings from KIS", () => {
+  const state = createInitialState();
+  state.positions = [
+    { code: "005930", name: "삼성전자", qty: 4, avgPrice: 70_000, strategy: "Level1_Stable" },
+  ];
+  const next = applyKisSnapshot(state, {
+    cash: 8_000_000,
+    d2Cash: 8_000_000,
+    holdings: [{ ticker: "005930", name: "삼성전자", qty: 1, avgPrice: 72_000 }],
+  });
+  assert.equal(next.cash, 8_000_000);
+  assert.equal(next.positions.length, 1);
+  assert.equal(next.positions[0]?.qty, 1);
+  assert.equal(next.positions[0]?.avgPrice, 72_000);
+  assert.equal(next.kisBalance?.matched, true);
+  assert.ok(next.allocations.every((row) => !row.enabled));
 });
 
 test("syncKisBalance halts when KIS cash diverges from local buckets", async () => {

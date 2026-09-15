@@ -72,8 +72,9 @@ export function GuidePanel({
             비교해 어긋나면 주문을 중지합니다. 퀀트 종목·주기·이평·K값은{" "}
             <code className="rounded bg-muted px-1">data/strategy-config.json</code> 과 퀀트 탭에서
             바꿉니다. 일일 손실 3%·종목 비중 20%·평단 -5% 손절은 상품 리스크입니다. 상단{" "}
-            <strong>긴급 정지</strong>는 자동매매를 즉시 끕니다. 시작 가이드에서 전략 백테스트를 볼 수
-            있습니다. 상단 빨간 띠가 보이면 신규 주문은 나가지 않습니다.
+            <strong>긴급 정지</strong>는 미체결을 즉시 취소하고 보유를 시장가 청산한 뒤 KIS 실잔고로 장부를
+            맞춥니다. 시작 가이드에서 전략 백테스트를 볼 수 있습니다. 상단 빨간 띠가 보이면 신규 주문은
+            나가지 않습니다.
           </p>
         </CardContent>
       </Card>
