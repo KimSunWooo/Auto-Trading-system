@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatSeoul, formatWon, sideLabel } from "@/lib/format";
+import { ruleDisplayName } from "@/lib/dashboard";
 import type { PublicState } from "@/lib/types";
 
 const SOURCE: Record<string, string> = {
@@ -83,7 +84,7 @@ export function OrdersPanel({ state }: { state: PublicState }) {
                     <div className="font-medium">{order.name}</div>
                     <div className="text-xs text-muted-foreground">
                       {order.code}
-                      {order.ruleId ? ` · ${order.ruleId}` : ""}
+                      {order.ruleId ? ` · ${ruleDisplayName(state.ruleConfig?.rules ?? [], order.ruleId)}` : ""}
                       {order.brokerOrderNo ? ` · ${order.brokerOrderNo}` : ""}
                     </div>
                   </TableCell>

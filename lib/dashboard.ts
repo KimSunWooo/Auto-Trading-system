@@ -1,7 +1,19 @@
 import { seoulDay } from "@/src/risk/limits";
 import type { PublicState } from "@/lib/types";
 import { accountValue, ruleEquity } from "@/src/accounts/portfolio";
-import type { UserRule } from "@/src/rules/params";
+import { CASH_RULE_ID, type UserRule } from "@/src/rules/params";
+
+export function ruleDisplayName(
+  rules: Array<Pick<UserRule, "id" | "name" | "ticker">>,
+  ruleId: string | undefined,
+): string {
+  if (!ruleId || ruleId === CASH_RULE_ID) return "직접 매매";
+  const rule = rules.find((row) => row.id === ruleId);
+  const named = rule?.name?.trim();
+  if (named) return named;
+  if (rule?.ticker) return rule.ticker;
+  return "삭제된 조건식";
+}
 
 export function dashboardStats(state: PublicState) {
   const equity = state.equity ?? accountValue(state);

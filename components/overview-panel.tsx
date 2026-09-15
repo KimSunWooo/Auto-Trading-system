@@ -18,7 +18,7 @@ import {
 import { Change, Price, Sparkline } from "@/components/price";
 import { api } from "@/hooks/use-trading";
 import { formatPct, formatSeoul, formatWon } from "@/lib/format";
-import { dashboardStats, ruleCardModel } from "@/lib/dashboard";
+import { dashboardStats, ruleCardModel, ruleDisplayName } from "@/lib/dashboard";
 import { DisclaimerModal } from "@/components/disclaimer-modal";
 import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
 import type { PublicState, Quote } from "@/lib/types";
@@ -252,7 +252,7 @@ export function OverviewPanel({
         onAccept={acceptAndStart}
       />
 
-      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[1.15fr_0.85fr]">
         <Watchlist
           quotes={quotes}
           onState={onState}
@@ -307,7 +307,7 @@ function Watchlist({
   );
 
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="border-b">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -402,7 +402,7 @@ function Positions({
   onState: (next: PublicState) => void;
 }) {
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="border-b">
         <CardTitle>잔고</CardTitle>
         <CardDescription>평균단가 대비 평가손익입니다.</CardDescription>
@@ -417,9 +417,11 @@ function Positions({
             <TableHeader>
               <TableRow>
                 <TableHead>종목</TableHead>
-                <TableHead>수량</TableHead>
-                <TableHead>평가</TableHead>
-                <TableHead />
+                <TableHead className="text-right">수량</TableHead>
+                <TableHead className="text-right">평가</TableHead>
+                <TableHead className="w-[1%] text-right">
+                  <span className="sr-only">매도</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -428,26 +430,29 @@ function Positions({
                 const last = quote?.price ?? p.avgPrice;
                 const evalAmt = p.qty * last;
                 const pnl = (last - p.avgPrice) * p.qty;
+                const ruleName = ruleDisplayName(state.ruleConfig?.rules ?? [], p.ruleId);
                 return (
                   <TableRow key={`${p.ruleId}-${p.code}`}>
-                    <TableCell>
+                    <TableCell className="max-w-[16rem] whitespace-normal">
                       <div className="font-medium">{p.name}</div>
+                      <div className="text-xs text-muted-foreground">{ruleName}</div>
                       <div className="text-xs text-muted-foreground">
-                        {p.ruleId} · 평단 {formatWon(p.avgPrice)}
+                        {p.code} · 평단 {formatWon(p.avgPrice)}
                       </div>
                     </TableCell>
-                    <TableCell className="tabular-nums">{p.qty}주</TableCell>
-                    <TableCell>
+                    <TableCell className="text-right tabular-nums">{p.qty}주</TableCell>
+                    <TableCell className="text-right">
                       <div className="tabular-nums">{formatWon(evalAmt)}</div>
                       <div className={pnl >= 0 ? "text-xs text-up" : "text-xs text-down"}>
                         {pnl >= 0 ? "+" : ""}
                         {formatWon(pnl)}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-right">
                       <Button
                         size="xs"
                         variant="outline"
+                        disabled={!quote}
                         onClick={() =>
                           quote
                             ? void buySell(quote, "sell", onState, p.qty, p.ruleId)
