@@ -1,7 +1,7 @@
 /**
  * Gate 2 VTS test harness. Does not change trading semantics.
  *
- * Layer A: existing unit tests (src/**/*.test.ts).
+ * Layer A: existing unit tests.
  * Layer B: src/runtime/vts-failure-injection.test.ts (FakeKis, no network).
  * Layer C: src/runtime/vts-lifecycle.test.ts (real VTS, default OFF).
  *

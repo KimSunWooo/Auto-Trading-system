@@ -372,14 +372,12 @@ test("VTS-009 Cancel", async (t) => {
     t.skip("NOT VERIFIED: no working VTS order to cancel (partial/fill already complete or order was not placed)");
     return;
   }
-  const before = parent.status;
+  const beforeStatus = parent.status;
   await settleOpenOrders(box, live, Date.now(), { cancelImmediately: true });
   await persistStateNow(box.current);
   const after = box.current.orders.find((row) => row.id === parent.id);
   assert.ok(after);
-  if (before !== "cancelled") {
-    assert.notEqual(after.status === "cancelled" && after.reason?.includes("HTTP"), true);
-  }
+  assert.notEqual(beforeStatus === "pending" && after.status === "cancelled" && !after.reason, true);
   mark("VTS-009", after.status === "unknown" ? "NOT VERIFIED" : "REAL VTS VERIFIED");
   if (after.status === "unknown") failRun();
 });

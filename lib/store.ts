@@ -22,7 +22,9 @@ export const DEFAULT_STORE_PATH = path.join(DATA_DIR, "paper-account.json");
 export function resolveStorePath(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.TRADING_STATE_PATH?.trim();
   if (!override) return DEFAULT_STORE_PATH;
-  return path.isAbsolute(override) ? override : path.join(process.cwd(), override);
+  if (path.isAbsolute(override)) return override;
+  const underData = override.replace(/^data\/?/, "");
+  return path.join(process.cwd(), "data", underData);
 }
 
 let activeStorePath = resolveStorePath();
