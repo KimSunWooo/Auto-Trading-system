@@ -16,10 +16,33 @@ import { holdsWorkerLock } from "@/src/runtime/worker-lock";
 import { buildRuntimePublic } from "@/src/runtime/status";
 
 const DATA_DIR = path.join(process.cwd(), "data");
-const STORE_PATH = path.join(DATA_DIR, "paper-account.json");
-const repository = new JsonStateRepository(STORE_PATH);
+export const DEFAULT_STORE_PATH = path.join(DATA_DIR, "paper-account.json");
+
+/** Optional test-only override. Unset in production so the paper book is unchanged. */
+export function resolveStorePath(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.TRADING_STATE_PATH?.trim();
+  if (!override) return DEFAULT_STORE_PATH;
+  return path.isAbsolute(override) ? override : path.join(process.cwd(), override);
+}
+
+let activeStorePath = resolveStorePath();
+let repository = new JsonStateRepository(activeStorePath);
 
 let queue: Promise<unknown> = Promise.resolve();
+
+export function currentStorePath(): string {
+  return activeStorePath;
+}
+
+export function configureStateStore(filePath: string): void {
+  activeStorePath = filePath;
+  repository = new JsonStateRepository(filePath);
+  queue = Promise.resolve();
+}
+
+export function resetStateStoreForTest(): void {
+  configureStateStore(resolveStorePath());
+}
 
 function asRuleId(value: unknown): string {
   const id = typeof value === "string" ? value : "";
@@ -167,8 +190,11 @@ export async function mutateStore(
   });
 }
 
+/** Production paper book is not written during `npm test`. Isolated VTS paths still persist. */
 export async function persistStateNow(state: AppState) {
-  if (process.env.npm_lifecycle_event === "test") return;
+  const testingDefaultBook =
+    process.env.npm_lifecycle_event === "test" && activeStorePath === DEFAULT_STORE_PATH;
+  if (testingDefaultBook) return;
   await saveState(state);
 }
 
@@ -207,4 +233,4 @@ export async function tickAndGet(
   return toPublic(next);
 }
 
-export { STORE_PATH };
+export const STORE_PATH = DEFAULT_STORE_PATH;

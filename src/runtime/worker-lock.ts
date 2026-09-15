@@ -22,9 +22,15 @@ export type WorkerLockRecord = {
 const DEFAULT_TTL_MS = 8_000;
 
 let held: { workerId: string; filePath: string } | null = null;
+let configuredLockPath: string | null = null;
 
 export function defaultLockPath(): string {
-  return path.join(process.cwd(), "data", "trading-worker.lock");
+  return configuredLockPath ?? path.join(process.cwd(), "data", "trading-worker.lock");
+}
+
+/** Test-only path injection. Unset in production so the worker lock file is unchanged. */
+export function configureWorkerLockPath(filePath: string | null): void {
+  configuredLockPath = filePath;
 }
 
 export function currentWorkerId(): string | null {
@@ -186,4 +192,5 @@ export function releaseWorkerLock(workerId?: string): void {
 
 export function resetWorkerLockForTest(): void {
   held = null;
+  configuredLockPath = null;
 }

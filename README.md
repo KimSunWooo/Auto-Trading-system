@@ -101,6 +101,8 @@ npm run dev
 
 LIVE_TEST 한도(서버 `OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다.
 
+`npm test`는 실제 KIS 주문을 내지 않습니다. 읽기 전용 VTS는 `RUN_KIS_VTS_TESTS=true`, 주문은 `RUN_KIS_VTS_ORDER_TESTS=true`가 추가로 있을 때만 실행됩니다. REAL 관련 플래그가 보이면 테스트를 ABORT 합니다. VTS 장부는 `data/vts-test/<testRunId>/`에만 쌓이며 운영 `paper-account.json`과 섞이지 않습니다.
+
 검증이 끝나면 `.env.local`을 다시 Mock 기본값으로 되돌리세요.
 
 ## 한국투자증권 실전 (이번 단계에서 사용하지 않음)

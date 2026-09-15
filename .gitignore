@@ -40,6 +40,7 @@ yarn-error.log*
 /data/*.lock
 /data/*.bak
 /data/*.tmp
+/data/vts-test/
 /agent-tools
 
 # vercel
