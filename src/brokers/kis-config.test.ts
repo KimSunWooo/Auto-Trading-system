@@ -37,13 +37,29 @@ test("real mode stays locked without live confirm", () => {
   assert.ok(cfg.issues.some((msg) => msg.includes("KIS_LIVE_CONFIRM")));
 });
 
-test("real mode unlocks only with the exact confirm value", () => {
+test("LIVE_TEST cannot unlock real-host orders even with confirm", () => {
   const cfg = loadKisConfig({
     KIS_APP_KEY: "key",
     KIS_APP_SECRET: "secret",
     KIS_ACCOUNT_NO: "12345678-01",
     KIS_MODE: "real",
     KIS_LIVE_CONFIRM: KIS_LIVE_CONFIRM_VALUE,
+    TRADING_MODE: "live_test",
+    ALLOW_LIVE_TRADING: "true",
+  });
+  assert.equal(cfg.liveEnabled, false);
+  assert.ok(cfg.issues.some((msg) => msg.includes("KIS_MODE=demo")));
+});
+
+test("real mode unlocks only with live mode, allow flag, and confirm", () => {
+  const cfg = loadKisConfig({
+    KIS_APP_KEY: "key",
+    KIS_APP_SECRET: "secret",
+    KIS_ACCOUNT_NO: "12345678-01",
+    KIS_MODE: "real",
+    KIS_LIVE_CONFIRM: KIS_LIVE_CONFIRM_VALUE,
+    TRADING_MODE: "live",
+    ALLOW_LIVE_TRADING: "true",
   });
   assert.equal(cfg.liveEnabled, true);
 });

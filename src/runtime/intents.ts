@@ -1,10 +1,22 @@
-import { nowIso } from "@/src/clock";
+import { nowIso, nowMs } from "@/src/clock";
 import type { AppState, Order, OrderIntent, Side } from "@/lib/types";
 
 export const MAX_INTENTS = 400;
 
 export function makeSignalId(parts: Array<string | number>): string {
   return parts.map((part) => String(part)).join(":");
+}
+
+/** Same-second dashboard double-submit collapses to one intent. */
+export function manualIntentId(input: {
+  ruleId: string;
+  ticker: string;
+  side: Side;
+  qty: number;
+  atMs?: number;
+}): string {
+  const bucket = Math.floor((input.atMs ?? nowMs()) / 1000);
+  return makeSignalId(["sig", "manual", input.ruleId, input.ticker, input.side, input.qty, bucket]);
 }
 
 export function findIntent(state: Pick<AppState, "intents">, intentId: string | undefined): OrderIntent | undefined {

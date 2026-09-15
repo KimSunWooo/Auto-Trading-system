@@ -16,7 +16,7 @@ import {
   sellBandSlices,
   sessionBlockReason,
 } from "@/src/accounts/execution-policy";
-import { isLiveLike, liveOrdersLocked } from "@/src/runtime/trading-mode";
+import { isLiveLike, liveOrdersLocked, tradingMode } from "@/src/runtime/trading-mode";
 import { findOrderByIntent } from "@/src/runtime/intents";
 import { nowMs } from "@/src/clock";
 import { blockSafety } from "@/src/runtime/safety";
@@ -296,7 +296,15 @@ export class KisBroker implements IBroker {
   private precheck(ticker: string, side: "buy" | "sell"): BrokerFill | null {
     const liveLock = liveOrdersLocked();
     if (liveLock) return this.reject(ticker, side, liveLock);
-    if (isLiveLike() && !holdsWorkerLock()) {
+    if (this.client.mode === "real" && tradingMode() !== "live") {
+      return this.reject(
+        ticker,
+        side,
+        "LIVE_TEST/MOCK에서는 KIS 모의투자(VTS)만 주문합니다. KIS_MODE=demo 로 설정하세요.",
+      );
+    }
+    const liquidatingSell = this.box.current.settings.liquidating && side === "sell";
+    if (isLiveLike() && !holdsWorkerLock() && !liquidatingSell) {
       return this.reject(ticker, side, "트레이딩 워커 락이 없어 주문하지 않습니다.");
     }
     if (!this.client.configured) {
@@ -310,7 +318,9 @@ export class KisBroker implements IBroker {
       return this.reject(
         ticker,
         side,
-        "실전 주문이 잠겨 있습니다. KIS_LIVE_CONFIRM=I_UNDERSTAND 를 설정하세요.",
+        this.client.mode === "real"
+          ? "실전 주문이 잠겨 있습니다. TRADING_MODE=live, ALLOW_LIVE_TRADING=true, KIS_LIVE_CONFIRM=I_UNDERSTAND 가 모두 필요합니다."
+          : "한국투자증권 주문이 잠겨 있습니다.",
       );
     }
     const locked = executionLocked(this.box.current);

@@ -22,7 +22,8 @@ import { checkHardLimits } from "@/src/risk/limits";
 import { RiskManager } from "@/src/risk/RiskManager";
 import { recoverExternalOrders } from "@/src/runtime/recovery";
 import { readJsonWithBackup, writeJsonAtomic } from "@/src/runtime/atomic-file";
-import { httpTickAllowed, tradingMode } from "@/src/runtime/trading-mode";
+import { httpTickAllowed, liveTestCaps, tradingMode } from "@/src/runtime/trading-mode";
+import { makeSignalId, manualIntentId } from "@/src/runtime/intents";
 import {
   resetWorkerLockForTest,
   tryAcquireWorkerLock,
@@ -60,7 +61,7 @@ function fakePrice(ticker: string, price = 70_000): KisPrice {
 }
 
 class FakeKis implements KisApi {
-  readonly mode = "demo" as const;
+  mode: KisApi["mode"] = "demo";
   configured = true;
   liveEnabled = true;
   issues: string[] = [];
@@ -519,4 +520,52 @@ test("http tick is allowed only in mock/paper", () => {
   assert.equal(httpTickAllowed("live_test"), false);
   assert.equal(httpTickAllowed("live"), false);
   assert.equal(tradingMode({ TRADING_MODE: "MOCK" }), "mock");
+});
+
+test("LIVE_TEST rejects real-host KisBroker orders", async () => {
+  process.env.TRADING_MODE = "live_test";
+  tryAcquireWorkerLock("vts-real-block");
+  const client = new FakeKis();
+  client.mode = "real";
+  const box = { current: createPaperState() };
+  const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 10_000);
+  assert.equal(fill.ok, false);
+  assert.match(fill.reason ?? "", /모의투자|KIS_MODE=demo/);
+  assert.equal(client.orders.length, 0);
+  releaseWorkerLock("vts-real-block");
+});
+
+test("emergency flatten can sell without a worker lock", async () => {
+  process.env.TRADING_MODE = "live_test";
+  resetWorkerLockForTest();
+  const state = createPaperState();
+  state.positions = [{ code: "005930", name: "삼성전자", qty: 1, avgPrice: 70_000, ruleId: "cash" }];
+  state.allocations = state.allocations.map((row) =>
+    row.ruleId === "cash" ? { ...row, balance: row.balance - 70_000 } : row,
+  );
+  const box = { current: state };
+  const client = new FakeKis();
+  await RiskManager.emergencyFlatten(box, { kis: client });
+  assert.ok(client.orders.some((row) => row.side === "sell"));
+  assert.equal(box.current.settings.autoTrading, false);
+});
+
+test("same-second manual intent ids collapse double submits", () => {
+  const a = manualIntentId({ ruleId: "cash", ticker: "005930", side: "buy", qty: 1, atMs: 1_000 });
+  const b = manualIntentId({ ruleId: "cash", ticker: "005930", side: "buy", qty: 1, atMs: 1_400 });
+  const c = manualIntentId({ ruleId: "cash", ticker: "005930", side: "buy", qty: 1, atMs: 2_000 });
+  assert.equal(a, b);
+  assert.equal(a, makeSignalId(["sig", "manual", "cash", "005930", "buy", 1, 1]));
+  assert.notEqual(a, c);
+});
+
+test("LIVE_TEST env values cannot exceed default caps", () => {
+  const caps = liveTestCaps({
+    LIVE_TEST_MAX_ORDER_KRW: "9999999",
+    LIVE_TEST_MAX_DAILY_ORDER_AMOUNT: "9999999",
+    LIVE_TEST_MAX_DAILY_ORDER_COUNT: "99",
+  });
+  assert.equal(caps.maxOrderKrw, 10_000);
+  assert.equal(caps.maxDailyBuyKrw, 30_000);
+  assert.equal(caps.maxDailyOrders, 3);
 });

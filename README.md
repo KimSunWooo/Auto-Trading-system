@@ -68,28 +68,44 @@ npm test
 
 로컬에서 예전 프리셋을 쓰려면 `.env.local` 에 `NEXT_PUBLIC_ADMIN_MODE=true` 를 넣고 개발 서버를 재시작합니다. `localhost` 로 열면 이 변수가 없어도 관리자 프리셋이 보입니다.
 
-## 한국투자증권 연결
+## 한국투자증권 모의투자(VTS)
 
-실거래(또는 KIS 모의투자)를 쓰려면 Open API 앱키와 계좌번호가 필요합니다.
+기본 실행은 항상 Mock입니다.
 
-### 1. 개발자센터에서 앱키 발급
+```
+BROKER=mock
+TRADING_MODE=MOCK
+ALLOW_LIVE_TRADING=false
+KIS_MODE=demo
+```
 
-1. [한국투자증권 Open API](https://apiportal.koreainvestment.com)에 로그인합니다.
-2. 모의투자 또는 실전용 앱키·앱시크릿을 발급합니다. 모의용과 실전용 키는 다릅니다.
-
-### 2. `.env.local`
+VTS 검증은 `.env.local`에만 키를 넣고, **모의투자 앱키**와 `KIS_MODE=demo`만 사용합니다. 값은 Git에 넣지 않습니다. 상세 시나리오는 [docs/VTS_TEST_MANUAL.md](docs/VTS_TEST_MANUAL.md)를 따릅니다.
 
 ```
 BROKER=kis
+TRADING_MODE=live_test
+ALLOW_LIVE_TRADING=false
 KIS_MODE=demo
-KIS_APP_KEY=...
-KIS_APP_SECRET=...
-KIS_ACCOUNT_NO=12345678-01
+KIS_APP_KEY=<모의 앱키>
+KIS_APP_SECRET=<모의 시크릿>
+KIS_ACCOUNT_NO=<모의계좌 8자리-상품코드>
 ```
 
-실전은 `KIS_MODE=real` 과 `KIS_LIVE_CONFIRM=I_UNDERSTAND` 가 있어야 주문이 열립니다.
+```bash
+cp .env.example .env.local
+# .env.local 에 모의투자 키만 채운 뒤
+npm run dev
+```
 
-화면 상단 배지가 **KIS 실전**인지 확인한 뒤 조건식을 켜세요. 정규장(09:00~15:20 KST) 밖 — 동시호가·시간외 — 신규 주문은 OrderManager가 원천 차단합니다.
+화면 상단 배지가 **KIS 모의** / `LIVE_TEST` 인지 확인합니다. `KIS_MODE=real`, `KIS_LIVE_CONFIRM`, `ALLOW_LIVE_TRADING=true` 는 VTS 단계에서 설정하지 않습니다. 실전 호스트로 주문이 나가지 않도록 코드가 `TRADING_MODE=live_test`에서 실전 주문을 거절합니다.
+
+LIVE_TEST 한도(서버 `OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다.
+
+검증이 끝나면 `.env.local`을 다시 Mock 기본값으로 되돌리세요.
+
+## 한국투자증권 실전 (이번 단계에서 사용하지 않음)
+
+실전은 `TRADING_MODE=live` + `ALLOW_LIVE_TRADING=true` + `KIS_MODE=real` + `KIS_LIVE_CONFIRM=I_UNDERSTAND`가 **모두** 있을 때만 열립니다. VTS 시나리오가 통과하기 전에는 켜지 마세요.
 
 ## 주문 경로
 

@@ -6,6 +6,7 @@ import {
 } from "@/src/brokers/kis-config";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { BrokerRejectError, IndeterminateOrderError } from "@/src/risk/errors";
+import { allowLiveTrading, realKisOrdersLocked, tradingMode } from "@/src/runtime/trading-mode";
 
 export type KisPrice = {
   ticker: string;
@@ -210,11 +211,7 @@ export class KisClient implements KisApi {
 
   async orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }> {
     this.assertConfigured();
-    if (this.config.mode === "real" && !this.config.liveEnabled) {
-      throw new Error(
-        "실전 주문이 잠겨 있습니다. KIS_MODE=real 과 KIS_LIVE_CONFIRM=I_UNDERSTAND 를 함께 설정하세요.",
-      );
-    }
+    this.assertRealOrdersAllowed();
     if (order.qty < 1) {
       throw new Error("주문 수량이 1주 미만입니다.");
     }
@@ -250,11 +247,7 @@ export class KisClient implements KisApi {
 
   async cancelOrder(order: KisCancelOrder): Promise<void> {
     this.assertConfigured();
-    if (this.config.mode === "real" && !this.config.liveEnabled) {
-      throw new Error(
-        "실전 주문이 잠겨 있습니다. KIS_MODE=real 과 KIS_LIVE_CONFIRM=I_UNDERSTAND 를 함께 설정하세요.",
-      );
-    }
+    this.assertRealOrdersAllowed();
     const body = {
       CANO: this.config.cano,
       ACNT_PRDT_CD: this.config.productCode,
@@ -429,6 +422,17 @@ export class KisClient implements KisApi {
   private assertConfigured() {
     if (!this.config.configured) {
       throw new Error(this.config.issues[0] ?? "한국투자증권 Open API 설정이 없습니다.");
+    }
+  }
+
+  private assertRealOrdersAllowed() {
+    if (this.config.mode !== "real") return;
+    const locked = realKisOrdersLocked();
+    if (locked || tradingMode() !== "live" || !allowLiveTrading() || !this.config.liveEnabled) {
+      throw new Error(
+        locked ??
+          "실전 주문이 잠겨 있습니다. TRADING_MODE=live, ALLOW_LIVE_TRADING=true, KIS_LIVE_CONFIRM=I_UNDERSTAND 가 모두 필요합니다.",
+      );
     }
   }
 

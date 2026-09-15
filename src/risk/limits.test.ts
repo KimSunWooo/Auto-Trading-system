@@ -48,6 +48,23 @@ test("resetCircuit clears halt when there is no unknown order", () => {
   assert.equal(emptyCircuit().halted, false);
 });
 
+test("LIVE_TEST env cannot raise the 10,000원 order cap", () => {
+  process.env.TRADING_MODE = "live_test";
+  process.env.LIVE_TEST_MAX_ORDER_KRW = "2000000";
+  try {
+    const reason = checkHardLimits(createPaperState(), {
+      side: "buy",
+      ticker: "005930",
+      qty: 1,
+      price: 70_000,
+    });
+    assert.match(reason ?? "", /10,000|10000/);
+  } finally {
+    delete process.env.TRADING_MODE;
+    delete process.env.LIVE_TEST_MAX_ORDER_KRW;
+  }
+});
+
 test("child partial fills do not double-count the daily order cap", () => {
   const state = createPaperState();
   const today = new Date().toISOString();

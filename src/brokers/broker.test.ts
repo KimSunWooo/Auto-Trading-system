@@ -37,6 +37,9 @@ class FakeKis implements KisApi {
   cancels: KisCancelOrder[] = [];
   failNext: string | null = null;
   failCancel: string | null = null;
+  failOpen = false;
+  failCcld = false;
+  keepOpenAfterCancel = false;
   autoFill = false;
   balance: KisAccountBalance = { cash: 10_000_000, d2Cash: 10_000_000, holdings: [] };
 
@@ -55,10 +58,12 @@ class FakeKis implements KisApi {
   }
 
   async inquireDailyCcld() {
+    if (this.failCcld) throw new Error("execution down");
     return this.fills.map((row) => ({ ...row }));
   }
 
   async inquireOpenOrders() {
+    if (this.failOpen) throw new Error("open orders down");
     return this.fills.filter((row) => row.unfilledQty > 0).map((row) => ({ ...row }));
   }
 
@@ -101,6 +106,7 @@ class FakeKis implements KisApi {
       throw err;
     }
     this.cancels.push(order);
+    if (this.keepOpenAfterCancel) return;
     const row = this.fills.find((fill) => sameOdno(fill.orderNo, order.orderNo));
     if (row) row.unfilledQty = 0;
   }
@@ -178,7 +184,7 @@ test("KisBroker blocks live orders when confirm is missing", async () => {
   const client = new FakeKis({ liveEnabled: false });
   const fill = await new KisBroker(box, client).buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
-  assert.match(fill.reason ?? "", /KIS_LIVE_CONFIRM/);
+  assert.match(fill.reason ?? "", /잠겨/);
   assert.equal(client.orders.length, 0);
 });
 
@@ -303,6 +309,54 @@ test("settleOpenOrders cancels a still-unfilled ticket with no fills", async () 
   assert.equal(live.filledQty, 0);
   const after = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   assert.equal(after, before);
+});
+
+test("settleOpenOrders does not mark cancelled until KIS nccs drops the ODNO", async () => {
+  const box = { current: createPaperState() };
+  const client = new FakeKis();
+  client.keepOpenAfterCancel = true;
+  await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
+  const parent = box.current.orders.find((o) => o.status === "pending")!;
+  parent.createdAt = new Date(nowMs() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
+  client.fills = [
+    {
+      orderNo: "0000000123",
+      ticker: "005930",
+      side: "buy",
+      qty: 2,
+      filledQty: 0,
+      unfilledQty: 2,
+      avgPrice: 0,
+    },
+  ];
+  await settleOpenOrders(box, client);
+  assert.equal(client.cancels.length, 1);
+  const live = box.current.orders.find((o) => o.id === parent.id)!;
+  assert.equal(live.status, "pending");
+});
+
+test("settleOpenOrders leaves UNKNOWN when post-cancel inquiry fails", async () => {
+  const box = { current: createPaperState() };
+  const client = new FakeKis();
+  await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
+  const parent = box.current.orders.find((o) => o.status === "pending")!;
+  parent.createdAt = new Date(nowMs() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
+  client.fills = [
+    {
+      orderNo: "0000000123",
+      ticker: "005930",
+      side: "buy",
+      qty: 2,
+      filledQty: 0,
+      unfilledQty: 2,
+      avgPrice: 0,
+    },
+  ];
+  client.failOpen = true;
+  await settleOpenOrders(box, client);
+  const live = box.current.orders.find((o) => o.id === parent.id)!;
+  assert.equal(live.status, "unknown");
+  assert.match(live.reason ?? "", /미체결 조회/);
 });
 
 test("MockBroker getCurrentPrice reads the paper book", async () => {

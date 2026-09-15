@@ -31,6 +31,16 @@ function remainingOf(order: Order, match: KisDayOrder | undefined): number {
   return Math.max(0, (match.qty || ordered) - match.filledQty);
 }
 
+function haltUnknown(box: StateBox, orderId: string, reason: string) {
+  const patched = patchOrder(box.current, orderId, {
+    status: "unknown",
+    reason,
+  });
+  if (patched.order) {
+    box.current = openCircuit(patched.state, patched.order.reason ?? reason, patched.order);
+  }
+}
+
 async function bookRemoteFill(
   box: StateBox,
   order: Order,
@@ -166,26 +176,30 @@ export async function settleOpenOrders(
       });
     } catch (err) {
       if (isIndeterminateError(err)) {
-        const patched = patchOrder(box.current, current.id, {
-          status: "unknown",
-          reason: err instanceof Error ? err.message : "잔량 취소 결과를 확인하지 못했습니다.",
-        });
-        if (patched.order) {
-          box.current = openCircuit(
-            patched.state,
-            patched.order.reason ?? "잔량 취소 미확인",
-            patched.order,
-          );
-        }
-        continue;
+        haltUnknown(
+          box,
+          current.id,
+          err instanceof Error ? err.message : "잔량 취소 결과를 확인하지 못했습니다.",
+        );
       }
+      continue;
+    }
+
+    let working: KisDayOrder[] = [];
+    try {
+      working = await client.inquireOpenOrders();
+    } catch {
+      haltUnknown(box, current.id, "취소 요청 후 미체결 조회에 실패해 상태를 확정하지 않습니다.");
+      continue;
     }
 
     try {
       remote = await client.inquireDailyCcld();
     } catch {
-      // cancel went out; close locally using last known fill
+      haltUnknown(box, current.id, "취소 요청 후 체결내역을 확인하지 못해 상태를 확정하지 않습니다.");
+      continue;
     }
+
     const afterCancel = box.current.orders.find((row) => row.id === snapshot.id);
     if (!afterCancel) continue;
     const latest = findCcld(remote, afterCancel);
@@ -195,6 +209,8 @@ export async function settleOpenOrders(
     }
     const final = box.current.orders.find((row) => row.id === snapshot.id);
     if (!final || (final.status !== "pending" && final.status !== "unknown")) continue;
+    const stillOpen = working.some((row) => sameOdno(row.orderNo, final.brokerOrderNo));
+    if (stillOpen) continue;
     closeRemainder(box, final, final.filledQty ?? 0, final.orderedQty ?? final.qty);
   }
   return { ok: true };

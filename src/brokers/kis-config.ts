@@ -1,4 +1,5 @@
 import type { BrokerDriver, BrokerPublicStatus } from "@/lib/types";
+import { realKisOrdersLocked } from "@/src/runtime/trading-mode";
 
 export type KisMode = "demo" | "real";
 
@@ -73,12 +74,15 @@ export function loadKisConfig(env: EnvMap = process.env): KisConfig {
     issues.push("KIS_ACCOUNT_NO 는 8자리 계좌+2자리 상품코드여야 합니다. 예: 12345678-01");
   }
 
-  const liveEnabled =
-    mode === "demo" || env.KIS_LIVE_CONFIRM === KIS_LIVE_CONFIRM_VALUE;
-  if (mode === "real" && !liveEnabled) {
+  const confirmed = env.KIS_LIVE_CONFIRM === KIS_LIVE_CONFIRM_VALUE;
+  const realUnlocked = mode === "real" && confirmed && !realKisOrdersLocked(env);
+  const liveEnabled = mode === "demo" || realUnlocked;
+  if (mode === "real" && !confirmed) {
     issues.push(
       `실전 주문은 KIS_LIVE_CONFIRM=${KIS_LIVE_CONFIRM_VALUE} 가 필요합니다. 시세 조회만 가능합니다.`,
     );
+  } else if (mode === "real" && !realUnlocked) {
+    issues.push(realKisOrdersLocked(env) ?? "실전 KIS 주문이 잠겨 있습니다.");
   }
 
   const cano = parsed?.cano ?? "";

@@ -2,6 +2,7 @@ import { mutateStore, toPublic } from "@/lib/store";
 import { createBroker } from "@/src/brokers/index";
 import { CASH_RULE_ID, normalizeTicker } from "@/src/rules/params";
 import type { Side } from "@/lib/types";
+import { manualIntentId } from "@/src/runtime/intents";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,11 @@ export async function POST(request: Request) {
   let unknown = false;
   const state = await mutateStore(async (current) => {
     const box = { current };
-    const broker = createBroker(box).forRule(ruleId).withSource("manual");
+    const intentId = manualIntentId({ ruleId, ticker: code, side, qty });
+    const broker = createBroker(box)
+      .forRule(ruleId)
+      .withSource("manual")
+      .withIntent({ intentId, signalId: intentId, reason: "manual" });
     let price = current.quotes[code]?.price ?? 0;
     try {
       price = await broker.getCurrentPrice(code);
