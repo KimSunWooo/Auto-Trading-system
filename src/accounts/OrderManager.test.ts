@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { OrderManager } from "./OrderManager";
 import type { StateBox } from "./StateBox";
-import { createInitialState } from "@/lib/engine";
+import { createInitialState, createPaperState } from "@/lib/engine";
 import { MockBroker } from "@/src/brokers/MockBroker";
 import { withNow } from "@/src/clock";
 import {
@@ -13,40 +13,51 @@ import {
   splitQty,
 } from "./execution-policy";
 
-test("OrderManager rejects a buy that exceeds the strategy bucket", () => {
-  const box: StateBox = { current: createInitialState() };
-  const tiny = box.current.allocations.find((a) => a.strategy === "Level1_Stable");
+test("OrderManager rejects a buy that exceeds the rule bucket", () => {
+  const box: StateBox = { current: createPaperState() };
+  const tiny = box.current.allocations.find((a) => a.ruleId === "cash");
   assert.ok(tiny);
   tiny.balance = 1_000;
   tiny.budget = 1_000;
   box.current.cash = box.current.allocations.reduce((s, a) => s + a.balance, 0);
 
-  const fill = new OrderManager(box).buy("Level1_Stable", "005930", 10, 74800);
+  const fill = new OrderManager(box).buy("cash", "005930", 10, 74800);
   assert.equal(fill.ok, false);
   assert.match(fill.reason ?? "", /잔액/);
 });
 
 test("OrderManager fills inside the named bucket only", () => {
-  const box: StateBox = { current: createInitialState() };
-  const beforeAggressive = box.current.allocations.find(
-    (a) => a.strategy === "Level10_Aggressive",
-  )!.balance;
-  const fill = new OrderManager(box).buy("Level1_Stable", "005930", 1, 70000);
+  const box: StateBox = { current: createPaperState() };
+  box.current.allocations = [
+    { ruleId: "cash", budget: 1_000_000, balance: 1_000_000, enabled: true },
+    { ruleId: "rule-a", budget: 7_000_000, balance: 7_000_000, enabled: true },
+    { ruleId: "rule-b", budget: 2_000_000, balance: 2_000_000, enabled: true },
+  ];
+  box.current.cash = 10_000_000;
+  const beforeB = box.current.allocations.find((a) => a.ruleId === "rule-b")!.balance;
+  const fill = new OrderManager(box).buy("rule-a", "005930", 1, 70000);
   assert.equal(fill.ok, true);
-  const level1 = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!;
-  const aggressive = box.current.allocations.find((a) => a.strategy === "Level10_Aggressive")!;
-  assert.ok(level1.balance < 7_000_000);
-  assert.equal(aggressive.balance, beforeAggressive);
-  assert.equal(box.current.positions[0]?.strategy, "Level1_Stable");
+  const ruleA = box.current.allocations.find((a) => a.ruleId === "rule-a")!;
+  const ruleB = box.current.allocations.find((a) => a.ruleId === "rule-b")!;
+  assert.ok(ruleA.balance < 7_000_000);
+  assert.equal(ruleB.balance, beforeB);
+  assert.equal(box.current.positions[0]?.ruleId, "rule-a");
+});
+
+test("OrderManager locks buys until the user accepts the disclaimer", () => {
+  const box: StateBox = { current: createInitialState() };
+  const fill = new OrderManager(box).buy("cash", "005930", 1, 70_000);
+  assert.equal(fill.ok, false);
+  assert.match(fill.reason ?? "", /이용 동의/);
 });
 
 test("session interceptor blocks mock orders when ignoreMarketHours is off", async () => {
   await withNow(Date.UTC(2026, 8, 15, 6, 20, 0), () => {
-    const box: StateBox = { current: createInitialState() };
+    const box: StateBox = { current: createPaperState() };
     box.current.settings.ignoreMarketHours = false;
     const reason = sessionBlockReason(box.current);
     assert.match(reason ?? "", /09:00~15:20/);
-    const fill = new OrderManager(box).buy("Level1_Stable", "005930", 1, 70_000);
+    const fill = new OrderManager(box).buy("cash", "005930", 1, 70_000);
     assert.equal(fill.ok, false);
     assert.match(fill.reason ?? "", /동시호가|정규장/);
   });
@@ -75,9 +86,9 @@ test("247540 and similar names forbid market orders", () => {
 });
 
 test("MockBroker rewrites a 247540 market buy to a limit band", async () => {
-  const box: StateBox = { current: createInitialState() };
+  const box: StateBox = { current: createPaperState() };
   const last = box.current.quotes["247540"]!.price;
-  const fill = await new MockBroker(box, "Level1_Stable").buyMarket("247540", last * 2);
+  const fill = await new MockBroker(box, "cash").buyMarket("247540", last * 2);
   assert.equal(fill.ok, true);
   assert.equal(box.current.orders[0]?.ordDvsn, "limit");
   assert.ok((box.current.orders[0]?.price ?? 0) >= last);

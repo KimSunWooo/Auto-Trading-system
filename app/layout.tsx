@@ -16,9 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "미리매수 · 한국투자증권 자동매매",
+  title: "미리매수 · 조건식 매매 실행 도구",
   description:
-    "한국투자증권 Open API 기준 국내주식 조건매수·적립매수·퀀트 엔진. 로컬 모의와 KIS 모의·실전 주문을 지원합니다.",
+    "사용자가 직접 입력한 조건식에 따라 한국투자증권 Open API 매매를 기계적으로 실행하는 소프트웨어 도구입니다.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

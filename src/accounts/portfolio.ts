@@ -1,6 +1,6 @@
 import type { AppState, Position, Quote } from "@/lib/types";
 
-export function portfolioValue(state: {
+export function accountValue(state: {
   cash: number;
   positions: Position[];
   quotes: Record<string, Quote>;
@@ -12,14 +12,17 @@ export function portfolioValue(state: {
   return state.cash + holdings;
 }
 
-export function strategyEquity(
+/** @deprecated Use accountValue */
+export const portfolioValue = accountValue;
+
+export function ruleEquity(
   state: Pick<AppState, "allocations" | "positions" | "quotes">,
-  strategy: string,
+  ruleId: string,
 ): number {
-  const bucket = state.allocations.find((row) => row.strategy === strategy);
+  const bucket = state.allocations.find((row) => row.ruleId === ruleId);
   const cash = bucket?.balance ?? 0;
   const held = state.positions
-    .filter((p) => p.strategy === strategy)
+    .filter((p) => p.ruleId === ruleId)
     .reduce((sum, p) => {
       const quote = state.quotes[p.code];
       return sum + p.qty * (quote?.price ?? p.avgPrice);

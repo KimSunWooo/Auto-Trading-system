@@ -1,31 +1,19 @@
 import type { Allocation } from "@/lib/types";
-import {
-  AGGRESSIVE_UNIVERSE,
-  KODEX_200,
-  SWING_TICKER,
-} from "@/src/strategies/params";
+import { CASH_RULE_ID } from "@/src/rules/params";
 
 export const TOTAL_DEPOSIT = 10_000_000;
+export { CASH_RULE_ID };
 
-/** Default paper split: 70% defensive ETF, 30% aggressive overlay. */
+/** Working cash ledger only. No preset trading rules. */
 export const DEFAULT_ALLOCATIONS: Allocation[] = [
   {
-    strategy: "Level1_Stable",
-    riskLevel: 1,
-    budget: 7_000_000,
-    balance: 7_000_000,
+    ruleId: CASH_RULE_ID,
+    budget: TOTAL_DEPOSIT,
+    balance: TOTAL_DEPOSIT,
     enabled: true,
-  },
-  {
-    strategy: "Level10_Aggressive",
-    riskLevel: 10,
-    budget: 3_000_000,
-    balance: 3_000_000,
-    enabled: true,
+    lastMessage: "사용자 예수금",
   },
 ];
-
-export { KODEX_200, SWING_TICKER, AGGRESSIVE_UNIVERSE };
 
 export function cashFromAllocations(allocations: Allocation[]): number {
   return allocations.reduce((sum, row) => sum + row.balance, 0);

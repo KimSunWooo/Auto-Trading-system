@@ -18,13 +18,13 @@ export function feeBreakdown(side: Side, amount: number) {
   return { commission, tax, net };
 }
 
-export function pickBucket(state: AppState, need: number, strategy?: string): string | null {
-  if (strategy) {
-    const named = state.allocations.find((a) => a.strategy === strategy);
-    if (named && named.balance >= need) return named.strategy;
+export function pickBucket(state: AppState, need: number, ruleId?: string): string | null {
+  if (ruleId) {
+    const named = state.allocations.find((a) => a.ruleId === ruleId);
+    if (named && named.balance >= need) return named.ruleId;
     return null;
   }
-  return state.allocations.find((a) => a.balance >= need)?.strategy ?? null;
+  return state.allocations.find((a) => a.balance >= need)?.ruleId ?? null;
 }
 
 export function applyFill(
@@ -44,7 +44,7 @@ export function applyFill(
     createdAt: draft.createdAt ?? nowIso(),
     source: draft.source,
     sourceId: draft.sourceId,
-    strategy: draft.strategy,
+    ruleId: draft.ruleId,
     code: draft.code,
     name: draft.name,
     side: draft.side,
@@ -78,19 +78,19 @@ export function applyFill(
   let allocations = state.allocations.map((a) => ({ ...a }));
 
   if (draft.side === "buy") {
-    const bucketKey = pickBucket(state, fees.net, draft.strategy);
+    const bucketKey = pickBucket(state, fees.net, draft.ruleId);
     if (!bucketKey) {
       return reject(
-        draft.strategy
-          ? `${draft.strategy} 버킷 잔액이 부족합니다.`
-          : "전략 버킷 잔액이 부족합니다.",
+        draft.ruleId
+          ? `${draft.ruleId} 버킷 잔액이 부족합니다.`
+          : "사용자 예수금이 부족합니다.",
       );
     }
     allocations = allocations.map((a) =>
-      a.strategy === bucketKey ? { ...a, balance: a.balance - fees.net } : a,
+      a.ruleId === bucketKey ? { ...a, balance: a.balance - fees.net } : a,
     );
     const existing = positions.find(
-      (p) => p.code === draft.code && p.strategy === bucketKey,
+      (p) => p.code === draft.code && p.ruleId === bucketKey,
     );
     if (existing) {
       const totalQty = existing.qty + draft.qty;
@@ -103,10 +103,10 @@ export function applyFill(
         name: draft.name,
         qty: draft.qty,
         avgPrice: draft.price,
-        strategy: bucketKey,
+        ruleId: bucketKey,
       });
     }
-    order.strategy = bucketKey;
+    order.ruleId = bucketKey;
     const cash = cashFromAllocations(allocations);
     return {
       state: {
@@ -114,29 +114,29 @@ export function applyFill(
         cash,
         allocations,
         positions,
-        orders: trimOrderLog([{ ...order, strategy: bucketKey }, ...state.orders]),
+        orders: trimOrderLog([{ ...order, ruleId: bucketKey }, ...state.orders]),
       },
-      order: { ...order, strategy: bucketKey },
+      order: { ...order, ruleId: bucketKey },
     };
   }
 
-  const strategyKey = draft.strategy;
+  const ruleIdKey = draft.ruleId;
   const existing = positions.find(
-    (p) => p.code === draft.code && (!strategyKey || p.strategy === strategyKey),
+    (p) => p.code === draft.code && (!ruleIdKey || p.ruleId === ruleIdKey),
   );
   if (!existing || existing.qty < draft.qty) {
     return reject("매도 가능 수량이 부족합니다.");
   }
   existing.qty -= draft.qty;
-  const creditTo = existing.strategy;
+  const creditTo = existing.ruleId;
   allocations = allocations.map((a) =>
-    a.strategy === creditTo ? { ...a, balance: a.balance + fees.net } : a,
+    a.ruleId === creditTo ? { ...a, balance: a.balance + fees.net } : a,
   );
   const remaining = positions.filter((p) => p.qty > 0);
   const realizedPnl = Math.round(
     (draft.price - existing.avgPrice) * draft.qty - fees.commission - fees.tax,
   );
-  const filled: Order = { ...order, strategy: creditTo, realizedPnl };
+  const filled: Order = { ...order, ruleId: creditTo, realizedPnl };
   return {
     state: {
       ...state,
@@ -152,10 +152,10 @@ export function applyFill(
 export function findPosition(
   positions: Position[],
   code: string,
-  strategy?: string,
+  ruleId?: string,
 ) {
   return positions.find(
-    (p) => p.code === code && (!strategy || p.strategy === strategy),
+    (p) => p.code === code && (!ruleId || p.ruleId === ruleId),
   );
 }
 
@@ -171,7 +171,7 @@ export function recordPending(
     id?: string;
     source: OrderSource;
     sourceId?: string;
-    strategy?: string;
+    ruleId?: string;
     code: string;
     name: string;
     side: Side;
@@ -188,7 +188,7 @@ export function recordPending(
     createdAt: nowIso(),
     source: draft.source,
     sourceId: draft.sourceId,
-    strategy: draft.strategy,
+    ruleId: draft.ruleId,
     code: draft.code,
     name: draft.name,
     side: draft.side,
@@ -241,7 +241,7 @@ export function confirmPendingFill(
     const rejected: Order = {
       id: orderId,
       createdAt: nowIso(),
-      source: "strategy",
+      source: "rule",
       code: "",
       name: "",
       side: "buy",
@@ -265,7 +265,7 @@ export function confirmPendingFill(
     createdAt: pending.createdAt,
     source: pending.source,
     sourceId: pending.sourceId,
-    strategy: pending.strategy,
+    ruleId: pending.ruleId,
     code: pending.code,
     name: pending.name,
     side: pending.side,
@@ -295,7 +295,7 @@ export function bookReportedFill(
       parent: {
         id: parentId,
         createdAt: nowIso(),
-        source: "strategy",
+        source: "rule",
         code: "",
         name: "",
         side: "buy",
@@ -331,7 +331,7 @@ export function bookReportedFill(
   const applied = applyFill(state, {
     source: parent.source,
     sourceId: parent.sourceId,
-    strategy: parent.strategy,
+    ruleId: parent.ruleId,
     code: parent.code,
     name: parent.name,
     side: parent.side,

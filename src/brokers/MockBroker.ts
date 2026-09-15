@@ -4,6 +4,7 @@ import type { BrokerFill, BrokerQuote, IBroker } from "@/src/brokers/IBroker";
 import { canFillLimit } from "@/src/accounts/fills";
 import { findStock } from "@/lib/universe";
 import type { OrderSource } from "@/lib/types";
+import { CASH_RULE_ID } from "@/src/rules/params";
 import {
   resolveMarketIntent,
   sellBandSlices,
@@ -11,24 +12,24 @@ import {
 
 /**
  * Local paper broker. Quotes come from the simulated book; fills go through
- * OrderManager so each strategy only spends its own sub-account.
+ * OrderManager so each user rule only spends its own sub-account.
  */
 export class MockBroker implements IBroker {
   readonly driver = "mock" as const;
 
   constructor(
     private readonly box: StateBox,
-    private readonly strategyKey: string = "Level1_Stable",
-    private readonly source: OrderSource = "strategy",
+    private readonly ruleKey: string = CASH_RULE_ID,
+    private readonly source: OrderSource = "rule",
     private readonly sourceId?: string,
   ) {}
 
-  forStrategy(strategyKey: string): MockBroker {
-    return new MockBroker(this.box, strategyKey, this.source, this.sourceId);
+  forRule(ruleKey: string): MockBroker {
+    return new MockBroker(this.box, ruleKey, this.source, this.sourceId);
   }
 
   withSource(source: OrderSource, sourceId?: string): MockBroker {
-    return new MockBroker(this.box, this.strategyKey, source, sourceId);
+    return new MockBroker(this.box, this.ruleKey, source, sourceId);
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
@@ -66,7 +67,7 @@ export class MockBroker implements IBroker {
       return this.buyLimit(ticker, intent.price, amount);
     }
     const qty = Math.floor(amount / price);
-    return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price, {
+    return new OrderManager(this.box).buy(this.ruleKey, ticker, qty, price, {
       source: this.source,
       sourceId: this.sourceId,
       ordDvsn: "market",
@@ -89,7 +90,7 @@ export class MockBroker implements IBroker {
       };
     }
     const qty = Math.floor(amount / price);
-    return new OrderManager(this.box).buy(this.strategyKey, ticker, qty, price, {
+    return new OrderManager(this.box).buy(this.ruleKey, ticker, qty, price, {
       source: this.source,
       sourceId: this.sourceId,
       ordDvsn: "limit",
@@ -102,7 +103,7 @@ export class MockBroker implements IBroker {
     if (intent.converted) {
       return sellBandSlices(this, ticker, qty, price);
     }
-    return new OrderManager(this.box).sell(this.strategyKey, ticker, qty, price, {
+    return new OrderManager(this.box).sell(this.ruleKey, ticker, qty, price, {
       source: this.source,
       sourceId: this.sourceId,
       ordDvsn: "market",
@@ -124,7 +125,7 @@ export class MockBroker implements IBroker {
         reason: `지정가 ${price.toLocaleString("ko-KR")}원보다 현재가 ${last.toLocaleString("ko-KR")}원이 낮아 미체결입니다.`,
       };
     }
-    return new OrderManager(this.box).sell(this.strategyKey, ticker, qty, last, {
+    return new OrderManager(this.box).sell(this.ruleKey, ticker, qty, last, {
       source: this.source,
       sourceId: this.sourceId,
       ordDvsn: "limit",

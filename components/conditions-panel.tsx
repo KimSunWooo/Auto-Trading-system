@@ -60,8 +60,7 @@ export function ConditionsPanel({
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const defaultCode = state.quotes["005930"] ? "005930" : Object.keys(state.quotes)[0];
-  const [code, setCode] = useState(defaultCode);
+  const [code, setCode] = useState("");
   const [side, setSide] = useState<Side>("buy");
   const [watchBasis, setWatchBasis] = useState<WatchBasis>("last");
   const [operator, setOperator] = useState<CompareOp>("lte");
@@ -148,35 +147,6 @@ export function ConditionsPanel({
     }
   }
 
-  async function loadDemo(mode: "watch" | "fill") {
-    const samsung = state.quotes["005930"];
-    if (!samsung) return;
-    const trigger = mode === "fill" ? samsung.price : Math.round(samsung.price * 0.985);
-    try {
-      const next = await api<PublicState>("/api/conditions", {
-        method: "POST",
-        body: JSON.stringify({
-          code: samsung.code,
-          side: "buy",
-          watchBasis: "last",
-          operator: "lte",
-          triggerPrice: trigger,
-          qty: 10,
-          orderPriceType: "market",
-          expireDays: 30,
-        }),
-      });
-      onState(next);
-      toast.success(
-        mode === "fill"
-          ? "삼성전자 즉시 체결 예시를 등록했습니다. 다음 시세 틱에서 매수됩니다."
-          : "삼성전자 1.5% 아래 감시 예시를 등록했습니다.",
-      );
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "예시 등록에 실패했습니다.");
-    }
-  }
-
   return (
     <div className="space-y-4">
       <Card>
@@ -207,17 +177,11 @@ export function ConditionsPanel({
               <div>
                 <p className="font-medium">등록된 감시 조건이 없습니다</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  예: 삼성전자 현재가가 74,000원 이하이면 10주 시장가 매수
+                  종목코드 6자리와 조건가격을 직접 입력하세요.
                 </p>
               </div>
               <div className="flex flex-wrap justify-center gap-2">
                 <Button onClick={() => setOpen(true)}>조건 만들기</Button>
-                <Button variant="outline" onClick={() => void loadDemo("watch")}>
-                  감시 예시
-                </Button>
-                <Button variant="outline" onClick={() => void loadDemo("fill")}>
-                  바로 체결 예시
-                </Button>
               </div>
             </div>
           ) : (

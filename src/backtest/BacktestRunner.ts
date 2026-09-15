@@ -1,7 +1,7 @@
 import type { Allocation, AppState, Order } from "@/lib/types";
 import { createInitialQuotes, createInitialState } from "@/lib/engine";
 import { cashFromAllocations } from "@/src/accounts/defaults";
-import { portfolioValue } from "@/src/accounts/portfolio";
+import { accountValue } from "@/src/accounts/portfolio";
 import { withNow } from "@/src/clock";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 import { tradingBlocked } from "@/src/risk/circuit";
@@ -20,7 +20,7 @@ export type BacktestTrade = {
   name: string;
   qty: number;
   price: number;
-  strategy?: string;
+  ruleId?: string;
   realizedPnl?: number;
 };
 
@@ -41,7 +41,7 @@ export type BacktestMetrics = {
 
 export type BacktestResult = {
   years: number;
-  strategyIds: string[];
+  ruleIds: string[];
   metrics: BacktestMetrics;
   equityCurve: EquityPoint[];
   tradeLog: BacktestTrade[];
@@ -53,6 +53,21 @@ export type BacktestInput = {
   allocations: Allocation[];
   candles?: Record<string, Candle[]>;
 };
+
+function emptyMetrics(startEquity: number): BacktestMetrics {
+  return {
+    startEquity,
+    endEquity: startEquity,
+    totalReturnPct: 0,
+    mddPct: 0,
+    trades: 0,
+    winRatePct: null,
+    avgWin: null,
+    avgLoss: null,
+    wins: 0,
+    losses: 0,
+  };
+}
 
 function metricsFrom(curve: EquityPoint[], sells: BacktestTrade[]): BacktestMetrics {
   const startEquity = curve[0]?.equity ?? 0;
@@ -98,6 +113,16 @@ export class BacktestRunner {
   static async run(input: BacktestInput): Promise<BacktestResult> {
     const years = input.years === 1 ? 1 : 2;
     const tickers = watchedBacktestTickers();
+    const ruleIds = input.allocations.filter((row) => row.enabled && row.ruleId !== "cash").map((row) => row.ruleId);
+    if (tickers.length === 0) {
+      return {
+        years,
+        ruleIds,
+        metrics: emptyMetrics(input.totalDeposit),
+        equityCurve: [{ t: Date.now(), equity: input.totalDeposit }],
+        tradeLog: [],
+      };
+    }
     const candles = input.candles ?? generateDailyCandles(tickers, years);
     const sample = Object.values(candles)[0] ?? [];
     const allocations = input.allocations.map((row) => ({
@@ -112,6 +137,7 @@ export class BacktestRunner {
       settings: {
         ...createInitialState().settings,
         autoTrading: true,
+        disclaimerAccepted: true,
         ignoreMarketHours: true,
         startingCash: input.totalDeposit,
       },
@@ -133,14 +159,14 @@ export class BacktestRunner {
         state = RiskManager.rollDay(state, new Date(t));
         state = applyDay(state, candles, i);
         const box = { current: state };
-        await new RiskManager(box).enforceStopLoss();
+        await new RiskManager(box).enforceStops();
         box.current = RiskManager.checkDailyLoss(box.current);
-        if (box.current.settings.autoTrading && !tradingBlocked(box.current)) {
+        if (box.current.settings.autoTrading && box.current.settings.disclaimerAccepted && !tradingBlocked(box.current)) {
           box.current = await QuantEngine.run(box.current);
         }
         state = box.current;
       });
-      curve.push({ t, equity: portfolioValue(state) });
+      curve.push({ t, equity: accountValue(state) });
     }
 
     const tradeLog: BacktestTrade[] = state.orders
@@ -154,7 +180,7 @@ export class BacktestRunner {
         name: order.name,
         qty: order.qty,
         price: order.price,
-        strategy: order.strategy,
+        ruleId: order.ruleId,
         realizedPnl: order.realizedPnl,
       }));
 
@@ -165,7 +191,7 @@ export class BacktestRunner {
 
     return {
       years,
-      strategyIds: allocations.filter((row) => row.enabled).map((row) => row.strategy),
+      ruleIds,
       metrics: computed,
       equityCurve: curve.filter((_, i) => i % Math.max(1, Math.floor(curve.length / 120)) === 0 || i === curve.length - 1),
       tradeLog: tradeLog.slice(0, 40),

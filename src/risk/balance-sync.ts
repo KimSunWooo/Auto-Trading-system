@@ -4,6 +4,7 @@ import { openCircuit } from "@/src/risk/circuit";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { cashFromAllocations } from "@/src/accounts/defaults";
 import type { AppState, KisBalanceSnapshot, Position } from "@/lib/types";
+import { CASH_RULE_ID } from "@/src/rules/params";
 
 function padTicker(code: string): string {
   return code.replace(/\D/g, "").slice(-6).padStart(6, "0");
@@ -61,7 +62,7 @@ export function applyKisSnapshot(
   now = Date.now(),
 ): AppState {
   const fallback =
-    [...state.allocations].sort((a, b) => b.budget - a.budget)[0]?.strategy ?? "Level1_Stable";
+    [...state.allocations].sort((a, b) => b.budget - a.budget)[0]?.ruleId ?? CASH_RULE_ID;
   const positions: Position[] = remote.holdings
     .filter((row) => row.qty > 0)
     .map((row) => {
@@ -72,7 +73,7 @@ export function applyKisSnapshot(
         name: row.name || prev?.name || code,
         qty: row.qty,
         avgPrice: row.avgPrice > 0 ? row.avgPrice : (prev?.avgPrice ?? 0),
-        strategy: prev?.strategy ?? fallback,
+        ruleId: prev?.ruleId ?? fallback,
       };
     });
 

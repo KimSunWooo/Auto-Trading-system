@@ -4,7 +4,7 @@ import { KisBroker } from "./KisBroker";
 import { MockBroker } from "./MockBroker";
 import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "./kis-client";
 import { padOdno, sameOdno } from "./kis-client";
-import { createInitialState } from "@/lib/engine";
+import { createPaperState } from "@/lib/engine";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
@@ -109,7 +109,7 @@ test("sameOdno matches padded KIS order numbers", () => {
 });
 
 test("KisBroker without credentials refuses orders and does not hit KIS", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis({
     configured: false,
     liveEnabled: false,
@@ -122,16 +122,16 @@ test("KisBroker without credentials refuses orders and does not hit KIS", async 
 });
 
 test("KisBroker treats ODNO as working, not a full fill", async () => {
-  const box = { current: createInitialState() };
-  const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const box = { current: createPaperState() };
+  const before = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   const client = new FakeKis();
-  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
   assert.equal(fill.status, "pending");
   assert.equal(fill.qty, 2);
   assert.equal(client.orders.length, 1);
   assert.equal(client.orders[0]?.ordDvsn, "market");
-  const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const after = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   assert.equal(after, before);
   const parent = box.current.orders.find((o) => o.status === "pending");
   assert.ok(parent);
@@ -142,14 +142,14 @@ test("KisBroker treats ODNO as working, not a full fill", async () => {
 });
 
 test("KisBroker books a fill only after daily ccld reports qty", async () => {
-  const box = { current: createInitialState() };
-  const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const box = { current: createPaperState() };
+  const before = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   const client = new FakeKis();
   client.autoFill = true;
-  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.ok, true);
   assert.equal(fill.status, "filled");
-  const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const after = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   assert.ok(after < before);
   const children = box.current.orders.filter((o) => o.parentOrderId);
   assert.equal(children.length, 1);
@@ -158,18 +158,18 @@ test("KisBroker books a fill only after daily ccld reports qty", async () => {
 });
 
 test("KisBroker checks the bucket before calling KIS", async () => {
-  const box = { current: createInitialState() };
-  const level1 = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!;
+  const box = { current: createPaperState() };
+  const level1 = box.current.allocations.find((a) => a.ruleId === "cash")!;
   level1.balance = 1_000;
   const client = new FakeKis();
-  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
   assert.match(fill.reason ?? "", /잔액/);
   assert.equal(client.orders.length, 0);
 });
 
 test("KisBroker blocks live orders when confirm is missing", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis({ liveEnabled: false });
   const fill = await new KisBroker(box, client).buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
@@ -178,50 +178,50 @@ test("KisBroker blocks live orders when confirm is missing", async () => {
 });
 
 test("timeout after orderCash marks unknown and blocks the next buy", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis();
   client.orderCash = async () => {
     const err = new Error("timeout");
     err.name = "TimeoutError";
     throw err;
   };
-  const first = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const first = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(first.ok, false);
   assert.equal(first.status, "unknown");
   assert.equal(box.current.circuit.halted, true);
   assert.equal(box.current.orders[0]?.status, "unknown");
 
-  const second = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const second = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(second.ok, false);
   assert.match(second.reason ?? "", /확인하지|서킷|미확인/);
 });
 
 test("hard limit blocks a ticket before it reaches KIS", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis();
-  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 3_000_000);
+  const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 3_000_000);
   assert.equal(fill.ok, false);
   assert.match(fill.reason ?? "", /한도/);
   assert.equal(client.orders.length, 0);
 });
 
 test("pending working order blocks another buy of the same ticker", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis();
-  const first = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const first = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(first.status, "pending");
-  const second = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  const second = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(second.ok, false);
   assert.match(second.reason ?? "", /미체결/);
   assert.equal(client.orders.length, 1);
 });
 
 test("settleOpenOrders books only the reported partial fill", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis();
-  await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
-  const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const before = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   client.fills = [
     {
       orderNo: "123",
@@ -234,7 +234,7 @@ test("settleOpenOrders books only the reported partial fill", async () => {
     },
   ];
   await settleOpenOrders(box, client);
-  const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const after = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   assert.ok(after < before);
   const live = box.current.orders.find((o) => o.id === parent.id)!;
   assert.equal(live.status, "pending");
@@ -246,9 +246,9 @@ test("settleOpenOrders books only the reported partial fill", async () => {
 });
 
 test("settleOpenOrders cancels remaining qty after the timeout", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis();
-  await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
   parent.createdAt = new Date(nowMs() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
   client.fills = [
@@ -274,9 +274,9 @@ test("settleOpenOrders cancels remaining qty after the timeout", async () => {
 });
 
 test("settleOpenOrders cancels a still-unfilled ticket with no fills", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis();
-  await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+  await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
   parent.createdAt = new Date(nowMs() - HARD_LIMITS.cancelUnfilledAfterMs - 1_000).toISOString();
   client.fills = [
@@ -290,27 +290,27 @@ test("settleOpenOrders cancels a still-unfilled ticket with no fills", async () 
       avgPrice: 0,
     },
   ];
-  const before = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const before = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   await settleOpenOrders(box, client);
   assert.equal(client.cancels.length, 1);
   const live = box.current.orders.find((o) => o.id === parent.id)!;
   assert.equal(live.status, "cancelled");
   assert.equal(live.filledQty, 0);
-  const after = box.current.allocations.find((a) => a.strategy === "Level1_Stable")!.balance;
+  const after = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   assert.equal(after, before);
 });
 
 test("MockBroker getCurrentPrice reads the paper book", async () => {
-  const box = { current: createInitialState() };
-  const broker = new MockBroker(box, "Level1_Stable");
+  const box = { current: createPaperState() };
+  const broker = new MockBroker(box, "cash");
   const price = await broker.getCurrentPrice("005930");
   assert.ok(price > 0);
 });
 
 test("KisBroker converts 247540 market buy to a limit band", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeKis();
-  const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("247540", 140_000);
+  const fill = await new KisBroker(box, client, "cash").buyMarket("247540", 140_000);
   assert.equal(fill.status, "pending");
   assert.equal(client.orders[0]?.ordDvsn, "limit");
   assert.equal(client.orders[0]?.price, bandLimitPrice("buy", 70_000));
@@ -319,9 +319,9 @@ test("KisBroker converts 247540 market buy to a limit band", async () => {
 
 test("KisBroker rejects a new order during closing auction", async () => {
   await withNow(Date.UTC(2026, 8, 15, 6, 20, 0), async () => {
-    const box = { current: createInitialState() };
+    const box = { current: createPaperState() };
     const client = new FakeKis();
-    const fill = await new KisBroker(box, client, "Level1_Stable").buyMarket("005930", 140_000);
+    const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
     assert.equal(fill.ok, false);
     assert.match(fill.reason ?? "", /09:00~15:20|동시호가/);
     assert.equal(client.orders.length, 0);
@@ -329,13 +329,13 @@ test("KisBroker rejects a new order during closing auction", async () => {
 });
 
 test("KisBroker sellLimit sends a limit cash order", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   box.current.positions = [
-    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, ruleId: "cash" },
   ];
   const client = new FakeKis();
   const limit = bandLimitPrice("sell", 70_000);
-  const fill = await new KisBroker(box, client, "Level1_Stable").sellLimit("005930", limit, 2);
+  const fill = await new KisBroker(box, client, "cash").sellLimit("005930", limit, 2);
   assert.equal(fill.status, "pending");
   assert.equal(client.orders[0]?.ordDvsn, "limit");
   assert.equal(client.orders[0]?.price, limit);

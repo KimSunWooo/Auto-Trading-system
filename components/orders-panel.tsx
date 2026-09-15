@@ -17,7 +17,7 @@ const SOURCE: Record<string, string> = {
   condition: "조건매수",
   dca: "적립매수",
   manual: "수동",
-  strategy: "퀀트",
+  rule: "조건식",
 };
 
 export function OrdersPanel({ state }: { state: PublicState }) {
@@ -83,7 +83,7 @@ export function OrdersPanel({ state }: { state: PublicState }) {
                     <div className="font-medium">{order.name}</div>
                     <div className="text-xs text-muted-foreground">
                       {order.code}
-                      {order.strategy ? ` · ${order.strategy}` : ""}
+                      {order.ruleId ? ` · ${order.ruleId}` : ""}
                       {order.brokerOrderNo ? ` · ${order.brokerOrderNo}` : ""}
                     </div>
                   </TableCell>

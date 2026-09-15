@@ -1,5 +1,5 @@
 import { nowIso, nowMs } from "@/src/clock";
-import { portfolioValue } from "@/src/accounts/portfolio";
+import { accountValue } from "@/src/accounts/portfolio";
 import type { StateBox } from "@/src/accounts/StateBox";
 import { MockBroker } from "@/src/brokers/MockBroker";
 import { KisBroker } from "@/src/brokers/KisBroker";
@@ -13,6 +13,8 @@ import { settleOpenOrders } from "@/src/risk/reconcile";
 import { applyKisSnapshot } from "@/src/risk/balance-sync";
 import { createBroker } from "@/src/brokers/index";
 import { sellBandSlices } from "@/src/accounts/execution-policy";
+import { getRuleConfig } from "@/src/rules/config";
+import { autoRunAllowed } from "@/src/rules/disclaimer";
 
 function riskOf(state: AppState): ProductRisk {
   return state.settings?.risk ?? DEFAULT_PRODUCT_RISK;
@@ -59,7 +61,7 @@ export class RiskManager {
     }
     return {
       ...next,
-      dayStart: { date: today, equity: Math.max(1, portfolioValue(next)) },
+      dayStart: { date: today, equity: Math.max(1, accountValue(next)) },
     };
   }
 
@@ -67,7 +69,7 @@ export class RiskManager {
     const marked = RiskManager.rollDay(state);
     if (marked.circuit?.halted) return marked;
     const start = marked.dayStart.equity;
-    const equity = portfolioValue(marked);
+    const equity = accountValue(marked);
     const lossPct = (start - equity) / start;
     const cap = riskOf(marked).dailyLossPct;
     if (lossPct + 1e-12 >= cap) {
@@ -186,20 +188,20 @@ export class RiskManager {
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;
       const live = box.current.positions.find(
-        (row) => row.code === pos.code && row.strategy === pos.strategy,
+        (row) => row.code === pos.code && row.ruleId === pos.ruleId,
       );
       if (!live || live.qty < 1) continue;
       const last = box.current.quotes[pos.code]?.price ?? 0;
       const fill =
         last > 0
           ? await sellBandSlices(
-              broker.forStrategy(pos.strategy),
+              broker.forRule(pos.ruleId),
               pos.code,
               live.qty,
               last,
               box.current.quotes[pos.code]?.prevClose,
             )
-          : await broker.forStrategy(pos.strategy).sellMarket(pos.code, live.qty);
+          : await broker.forRule(pos.ruleId).sellMarket(pos.code, live.qty);
       if (fill.ok || fill.status === "pending") {
         flattened += 1;
         notes.push(
@@ -290,26 +292,34 @@ export class RiskManager {
     return box.current;
   }
 
-  async enforceStopLoss(): Promise<void> {
+  async enforceStops(): Promise<void> {
     const state = this.box.current;
-    if (!state.settings.autoTrading) return;
+    if (!autoRunAllowed(state)) return;
     if (state.circuit?.kind === "kill" || state.circuit?.kind === "unknown") return;
-    const pct = riskOf(state).stopLossPct;
+    const product = riskOf(state);
+    const rules = getRuleConfig().rules;
     const root = createBroker(this.box);
     const snapshot = [...state.positions];
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;
       const quote = this.box.current.quotes[pos.code];
       const last = quote?.price ?? pos.avgPrice;
-      if (!RiskManager.shouldStopLoss(pos.avgPrice, last, pct)) continue;
-      await sellBandSlices(root.forStrategy(pos.strategy), pos.code, pos.qty, last, quote?.prevClose);
+      const rule = rules.find((row) => row.id === pos.ruleId);
+      const stopPct = rule?.stopLossPct ?? product.stopLossPct;
+      const takePct = rule?.takeProfitPct ?? 0;
+      const takeHit = takePct > 0 && pos.avgPrice > 0 && (last - pos.avgPrice) / pos.avgPrice >= takePct;
+      const stopHit = RiskManager.shouldStopLoss(pos.avgPrice, last, stopPct);
+      if (!takeHit && !stopHit) continue;
+      const label = takeHit ? "익절" : "손절";
+      const pct = takeHit ? takePct : stopPct;
+      await sellBandSlices(root.forRule(pos.ruleId), pos.code, pos.qty, last, quote?.prevClose);
       this.box.current = {
         ...this.box.current,
         allocations: this.box.current.allocations.map((row) =>
-          row.strategy === pos.strategy
+          row.ruleId === pos.ruleId
             ? {
                 ...row,
-                lastMessage: `${pos.name} 손절 (${Math.round(pct * 100)}%, 평단 대비)`,
+                lastMessage: `${pos.name} ${label} (${Math.round(pct * 100)}%, 평단 대비)`,
                 lastRunAt: nowIso(),
               }
             : row,

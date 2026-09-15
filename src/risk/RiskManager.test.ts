@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createInitialState } from "@/lib/engine";
+import { createPaperState } from "@/lib/engine";
 import { RiskManager } from "./RiskManager";
 import { seoulDay } from "./limits";
 import { tradingBlocked } from "./circuit";
 import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "@/src/brokers/kis-client";
 
 test("RiskManager blocks a buy that would exceed 20% ticker weight", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const reason = RiskManager.checkBuy(state, {
     side: "buy",
     ticker: "005930",
@@ -18,7 +18,7 @@ test("RiskManager blocks a buy that would exceed 20% ticker weight", () => {
 });
 
 test("RiskManager allows a small buy under the product weight cap", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const reason = RiskManager.checkBuy(state, {
     side: "buy",
     ticker: "005930",
@@ -29,7 +29,7 @@ test("RiskManager allows a small buy under the product weight cap", () => {
 });
 
 test("daily loss of 3% opens a daily-loss circuit", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.dayStart = { date: seoulDay(), equity: 10_000_000 };
   state.cash = 9_600_000;
   const halted = RiskManager.checkDailyLoss(state);
@@ -44,19 +44,19 @@ test("stop-loss triggers at -5% vs average price", () => {
 });
 
 test("stop-loss sells with a -3% limit band in slices, not market", async () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const quote = state.quotes["005930"]!;
   quote.price = 70_000;
   quote.prevClose = 70_000;
   state.positions = [
-    { code: "005930", name: "삼성전자", qty: 10, avgPrice: 80_000, strategy: "Level1_Stable" },
+    { code: "005930", name: "삼성전자", qty: 10, avgPrice: 80_000, ruleId: "cash" },
   ];
   state.allocations = state.allocations.map((row) =>
-    row.strategy === "Level1_Stable" ? { ...row, balance: row.balance - 800_000 } : row,
+    row.ruleId === "cash" ? { ...row, balance: row.balance - 800_000 } : row,
   );
   state.cash = state.allocations.reduce((sum, row) => sum + row.balance, 0);
   const box = { current: state };
-  await new RiskManager(box).enforceStopLoss();
+  await new RiskManager(box).enforceStops();
   const sells = box.current.orders.filter((row) => row.side === "sell");
   assert.equal(sells.length, 2);
   assert.ok(sells.every((row) => row.ordDvsn === "limit"));
@@ -68,12 +68,12 @@ test("stop-loss sells with a -3% limit band in slices, not market", async () => 
 });
 
 test("kill switch disables buckets and auto trading", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.orders = [
     {
       id: "p1",
       createdAt: new Date().toISOString(),
-      source: "strategy",
+      source: "rule",
       code: "005930",
       name: "삼성전자",
       side: "buy",
@@ -94,12 +94,12 @@ test("kill switch disables buckets and auto trading", () => {
 });
 
 test("executeKillSwitch band-limit sells mock positions then halts", async () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.positions = [
-    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, ruleId: "cash" },
   ];
   state.allocations = state.allocations.map((row) =>
-    row.strategy === "Level1_Stable" ? { ...row, balance: row.balance - 140_000 } : row,
+    row.ruleId === "cash" ? { ...row, balance: row.balance - 140_000 } : row,
   );
   state.cash = state.allocations.reduce((sum, row) => sum + row.balance, 0);
   const box = { current: state };
@@ -110,7 +110,7 @@ test("executeKillSwitch band-limit sells mock positions then halts", async () =>
   assert.equal(after.positions.length, 0);
   assert.equal(after.killReport?.flattened, 1);
   assert.equal(after.killReport?.overwritten, false);
-  assert.ok((after.allocations.find((row) => row.strategy === "Level1_Stable")?.balance ?? 0) > 6_800_000);
+  assert.ok((after.allocations.find((row) => row.ruleId === "cash")?.balance ?? 0) > 6_800_000);
   assert.ok(after.orders.filter((row) => row.side === "sell").every((row) => row.ordDvsn === "limit"));
 });
 
@@ -166,12 +166,12 @@ class KillKis implements KisApi {
 }
 
 test("executeKillSwitch cancels KIS working orders immediately and overwrites the book", async () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.orders = [
     {
       id: "k1",
       createdAt: new Date().toISOString(),
-      source: "strategy",
+      source: "rule",
       code: "005930",
       name: "삼성전자",
       side: "buy",
@@ -199,15 +199,15 @@ test("executeKillSwitch cancels KIS working orders immediately and overwrites th
 });
 
 test("executeKillSwitch skips flatten when a cancel stays unknown", async () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.positions = [
-    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, ruleId: "cash" },
   ];
   state.orders = [
     {
       id: "u1",
       createdAt: new Date().toISOString(),
-      source: "strategy",
+      source: "rule",
       code: "005930",
       name: "삼성전자",
       side: "buy",

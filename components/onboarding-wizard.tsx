@@ -7,14 +7,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { BacktestPreview } from "@/components/backtest-preview";
 import { api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
-import { PLAYBOOKS, type PlaybookId } from "@/lib/playbooks";
 import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
+import { DISCLAIMER_TEXT } from "@/src/rules/params";
 import type { PublicState } from "@/lib/types";
+import { DisclaimerModal } from "@/components/disclaimer-modal";
+import { RuleBuilder, draftToRule, emptyDraft, type RuleDraft } from "@/components/rule-builder";
 
-const STEPS = ["증권사", "투자금", "전략", "백테스트", "시작"] as const;
+const STEPS = ["증권사", "예수금", "매매 룰", "면책", "시작"] as const;
 
 export function OnboardingWizard({
   state,
@@ -28,21 +29,12 @@ export function OnboardingWizard({
   const [step, setStep] = useState(0);
   const [mode, setMode] = useState<"mock" | "kis">(state.broker.driver === "kis" ? "kis" : "mock");
   const [budget, setBudget] = useState(state.totalDeposit);
-  const [selected, setSelected] = useState<PlaybookId[]>(
-    state.allocations.filter((row) => row.budget > 0).map((row) => row.strategy as PlaybookId)
-      .length
-      ? (state.allocations.filter((row) => row.budget > 0).map((row) => row.strategy) as PlaybookId[])
-      : ["Level1_Stable", "Level10_Aggressive"],
-  );
-  const [autoStart, setAutoStart] = useState(true);
+  const [draft, setDraft] = useState<RuleDraft>(emptyDraft());
+  const [autoStart, setAutoStart] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [disclaimerOpen, setDisclaimerOpen] = useState(false);
+  const [disclaimerChecked, setDisclaimerChecked] = useState(false);
   const risk = state.settings.risk ?? DEFAULT_PRODUCT_RISK;
-
-  function toggle(id: PlaybookId) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((row) => row !== id) : [...current, id],
-    );
-  }
 
   async function skip() {
     try {
@@ -58,47 +50,54 @@ export function OnboardingWizard({
     }
   }
 
-  async function finish() {
-    if (selected.length < 1) {
-      toast.error("전략을 하나 이상 고르세요.");
-      return;
-    }
+  async function submit(opts: { autoStart: boolean; disclaimerAccepted: boolean }) {
     setSaving(true);
     try {
+      const rule = draft.ticker.length === 6 ? draftToRule(draft) : undefined;
+      if (rule && rule.budget <= 0) rule.budget = budget;
       onState(
         await api<PublicState>("/api/onboarding", {
           method: "POST",
           body: JSON.stringify({
             totalDeposit: budget,
-            strategies: selected,
-            autoStart,
+            rule,
+            autoStart: opts.autoStart,
+            disclaimerAccepted: opts.disclaimerAccepted,
           }),
         }),
       );
-      toast.success(autoStart ? "자동매매를 시작했습니다." : "설정을 저장했습니다. 원할 때 시작하세요.");
+      toast.success(opts.autoStart ? "설정한 조건으로 실행을 시작했습니다." : "사용자 설정을 저장했습니다.");
       onClose();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "시작하지 못했습니다.");
+      toast.error(err instanceof Error ? err.message : "저장하지 못했습니다.");
     } finally {
       setSaving(false);
     }
   }
 
   function next() {
-    if (step === 2 && selected.length < 1) {
-      toast.error("전략을 하나 이상 고르세요.");
+    if (step === 2 && draft.ticker && draft.ticker.length !== 6) {
+      toast.error("종목코드는 6자리입니다. 비워 두면 조건식 없이 저장할 수 있습니다.");
       return;
     }
     setStep((n) => Math.min(STEPS.length - 1, n + 1));
+  }
+
+  function finish() {
+    if (autoStart) {
+      setDisclaimerOpen(true);
+      return;
+    }
+    void submit({ autoStart: false, disclaimerAccepted: disclaimerChecked });
   }
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">투자 시작 가이드</h2>
+          <h2 className="text-lg font-semibold">시작 가이드</h2>
           <p className="text-sm text-muted-foreground">
-            다섯 단계로 증권사·예산·전략을 고르고 과거 성과를 확인한 뒤 켭니다.
+            종목·조건·금액을 직접 입력하는 매매 실행 도구입니다. 미리 정해 둔 조건식이나 종목은 없습니다.
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => void skip()}>
@@ -156,8 +155,8 @@ export function OnboardingWizard({
       {step === 1 ? (
         <Card>
           <CardHeader>
-            <CardTitle>투자금 설정</CardTitle>
-            <CardDescription>자동매매에 맡길 예산을 정합니다. 로컬 장부 기준입니다.</CardDescription>
+            <CardTitle>예수금 설정</CardTitle>
+            <CardDescription>이 도구가 사용할 로컬 장부 예수금입니다. 증권사가 대신 판단하지 않습니다.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="text-2xl font-semibold tabular-nums">{formatWon(budget)}</div>
@@ -185,31 +184,13 @@ export function OnboardingWizard({
       {step === 2 ? (
         <Card>
           <CardHeader>
-            <CardTitle>전략 선택</CardTitle>
-            <CardDescription>복수 선택이 가능합니다. 안정형+공격형은 70/30으로 나눕니다.</CardDescription>
+            <CardTitle>매매 룰 직접 입력</CardTitle>
+            <CardDescription>
+              거래할 종목코드, 매수/매도 조건, 1회 매수 금액, 손절/익절 라인을 빈칸에 넣습니다.
+            </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-3">
-            {PLAYBOOKS.map((book) => {
-              const on = selected.includes(book.id);
-              return (
-                <button
-                  key={book.id}
-                  type="button"
-                  onClick={() => toggle(book.id)}
-                  className={`rounded-xl border p-4 text-left ${on ? "ring-2 ring-primary" : ""}`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium">
-                      {book.label}
-                      <span className="ml-2 text-xs font-normal text-muted-foreground">{book.tone}</span>
-                    </div>
-                    <span className="text-xs text-muted-foreground">{on ? "선택됨" : "꺼짐"}</span>
-                  </div>
-                  <p className="mt-1 text-sm">{book.summary}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{book.detail}</p>
-                </button>
-              );
-            })}
+          <CardContent>
+            <RuleBuilder value={draft} onChange={setDraft} />
           </CardContent>
         </Card>
       ) : null}
@@ -217,11 +198,20 @@ export function OnboardingWizard({
       {step === 3 ? (
         <Card>
           <CardHeader>
-            <CardTitle>백테스트 확인</CardTitle>
-            <CardDescription>선택한 전략을 과거 일봉에 재생한 결과입니다. 미래 수익을 보장하지 않습니다.</CardDescription>
+            <CardTitle>이용 동의</CardTitle>
+            <CardDescription>자동 실행을 켜려면 아래 내용에 명시적으로 동의해야 합니다.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <BacktestPreview strategies={selected} totalDeposit={budget} years={2} />
+          <CardContent className="space-y-4">
+            <p className="text-sm leading-6">{DISCLAIMER_TEXT}</p>
+            <label className="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={disclaimerChecked}
+                onChange={(event) => setDisclaimerChecked(event.target.checked)}
+              />
+              <span>위 내용을 읽었고, 모든 투자 판단과 결과에 대한 책임이 본인에게 있음에 동의합니다.</span>
+            </label>
           </CardContent>
         </Card>
       ) : null}
@@ -229,19 +219,23 @@ export function OnboardingWizard({
       {step === 4 ? (
         <Card>
           <CardHeader>
-            <CardTitle>리스크 한도 확인</CardTitle>
-            <CardDescription>한도에 닿으면 당일 자동매매가 멈춥니다. 긴급 정지는 언제든 화면 상단에 있습니다.</CardDescription>
+            <CardTitle>실행 한도 확인</CardTitle>
+            <CardDescription>
+              소프트웨어 안전장치입니다. 한도에 닿으면 당일 자동 실행이 멈춥니다. 긴급 정지는 화면 상단에 있습니다.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
             <ul className="list-disc space-y-1 pl-5">
               <li>일일 최대 손실 {Math.round(risk.dailyLossPct * 100)}%</li>
               <li>종목당 투자 비중 {Math.round(risk.maxTickerWeight * 100)}%</li>
-              <li>종목 손절 {Math.round(risk.stopLossPct * 100)}% (평단 대비, 현재가 -3% 지정가 밴드 분할 매도)</li>
+              <li>조건식 손절/익절은 사용자가 입력한 비율을 따릅니다.</li>
             </ul>
             <div className="flex items-center justify-between rounded-xl border px-3 py-2">
               <div>
                 <div className="font-medium">자동매매 시작</div>
-                <p className="text-xs text-muted-foreground">끄면 시세만 갱신하고 주문은 내지 않습니다.</p>
+                <p className="text-xs text-muted-foreground">
+                  켜면 면책 동의 후에만 API 주문이 나갑니다. 끄면 설정만 저장합니다.
+                </p>
               </div>
               <Switch checked={autoStart} onCheckedChange={setAutoStart} />
             </div>
@@ -254,13 +248,22 @@ export function OnboardingWizard({
           이전
         </Button>
         {step < STEPS.length - 1 ? (
-          <Button onClick={next}>다음</Button>
+          <Button onClick={next} disabled={step === 3 && !disclaimerChecked}>
+            다음
+          </Button>
         ) : (
           <Button onClick={() => void finish()} disabled={saving}>
             {saving ? "저장 중" : autoStart ? "자동매매 시작" : "설정만 저장"}
           </Button>
         )}
       </div>
+
+      <DisclaimerModal
+        open={disclaimerOpen}
+        onOpenChange={setDisclaimerOpen}
+        confirmLabel="동의하고 자동매매 시작"
+        onAccept={() => submit({ autoStart: true, disclaimerAccepted: true })}
+      />
     </div>
   );
 }

@@ -6,20 +6,18 @@ export const dynamic = "force-dynamic";
 
 export async function PATCH(request: Request) {
   const body = (await request.json()) as {
-    strategy?: string;
+    ruleId?: string;
     enabled?: boolean;
     budget?: number;
-    riskLevel?: number;
   };
-  if (!body.strategy) {
-    return Response.json({ error: "전략 버킷 이름이 필요합니다." }, { status: 400 });
+  if (!body.ruleId) {
+    return Response.json({ error: "룰 식별자가 필요합니다." }, { status: 400 });
   }
   try {
     const state = await mutateStore((current) =>
-      AllocationEngine.patch(current, body.strategy!, {
+      AllocationEngine.patch(current, body.ruleId!, {
         enabled: body.enabled,
         budget: body.budget,
-        riskLevel: body.riskLevel,
       }),
     );
     return Response.json(toPublic(state));
@@ -33,7 +31,7 @@ export async function PATCH(request: Request) {
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
-    allocations?: Array<Pick<Allocation, "strategy" | "budget" | "riskLevel"> & { enabled?: boolean }>;
+    allocations?: Array<Pick<Allocation, "ruleId" | "budget"> & { enabled?: boolean }>;
   };
   if (!body.allocations?.length) {
     return Response.json({ error: "allocations 배열이 필요합니다." }, { status: 400 });

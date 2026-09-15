@@ -1,4 +1,4 @@
-import type { StrategyConfigFile } from "@/src/strategies/params";
+import type { RuleConfigFile } from "@/src/rules/params";
 import type { ProductRisk } from "@/src/risk/product";
 
 export type Market = "KOSPI" | "KOSDAQ";
@@ -14,7 +14,7 @@ export type ConditionStatus =
   | "rejected"
   | "unknown"
   | "deleted";
-export type OrderSource = "condition" | "dca" | "manual" | "strategy";
+export type OrderSource = "condition" | "dca" | "manual" | "rule";
 export type OrderStatus = "pending" | "unknown" | "filled" | "rejected" | "cancelled";
 export type BrokerDriver = "mock" | "kis";
 
@@ -38,12 +38,11 @@ export type Position = {
   name: string;
   qty: number;
   avgPrice: number;
-  strategy: string;
+  ruleId: string;
 };
 
 export type Allocation = {
-  strategy: string;
-  riskLevel: number;
+  ruleId: string;
   budget: number;
   balance: number;
   enabled: boolean;
@@ -70,7 +69,7 @@ export type AutoCondition = {
   watching: boolean;
   status: ConditionStatus;
   createdAt: string;
-  strategy?: string;
+  ruleId?: string;
   filledAt?: string;
   filledOrderId?: string;
   message?: string;
@@ -86,7 +85,7 @@ export type DcaPlan = {
   enabled: boolean;
   createdAt: string;
   runCount: number;
-  strategy?: string;
+  ruleId?: string;
   lastMessage?: string;
 };
 
@@ -95,7 +94,7 @@ export type Order = {
   createdAt: string;
   source: OrderSource;
   sourceId?: string;
-  strategy?: string;
+  ruleId?: string;
   code: string;
   name: string;
   side: Side;
@@ -164,6 +163,8 @@ export type Settings = {
   autoTrading: boolean;
   onboardingComplete: boolean;
   liquidating: boolean;
+  disclaimerAccepted: boolean;
+  disclaimerAcceptedAt?: string;
   risk: ProductRisk;
 };
 
@@ -206,5 +207,5 @@ export type PublicState = AppState & {
     sessionLabel: string;
   };
   broker: BrokerPublicStatus;
-  strategyConfig: StrategyConfigFile;
+  ruleConfig: RuleConfigFile;
 };

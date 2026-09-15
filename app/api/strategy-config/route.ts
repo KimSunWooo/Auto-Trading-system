@@ -1,16 +1,13 @@
-import { toPublic, withStore } from "@/lib/store";
-import {
-  getStrategyConfig,
-  patchStrategyConfig,
-  saveStrategyConfig,
-} from "@/src/strategies/config";
-import { DEFAULT_STRATEGY_CONFIG } from "@/src/strategies/params";
+import { toPublic, mutateStore } from "@/lib/store";
+import { ensureUniverseQuotes } from "@/lib/engine";
+import { getRuleConfig, patchRuleConfig, saveRuleConfig, syncAllocationsToRules } from "@/src/rules/config";
+import { EMPTY_RULE_CONFIG, blankRule } from "@/src/rules/params";
 
 export const dynamic = "force-dynamic";
 
 function errorResponse(err: unknown) {
   return Response.json(
-    { error: err instanceof Error ? err.message : "전략 설정을 저장하지 못했습니다." },
+    { error: err instanceof Error ? err.message : "사용자 설정을 저장하지 못했습니다." },
     { status: 400 },
   );
 }
@@ -25,16 +22,19 @@ async function readJson(request: Request): Promise<unknown> {
 
 export async function GET() {
   return Response.json({
-    config: getStrategyConfig(),
-    defaults: DEFAULT_STRATEGY_CONFIG,
+    config: getRuleConfig(),
+    defaults: EMPTY_RULE_CONFIG,
+    draft: blankRule({ ticker: "", enabled: false, budget: 0 }),
   });
 }
 
 export async function PUT(request: Request) {
   try {
-    saveStrategyConfig(await readJson(request));
-    const state = await withStore((current) => toPublic(current));
-    return Response.json(state);
+    const config = saveRuleConfig(await readJson(request));
+    const state = await mutateStore((current) =>
+      ensureUniverseQuotes(syncAllocationsToRules(current, config.rules)),
+    );
+    return Response.json(toPublic(state));
   } catch (err) {
     return errorResponse(err);
   }
@@ -42,9 +42,11 @@ export async function PUT(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    patchStrategyConfig(await readJson(request));
-    const state = await withStore((current) => toPublic(current));
-    return Response.json(state);
+    const config = patchRuleConfig(await readJson(request));
+    const state = await mutateStore((current) =>
+      ensureUniverseQuotes(syncAllocationsToRules(current, config.rules)),
+    );
+    return Response.json(toPublic(state));
   } catch (err) {
     return errorResponse(err);
   }

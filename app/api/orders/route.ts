@@ -1,6 +1,6 @@
-import { findStock } from "@/lib/universe";
 import { mutateStore, toPublic } from "@/lib/store";
 import { createBroker } from "@/src/brokers/index";
+import { CASH_RULE_ID, normalizeTicker } from "@/src/rules/params";
 import type { Side } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -10,27 +10,27 @@ export async function POST(request: Request) {
     code?: string;
     side?: Side;
     qty?: number;
-    strategy?: string;
+    ruleId?: string;
   };
-  const stock = findStock(body.code ?? "");
-  if (!stock) {
-    return Response.json({ error: "종목을 선택하세요." }, { status: 400 });
+  const code = normalizeTicker(body.code ?? "");
+  if (!code) {
+    return Response.json({ error: "종목코드 6자리를 입력하세요." }, { status: 400 });
   }
   const qty = Number(body.qty);
   if (!Number.isInteger(qty) || qty < 1) {
     return Response.json({ error: "수량은 1주 이상이어야 합니다." }, { status: 400 });
   }
   const side = body.side === "sell" ? "sell" : "buy";
-  const strategy = body.strategy ?? "Level1_Stable";
+  const ruleId = body.ruleId || CASH_RULE_ID;
 
   let rejected: string | undefined;
   let unknown = false;
   const state = await mutateStore(async (current) => {
     const box = { current };
-    const broker = createBroker(box).forStrategy(strategy).withSource("manual");
-    let price = current.quotes[stock.code]?.price ?? 0;
+    const broker = createBroker(box).forRule(ruleId).withSource("manual");
+    let price = current.quotes[code]?.price ?? 0;
     try {
-      price = await broker.getCurrentPrice(stock.code);
+      price = await broker.getCurrentPrice(code);
     } catch (err) {
       rejected = err instanceof Error ? err.message : "시세를 찾을 수 없습니다.";
       return current;
@@ -42,8 +42,8 @@ export async function POST(request: Request) {
 
     const fill =
       side === "sell"
-        ? await broker.sellMarket(stock.code, qty)
-        : await broker.buyMarket(stock.code, qty * price);
+        ? await broker.sellMarket(code, qty)
+        : await broker.buyMarket(code, qty * price);
 
     if (fill.status === "unknown") {
       rejected = fill.reason ?? "주문 결과를 확인하지 못했습니다.";

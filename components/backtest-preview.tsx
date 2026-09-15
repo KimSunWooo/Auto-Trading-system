@@ -7,11 +7,10 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { Sparkline } from "@/components/price";
 import { api } from "@/hooks/use-trading";
 import { formatPct, formatWon } from "@/lib/format";
-import { PLAYBOOKS, type PlaybookId } from "@/lib/playbooks";
 
 export type BacktestResultView = {
   years: number;
-  strategyIds: string[];
+  ruleIds: string[];
   metrics: {
     startEquity: number;
     endEquity: number;
@@ -36,21 +35,16 @@ export type BacktestResultView = {
 };
 
 export function BacktestPreview({
-  strategies,
   totalDeposit,
   years = 2,
 }: {
-  strategies: PlaybookId[];
   totalDeposit: number;
   years?: number;
 }) {
   const [data, setData] = useState<BacktestResultView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const key = useMemo(
-    () => `${strategies.slice().sort().join(",")}:${totalDeposit}:${years}`,
-    [strategies, totalDeposit, years],
-  );
+  const key = useMemo(() => `${totalDeposit}:${years}`, [totalDeposit, years]);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,13 +52,13 @@ export function BacktestPreview({
     setError(null);
     void api<BacktestResultView>("/api/backtest", {
       method: "POST",
-      body: JSON.stringify({ strategies, totalDeposit, years }),
+      body: JSON.stringify({ totalDeposit, years }),
     })
       .then((result) => {
         if (!cancelled) setData(result);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "백테스트에 실패했습니다.");
+        if (!cancelled) setError(err instanceof Error ? err.message : "조건 재생에 실패했습니다.");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -72,12 +66,12 @@ export function BacktestPreview({
     return () => {
       cancelled = true;
     };
-  }, [key, strategies, totalDeposit, years]);
+  }, [key, totalDeposit, years]);
 
   if (loading) {
     return (
       <div className="rounded-xl border border-dashed px-4 py-10 text-center text-sm text-muted-foreground">
-        과거 {years}년 일봉으로 시뮬레이션하는 중입니다.
+        저장한 조건식을 과거 {years}년 일봉에 기계적으로 재생하는 중입니다.
       </div>
     );
   }
@@ -86,7 +80,7 @@ export function BacktestPreview({
       <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-6 text-sm">
         {error}
         <div className="mt-3">
-          <Button size="sm" variant="outline" onClick={() => toast.message("전략을 바꾼 뒤 다시 시도하세요.")}>
+          <Button size="sm" variant="outline" onClick={() => toast.message("조건식을 저장한 뒤 다시 시도하세요.")}>
             확인
           </Button>
         </div>
@@ -97,15 +91,12 @@ export function BacktestPreview({
 
   const m = data.metrics;
   const curve = data.equityCurve.map((row) => row.equity);
-  const names = data.strategyIds
-    .map((id) => PLAYBOOKS.find((row) => row.id === id)?.label ?? id)
-    .join(" · ");
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        {names} · 예산 {formatWon(totalDeposit)} · 일봉 {data.years}년 (로컬 시뮬레이터, 실전 수익이
-        아닙니다)
+        사용자 조건식 {data.ruleIds.length}개 · 예산 {formatWon(totalDeposit)} · 일봉 {data.years}년
+        (로컬 시뮬레이터, 실전 수익이 아닙니다)
       </p>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Metric label="총 수익률" value={formatPct(m.totalReturnPct)} tone={m.totalReturnPct} />
@@ -128,7 +119,7 @@ export function BacktestPreview({
         <Sparkline values={curve} width={640} height={88} className="w-full max-w-full" />
       </div>
       {data.tradeLog.length === 0 ? (
-        <p className="text-xs text-muted-foreground">이 기간에 기록된 체결이 없습니다.</p>
+        <p className="text-xs text-muted-foreground">이 기간에 기록된 체결이 없습니다. 조건식이 없으면 재생하지 않습니다.</p>
       ) : (
         <ul className="max-h-40 space-y-1 overflow-auto text-xs text-muted-foreground">
           {data.tradeLog.slice(0, 12).map((row, i) => (

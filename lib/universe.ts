@@ -7,7 +7,7 @@ export type StockSeed = {
   prevClose: number;
 };
 
-/** Realistic 2025–2026-era starting prices for the paper book. */
+/** Name lookup for 6-digit codes the user typed. Not a default watchlist. */
 export const UNIVERSE: StockSeed[] = [
   { code: "069500", name: "KODEX 200", market: "KOSPI", prevClose: 41250 },
   { code: "005930", name: "삼성전자", market: "KOSPI", prevClose: 74800 },

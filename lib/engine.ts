@@ -1,10 +1,10 @@
 import { clampDailyLimit, roundToTick, tickSize } from "./tick-size";
 import type { AppState, AutoCondition, DcaPlan, Quote } from "./types";
-import { UNIVERSE } from "./universe";
+import { findStock } from "./universe";
 import { getMarketClock } from "./market-hours";
 import { canFillLimit } from "@/src/accounts/fills";
 import { cashFromAllocations, DEFAULT_ALLOCATIONS, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
-import { portfolioValue } from "@/src/accounts/portfolio";
+import { accountValue } from "@/src/accounts/portfolio";
 import type { StateBox } from "@/src/accounts/StateBox";
 import { createBroker, brokerDriver } from "@/src/brokers/index";
 import type { IBroker } from "@/src/brokers/IBroker";
@@ -16,33 +16,36 @@ import { RiskManager } from "@/src/risk/RiskManager";
 import { expireStaleInFlight, settleOpenOrders } from "@/src/risk/reconcile";
 import { syncKisBalance } from "@/src/risk/balance-sync";
 import { getSharedKisClient } from "@/src/brokers/kis-client";
-import { watchedStrategyTickers } from "@/src/strategies/config";
+import { watchedTickersFrom } from "@/src/rules/config";
+import { autoRunAllowed } from "@/src/rules/disclaimer";
+import { CASH_RULE_ID } from "@/src/rules/params";
 
 const HISTORY_LEN = 40;
 
 export { applyFill, canFillLimit, feeBreakdown, findPosition } from "@/src/accounts/fills";
 
+export function seedQuote(code: string, prevClose = 10_000, name?: string): Quote {
+  const stock = findStock(code);
+  const price = roundToTick(stock?.prevClose ?? prevClose);
+  const tick = tickSize(price);
+  return {
+    code,
+    name: name ?? stock?.name ?? code,
+    market: stock?.market ?? "KOSPI",
+    price,
+    prevClose: stock?.prevClose ?? price,
+    open: price,
+    high: price,
+    low: price,
+    volume: 1,
+    bid: roundToTick(Math.max(tick, price - tick)),
+    ask: roundToTick(price + tick),
+    history: Array.from({ length: HISTORY_LEN }, () => price),
+  };
+}
+
 export function createInitialQuotes(): Record<string, Quote> {
-  const quotes: Record<string, Quote> = {};
-  for (const seed of UNIVERSE) {
-    const price = roundToTick(seed.prevClose);
-    const tick = tickSize(price);
-    quotes[seed.code] = {
-      code: seed.code,
-      name: seed.name,
-      market: seed.market,
-      price,
-      prevClose: seed.prevClose,
-      open: price,
-      high: price,
-      low: price,
-      volume: 120_000 + Math.floor(Math.random() * 80_000),
-      bid: roundToTick(price - tick),
-      ask: roundToTick(price + tick),
-      history: Array.from({ length: HISTORY_LEN }, () => price),
-    };
-  }
-  return quotes;
+  return {};
 }
 
 export function createInitialState(): AppState {
@@ -54,16 +57,17 @@ export function createInitialState(): AppState {
       ignoreMarketHours: true,
       startingCash: TOTAL_DEPOSIT,
       broker: brokerDriver(),
-      autoTrading: true,
+      autoTrading: false,
       onboardingComplete: false,
       liquidating: false,
+      disclaimerAccepted: false,
       risk: { ...DEFAULT_PRODUCT_RISK },
     },
     totalDeposit: TOTAL_DEPOSIT,
     allocations,
     cash: cashFromAllocations(allocations),
     positions: [],
-    quotes: createInitialQuotes(),
+    quotes: {},
     conditions: [],
     dcaPlans: [],
     orders: [],
@@ -73,11 +77,23 @@ export function createInitialState(): AppState {
   };
 }
 
+/** Paper book with consent already recorded — unit tests only. */
+export function createPaperState(): AppState {
+  const state = createInitialState();
+  state.settings.disclaimerAccepted = true;
+  state.settings.autoTrading = true;
+  state.quotes = {
+    "005930": seedQuote("005930", 74_800),
+    "035720": seedQuote("035720", 42_150),
+    "247540": seedQuote("247540", 142_700),
+  };
+  return state;
+}
+
 export function ensureUniverseQuotes(state: AppState): AppState {
   const quotes = { ...state.quotes };
-  const seeded = createInitialQuotes();
-  for (const [code, quote] of Object.entries(seeded)) {
-    if (!quotes[code]) quotes[code] = quote;
+  for (const code of watchedTickersFrom(state)) {
+    if (!quotes[code]) quotes[code] = seedQuote(code);
   }
   return { ...state, quotes };
 }
@@ -128,15 +144,7 @@ export function conditionMatches(cond: AutoCondition, quote: Quote): boolean {
 }
 
 function watchedTickers(state: AppState): string[] {
-  const codes = new Set<string>(watchedStrategyTickers(state.allocations));
-  for (const pos of state.positions) codes.add(pos.code);
-  for (const cond of state.conditions) {
-    if (cond.watching) codes.add(cond.code);
-  }
-  for (const plan of state.dcaPlans) {
-    if (plan.enabled) codes.add(plan.code);
-  }
-  return [...codes];
+  return watchedTickersFrom(state);
 }
 
 async function refreshLiveQuotes(box: StateBox, broker: IBroker) {
@@ -180,7 +188,7 @@ export async function evaluateConditions(state: AppState, nowIso: string): Promi
     }
 
     const broker = root
-      .forStrategy(cond.strategy ?? "Level1_Stable")
+      .forRule(cond.ruleId ?? CASH_RULE_ID)
       .withSource("condition", cond.id);
     const fill =
       cond.side === "sell"
@@ -264,7 +272,7 @@ export async function evaluateDca(state: AppState, nowIso: string): Promise<AppS
     }
 
     const fill = await root
-      .forStrategy(plan.strategy ?? "Level1_Stable")
+      .forRule(plan.ruleId ?? CASH_RULE_ID)
       .withSource("dca", plan.id)
       .buyMarket(plan.code, plan.amountKrw);
 
@@ -320,37 +328,40 @@ export async function tickState(state: AppState, now = new Date()): Promise<AppS
   const sessionOk = (box.current.settings.ignoreMarketHours || clock.open) && kisLiveSession;
   box.current = RiskManager.rollDay(box.current, now);
 
-  if (sessionOk && box.current.settings.autoTrading) {
-    await new RiskManager(box).enforceStopLoss();
+  const tradingOn = autoRunAllowed(box.current);
+  if (sessionOk && tradingOn) {
+    await new RiskManager(box).enforceStops();
     box.current = RiskManager.checkDailyLoss(box.current);
   }
 
   const tradingAllowed =
-    sessionOk && box.current.settings.autoTrading && !tradingBlocked(box.current);
+    sessionOk && tradingOn && !tradingBlocked(box.current);
   if (tradingAllowed) {
     box.current = await evaluateConditions(box.current, clock.iso);
     box.current = await evaluateDca(box.current, clock.iso);
     box.current = await QuantEngine.run(box.current);
-  } else if (tradingBlocked(box.current) || !box.current.settings.autoTrading) {
-    const message = !box.current.settings.autoTrading
-      ? "자동매매가 꺼져 있습니다."
-      : (tradingBlocked(box.current) ?? undefined);
-    if (message) {
+  } else if (tradingBlocked(box.current) || !tradingOn) {
+    const locked = !box.current.settings.disclaimerAccepted
+      ? "이용 동의 전에는 매매 실행이 잠겨 있습니다."
+      : !box.current.settings.autoTrading
+        ? "자동 실행이 꺼져 있습니다."
+        : (tradingBlocked(box.current) ?? undefined);
+    if (locked) {
       box.current = {
         ...box.current,
         allocations: box.current.allocations.map((row) => ({
           ...row,
-          lastMessage: message,
+          lastMessage: locked,
         })),
       };
     }
   }
 
-  const equity = portfolioValue(box.current);
+  const equity = accountValue(box.current);
   return {
     ...box.current,
     equityHistory: [...(box.current.equityHistory ?? []), equity].slice(-120),
   };
 }
 
-export { portfolioValue };
+export { accountValue, accountValue as portfolioValue };

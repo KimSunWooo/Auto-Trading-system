@@ -1,7 +1,7 @@
 import { roundToTick, tickSize } from "@/lib/tick-size";
-import { findStock, UNIVERSE } from "@/lib/universe";
+import { findStock } from "@/lib/universe";
 import type { Quote } from "@/lib/types";
-import { DEFAULT_STRATEGY_CONFIG } from "@/src/strategies/params";
+import { getRuleConfig } from "@/src/rules/config";
 
 export type Candle = {
   t: number;
@@ -42,11 +42,11 @@ export function generateDailyCandles(tickers: string[], years = 2): Record<strin
   const sessions = Math.max(60, Math.round(years * 252));
   const out: Record<string, Candle[]> = {};
   for (const ticker of tickers) {
-    const seed = UNIVERSE.find((row) => row.code === ticker);
+    const seed = findStock(ticker);
     let price = seed?.prevClose ?? 50_000;
     const rng = mulberry32(seedFrom(ticker));
-    const vol = ticker === "069500" ? 0.008 : 0.016;
-    const drift = ticker === "069500" ? 0.00025 : 0.00015;
+    const vol = 0.016;
+    const drift = 0.00015;
     const rows: Candle[] = [];
     let cursor = new Date(Date.UTC(2024, 0, 2, 6, 0, 0));
     for (let i = 0; i < sessions; i++) {
@@ -73,13 +73,7 @@ export function generateDailyCandles(tickers: string[], years = 2): Record<strin
 }
 
 export function watchedBacktestTickers(): string[] {
-  return [
-    ...new Set([
-      DEFAULT_STRATEGY_CONFIG.Level1_Stable.ticker,
-      DEFAULT_STRATEGY_CONFIG.Level5_Swing.ticker,
-      ...DEFAULT_STRATEGY_CONFIG.Level10_Aggressive.universe,
-    ]),
-  ];
+  return [...new Set(getRuleConfig().rules.map((row) => row.ticker).filter(Boolean))];
 }
 
 export function quoteFromCandle(

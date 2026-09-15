@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { applyKisSnapshot, diffLocalVsKis, syncKisBalance } from "./balance-sync";
 import type { KisAccountBalance, KisApi, KisCashOrder, KisDayOrder, KisPrice } from "@/src/brokers/kis-client";
-import { createInitialState } from "@/lib/engine";
+import { createPaperState } from "@/lib/engine";
 import { HARD_LIMITS } from "@/src/risk/limits";
 
 class FakeBalanceClient implements KisApi {
@@ -48,7 +48,7 @@ class FakeBalanceClient implements KisApi {
 }
 
 test("diffLocalVsKis matches seed cash and empty holdings", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const diff = diffLocalVsKis(state, {
     cash: 10_000_000,
     d2Cash: 10_000_000,
@@ -59,7 +59,7 @@ test("diffLocalVsKis matches seed cash and empty holdings", () => {
 });
 
 test("diffLocalVsKis flags cash drift without using the 0.015% fee rate", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const diff = diffLocalVsKis(state, {
     cash: 9_999_977,
     d2Cash: 9_999_977,
@@ -71,11 +71,11 @@ test("diffLocalVsKis flags cash drift without using the 0.015% fee rate", () => 
   assert.ok(Math.abs(diff.cashDelta) > HARD_LIMITS.balanceCashToleranceKrw);
 });
 
-test("diffLocalVsKis sums strategy buckets per ticker", () => {
-  const state = createInitialState();
+test("diffLocalVsKis sums rule buckets per ticker", () => {
+  const state = createPaperState();
   state.positions = [
-    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
-    { code: "005930", name: "삼성전자", qty: 1, avgPrice: 71_000, strategy: "Level10_Aggressive" },
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, ruleId: "cash" },
+    { code: "005930", name: "삼성전자", qty: 1, avgPrice: 71_000, ruleId: "cash" },
   ];
   const ok = diffLocalVsKis(state, {
     cash: state.cash,
@@ -94,9 +94,9 @@ test("diffLocalVsKis sums strategy buckets per ticker", () => {
 });
 
 test("applyKisSnapshot overwrites local cash and holdings from KIS", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.positions = [
-    { code: "005930", name: "삼성전자", qty: 4, avgPrice: 70_000, strategy: "Level1_Stable" },
+    { code: "005930", name: "삼성전자", qty: 4, avgPrice: 70_000, ruleId: "cash" },
   ];
   const next = applyKisSnapshot(state, {
     cash: 8_000_000,
@@ -112,7 +112,7 @@ test("applyKisSnapshot overwrites local cash and holdings from KIS", () => {
 });
 
 test("syncKisBalance halts when KIS cash diverges from local buckets", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeBalanceClient();
   client.balance.cash = 8_000_000;
   await syncKisBalance(box, client, Date.now(), { force: true });
@@ -123,12 +123,12 @@ test("syncKisBalance halts when KIS cash diverges from local buckets", async () 
 });
 
 test("syncKisBalance does not halt while a working KIS order is open", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   box.current.orders = [
     {
       id: "p1",
       createdAt: new Date().toISOString(),
-      source: "strategy",
+      source: "rule",
       code: "005930",
       name: "삼성전자",
       side: "buy",
@@ -152,7 +152,7 @@ test("syncKisBalance does not halt while a working KIS order is open", async () 
 });
 
 test("syncKisBalance skips a second call inside the interval", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   const client = new FakeBalanceClient();
   const now = 1_000_000;
   await syncKisBalance(box, client, now, { force: true });
@@ -162,9 +162,9 @@ test("syncKisBalance skips a second call inside the interval", async () => {
 });
 
 test("syncKisBalance halts on holding qty mismatch", async () => {
-  const box = { current: createInitialState() };
+  const box = { current: createPaperState() };
   box.current.positions = [
-    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, strategy: "Level1_Stable" },
+    { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, ruleId: "cash" },
   ];
   const client = new FakeBalanceClient();
   client.balance.holdings = [{ ticker: "005930", name: "삼성전자", qty: 1, avgPrice: 70_000 }];

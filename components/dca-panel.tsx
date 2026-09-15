@@ -43,8 +43,7 @@ export function DcaPanel({
   state: PublicState;
   onState: (next: PublicState) => void;
 }) {
-  const defaultCode = state.quotes["035720"] ? "035720" : Object.keys(state.quotes)[0];
-  const [code, setCode] = useState(defaultCode);
+  const [code, setCode] = useState("");
   const [amount, setAmount] = useState("100000");
   const [intervalSec, setIntervalSec] = useState("60");
   const [busy, setBusy] = useState(false);

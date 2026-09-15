@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { checkHardLimits, HARD_LIMITS } from "./limits";
 import { emptyCircuit, resetCircuit, tradingBlocked } from "./circuit";
-import { createInitialState } from "@/lib/engine";
+import { createPaperState } from "@/lib/engine";
 
 test("checkHardLimits rejects an oversized ticket", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const reason = checkHardLimits(state, {
     side: "buy",
     ticker: "005930",
@@ -18,11 +18,11 @@ test("checkHardLimits rejects an oversized ticket", () => {
 });
 
 test("unknown orders keep the circuit closed to new tickets", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.orders.unshift({
     id: "u1",
     createdAt: new Date().toISOString(),
-    source: "strategy",
+    source: "rule",
     code: "005930",
     name: "삼성전자",
     side: "buy",
@@ -40,7 +40,7 @@ test("unknown orders keep the circuit closed to new tickets", () => {
 });
 
 test("resetCircuit clears halt when there is no unknown order", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   state.circuit = { halted: true, unknownCount: 1, reason: "test" };
   const reset = resetCircuit(state);
   assert.equal(reset.error, undefined);
@@ -49,13 +49,13 @@ test("resetCircuit clears halt when there is no unknown order", () => {
 });
 
 test("child partial fills do not double-count the daily order cap", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const today = new Date().toISOString();
   state.orders = [
     {
       id: "parent",
       createdAt: today,
-      source: "strategy",
+      source: "rule",
       code: "005930",
       name: "삼성전자",
       side: "buy",
@@ -72,7 +72,7 @@ test("child partial fills do not double-count the daily order cap", () => {
     {
       id: "child",
       createdAt: today,
-      source: "strategy",
+      source: "rule",
       parentOrderId: "parent",
       code: "005930",
       name: "삼성전자",

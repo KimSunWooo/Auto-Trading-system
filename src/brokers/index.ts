@@ -5,11 +5,13 @@ import type { IBroker } from "@/src/brokers/IBroker";
 import { brokerDriver } from "@/src/brokers/kis-config";
 import { getSharedKisClient } from "@/src/brokers/kis-client";
 
-export function createBroker(box: StateBox, strategyKey = "Level1_Stable"): IBroker {
+import { CASH_RULE_ID } from "@/src/rules/params";
+
+export function createBroker(box: StateBox, ruleKey = CASH_RULE_ID): IBroker {
   if (brokerDriver() === "kis") {
-    return new KisBroker(box, getSharedKisClient(), strategyKey);
+    return new KisBroker(box, getSharedKisClient(), ruleKey);
   }
-  return new MockBroker(box, strategyKey);
+  return new MockBroker(box, ruleKey);
 }
 
 export type { IBroker, BrokerFill, BrokerQuote } from "@/src/brokers/IBroker";

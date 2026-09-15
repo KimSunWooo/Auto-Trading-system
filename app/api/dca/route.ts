@@ -1,5 +1,6 @@
 import { findStock } from "@/lib/universe";
 import { mutateStore, toPublic } from "@/lib/store";
+import { normalizeTicker } from "@/src/rules/params";
 import type { DcaPlan } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -10,10 +11,11 @@ export async function POST(request: Request) {
     amountKrw?: number;
     intervalSec?: number;
   };
-  const stock = findStock(body.code ?? "");
-  if (!stock) {
-    return Response.json({ error: "종목을 선택하세요." }, { status: 400 });
+  const code = normalizeTicker(body.code ?? "");
+  if (!code) {
+    return Response.json({ error: "종목코드 6자리를 입력하세요." }, { status: 400 });
   }
+  const stock = findStock(code) ?? { code, name: code };
   const amountKrw = Number(body.amountKrw);
   const intervalSec = Number(body.intervalSec ?? 60);
   if (!Number.isFinite(amountKrw) || amountKrw < 1000) {

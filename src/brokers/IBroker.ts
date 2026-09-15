@@ -37,7 +37,7 @@ export interface BrokerFill {
 
 export interface IBroker {
   readonly driver: "mock" | "kis";
-  forStrategy(strategyKey: string): IBroker;
+  forRule(ruleKey: string): IBroker;
   withSource(source: OrderSource, sourceId?: string): IBroker;
   getCurrentPrice(ticker: string): Promise<number>;
   getQuote(ticker: string): Promise<BrokerQuote | null>;

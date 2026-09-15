@@ -23,7 +23,7 @@ import { DcaPanel } from "@/components/dca-panel";
 import { GuidePanel } from "@/components/guide-panel";
 import { MarketBadge, OverviewPanel, BrokerBadge } from "@/components/overview-panel";
 import { OrdersPanel } from "@/components/orders-panel";
-import { StrategiesPanel } from "@/components/strategies-panel";
+import { RulesPanel } from "@/components/rules-panel";
 import { useTrading, api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
@@ -32,7 +32,7 @@ import { toast } from "sonner";
 
 const TABS = [
   { value: "overview", label: "대시보드", icon: LayoutDashboardIcon },
-  { value: "quant", label: "퀀트", icon: GaugeIcon },
+  { value: "rules", label: "매매 룰", icon: GaugeIcon },
   { value: "conditions", label: "조건매수", icon: RadarIcon },
   { value: "dca", label: "적립매수", icon: CalendarClockIcon },
   { value: "orders", label: "체결내역", icon: ReceiptIcon },
@@ -77,12 +77,12 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1 className="truncate text-sm font-semibold tracking-tight sm:text-base">
-                  미리매수
-                </h1>
+                미리매수
+              </h1>
                 <BrokerBadge state={state} />
               </div>
               <p className="hidden truncate text-xs text-muted-foreground sm:block">
-                한국투자증권 Open API 자동매매
+                사용자 조건식 기반 API 매매 실행 도구
               </p>
             </div>
           </div>
@@ -111,6 +111,13 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
           </div>
         </div>
       </header>
+
+      <div className="border-b bg-muted/40">
+        <p className="mx-auto w-full max-w-7xl px-4 py-2 text-xs text-muted-foreground">
+          사용자가 입력한 조건식을 기계적으로 실행하는 도구입니다. 종목 추천·투자 일임을 하지 않으며,
+          매매 결과는 사용자 책임입니다.
+        </p>
+      </div>
 
       {state.circuit?.halted || state.orders.some((order) => order.status === "unknown") ? (
         <div className="border-b border-destructive/40 bg-destructive/10">
@@ -213,8 +220,8 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
           <TabsContent value="overview">
             <OverviewPanel state={state} onState={setState} />
           </TabsContent>
-          <TabsContent value="quant">
-            <StrategiesPanel state={state} onState={setState} />
+          <TabsContent value="rules">
+            <RulesPanel state={state} onState={setState} />
           </TabsContent>
           <TabsContent value="conditions">
             <ConditionsPanel state={state} onState={setState} />

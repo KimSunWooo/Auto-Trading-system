@@ -1,13 +1,7 @@
 "use client";
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { UNIVERSE } from "@/lib/universe";
+import { Input } from "@/components/ui/input";
+import { findStock } from "@/lib/universe";
 import type { Quote } from "@/lib/types";
 import { formatWon } from "@/lib/format";
 
@@ -20,31 +14,27 @@ export function StockSelect({
   onChange: (code: string) => void;
   quotes?: Record<string, Quote>;
 }) {
+  const code = value.replace(/\D/g, "").slice(0, 6);
+  const stock = code.length === 6 ? findStock(code) : undefined;
+  const quote = quotes?.[code];
+
   return (
-    <Select value={value} onValueChange={(next) => onChange(String(next ?? ""))}>
-      <SelectTrigger className="w-full min-w-0">
-        <SelectValue placeholder="종목 선택" />
-      </SelectTrigger>
-      <SelectContent alignItemWithTrigger={false} align="start" className="min-w-72">
-        {UNIVERSE.map((stock) => {
-          const quote = quotes?.[stock.code];
-          return (
-            <SelectItem key={stock.code} value={stock.code}>
-              <span className="flex w-full items-center justify-between gap-4">
-                <span>
-                  {stock.name}{" "}
-                  <span className="text-muted-foreground">{stock.code}</span>
-                </span>
-                {quote ? (
-                  <span className="tabular-nums text-muted-foreground">
-                    {formatWon(quote.price)}
-                  </span>
-                ) : null}
-              </span>
-            </SelectItem>
-          );
-        })}
-      </SelectContent>
-    </Select>
+    <div className="space-y-1">
+      <Input
+        inputMode="numeric"
+        maxLength={6}
+        placeholder="종목코드 6자리 직접 입력"
+        value={code}
+        onChange={(event) => onChange(event.target.value.replace(/\D/g, "").slice(0, 6))}
+      />
+      {code.length === 6 ? (
+        <p className="text-xs text-muted-foreground">
+          {stock?.name ?? "직접 입력한 종목"}
+          {quote ? ` · ${formatWon(quote.price)}` : ""}
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">미리 골라 둔 종목 목록은 없습니다.</p>
+      )}
+    </div>
   );
 }

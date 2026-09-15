@@ -1,10 +1,10 @@
 import { seoulDay } from "@/src/risk/limits";
 import type { PublicState } from "@/lib/types";
-import { portfolioValue, strategyEquity } from "@/src/accounts/portfolio";
-import { playbookById } from "@/lib/playbooks";
+import { accountValue, ruleEquity } from "@/src/accounts/portfolio";
+import type { UserRule } from "@/src/rules/params";
 
 export function dashboardStats(state: PublicState) {
-  const equity = state.equity ?? portfolioValue(state);
+  const equity = state.equity ?? accountValue(state);
   const pnl = equity - state.settings.startingCash;
   const pnlPct = state.settings.startingCash > 0 ? (pnl / state.settings.startingCash) * 100 : 0;
   const today = seoulDay();
@@ -26,16 +26,18 @@ export function dashboardStats(state: PublicState) {
   };
 }
 
-export function strategyCardModel(state: PublicState, strategy: string) {
-  const alloc = state.allocations.find((row) => row.strategy === strategy);
-  const book = playbookById(strategy);
-  const equity = alloc ? strategyEquity(state, strategy) : 0;
-  const budget = alloc?.budget ?? 0;
+export function ruleCardModel(state: PublicState, rule: UserRule) {
+  const alloc = state.allocations.find((row) => row.ruleId === rule.id);
+  const equity = alloc ? ruleEquity(state, rule.id) : 0;
+  const budget = alloc?.budget ?? rule.budget;
   const ret = budget > 0 ? ((equity - budget) / budget) * 100 : 0;
   return {
-    ...book,
+    id: rule.id,
+    name: rule.name || rule.ticker,
+    ticker: rule.ticker,
+    kindLabel: rule.kind === "ma-cross" ? `이평 ${rule.fastMa}/${rule.slowMa}` : `실행 주기 ${Math.round(rule.intervalMs / 1000)}초`,
     allocated: Boolean(alloc),
-    enabled: alloc?.enabled ?? false,
+    enabled: alloc?.enabled ?? rule.enabled,
     budget,
     balance: alloc?.balance ?? 0,
     equity,

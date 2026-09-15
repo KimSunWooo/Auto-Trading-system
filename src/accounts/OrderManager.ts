@@ -13,6 +13,7 @@ import type { Order, OrderSource } from "@/lib/types";
 import { checkHardLimits } from "@/src/risk/limits";
 import { openCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { RiskManager } from "@/src/risk/RiskManager";
+import { executionLocked } from "@/src/rules/disclaimer";
 import {
   bandLimitPrice,
   forbidsMarketOrder,
@@ -31,8 +32,7 @@ export type OrderOpts = {
 };
 
 /**
- * Gates every buy against the strategy sub-account.
- * Strategies never spend another bucket's cash.
+ * Gates every buy against the named cash bucket (user rule or 예수금).
  */
 export class OrderManager {
   constructor(private readonly box: StateBox) {}
@@ -43,7 +43,7 @@ export class OrderManager {
   static planBandSlices = planBandSlices;
 
   canBuy(
-    strategy: string,
+    ruleId: string,
     qty: number,
     price: number,
     ticker = "",
@@ -51,6 +51,8 @@ export class OrderManager {
     if (this.box.current.settings.liquidating || this.box.current.circuit?.kind === "kill") {
       return { ok: false, reason: "긴급 정지로 신규 매수를 막았습니다." };
     }
+    const locked = executionLocked(this.box.current);
+    if (locked) return { ok: false, reason: locked };
     const session = sessionBlockReason(this.box.current);
     if (session) return { ok: false, reason: session };
     const blocked = tradingBlocked(this.box.current);
@@ -59,17 +61,17 @@ export class OrderManager {
       return { ok: false, reason: "1주 미만이라 주문하지 않습니다." };
     }
     const { net } = feeBreakdown("buy", qty * price);
-    const bucket = this.box.current.allocations.find((a) => a.strategy === strategy);
+    const bucket = this.box.current.allocations.find((a) => a.ruleId === ruleId);
     if (!bucket) {
-      return { ok: false, reason: `버킷 ${strategy} 가 없습니다.` };
+      return { ok: false, reason: `버킷 ${ruleId} 가 없습니다.` };
     }
     if (!bucket.enabled) {
-      return { ok: false, reason: `${strategy} 버킷이 중지되어 있습니다.` };
+      return { ok: false, reason: `${ruleId} 버킷이 중지되어 있습니다.` };
     }
     if (bucket.balance < net) {
       return {
         ok: false,
-        reason: `${strategy} 잔액 ${bucket.balance.toLocaleString("ko-KR")}원으로는 ${net.toLocaleString("ko-KR")}원 주문을 낼 수 없습니다.`,
+        reason: `${ruleId} 잔액 ${bucket.balance.toLocaleString("ko-KR")}원으로는 ${net.toLocaleString("ko-KR")}원 주문을 낼 수 없습니다.`,
       };
     }
     if (ticker) {
@@ -91,7 +93,7 @@ export class OrderManager {
         (order) =>
           !order.parentOrderId &&
           (order.status === "pending" || order.status === "unknown") &&
-          order.strategy === strategy &&
+          order.ruleId === ruleId &&
           order.code === ticker &&
           order.side === "buy",
       );
@@ -103,7 +105,7 @@ export class OrderManager {
   }
 
   canSell(
-    strategy: string,
+    ruleId: string,
     ticker: string,
     qty: number,
     opts: Pick<OrderOpts, "liquidation"> = {},
@@ -111,13 +113,15 @@ export class OrderManager {
     const session = sessionBlockReason(this.box.current);
     if (session) return { ok: false, reason: session };
     if (!opts.liquidation) {
+      const locked = executionLocked(this.box.current);
+      if (locked) return { ok: false, reason: locked };
       const blocked = tradingBlocked(this.box.current);
       if (blocked) return { ok: false, reason: blocked };
     }
     if (qty < 1) {
       return { ok: false, reason: "매도 수량이 없습니다." };
     }
-    const existing = findPosition(this.box.current.positions, ticker, strategy);
+    const existing = findPosition(this.box.current.positions, ticker, ruleId);
     if (!existing || existing.qty < qty) {
       return { ok: false, reason: "매도 가능 수량이 부족합니다." };
     }
@@ -126,7 +130,7 @@ export class OrderManager {
         (order) =>
           !order.parentOrderId &&
           (order.status === "pending" || order.status === "unknown") &&
-          order.strategy === strategy &&
+          order.ruleId === ruleId &&
           order.code === ticker &&
           order.side === "sell",
       );
@@ -138,7 +142,7 @@ export class OrderManager {
   }
 
   begin(
-    strategy: string,
+    ruleId: string,
     ticker: string,
     side: "buy" | "sell",
     qty: number,
@@ -149,9 +153,9 @@ export class OrderManager {
     const started = recordPending(this.box.current, {
       id: opts.orderId,
       intentId: opts.intentId,
-      source: opts.source ?? "strategy",
+      source: opts.source ?? "rule",
       sourceId: opts.sourceId,
-      strategy,
+      ruleId,
       code: ticker,
       name: stock?.name ?? ticker,
       side,
@@ -260,22 +264,22 @@ export class OrderManager {
   }
 
   buy(
-    strategy: string,
+    ruleId: string,
     ticker: string,
     qty: number,
     price: number,
     opts: OrderOpts = {},
   ): BrokerFill {
-    const gate = this.canBuy(strategy, qty, price, ticker);
+    const gate = this.canBuy(ruleId, qty, price, ticker);
     if (!gate.ok) {
       return this.reject(ticker, "buy", gate.reason);
     }
     const stock = findStock(ticker);
     const applied = applyFill(this.box.current, {
       id: opts.orderId,
-      source: opts.source ?? "strategy",
+      source: opts.source ?? "rule",
       sourceId: opts.sourceId,
-      strategy,
+      ruleId,
       code: ticker,
       name: stock?.name ?? ticker,
       side: "buy",
@@ -288,22 +292,22 @@ export class OrderManager {
   }
 
   sell(
-    strategy: string,
+    ruleId: string,
     ticker: string,
     qty: number,
     price: number,
     opts: OrderOpts = {},
   ): BrokerFill {
-    const gate = this.canSell(strategy, ticker, qty, opts);
+    const gate = this.canSell(ruleId, ticker, qty, opts);
     if (!gate.ok) {
       return this.reject(ticker, "sell", gate.reason);
     }
     const stock = findStock(ticker);
     const applied = applyFill(this.box.current, {
       id: opts.orderId,
-      source: opts.source ?? "strategy",
+      source: opts.source ?? "rule",
       sourceId: opts.sourceId,
-      strategy,
+      ruleId,
       code: ticker,
       name: stock?.name ?? ticker,
       side: "sell",

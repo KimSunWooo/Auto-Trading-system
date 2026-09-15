@@ -9,6 +9,8 @@ import type { OrderSource, Quote } from "@/lib/types";
 import { isIndeterminateError } from "@/src/risk/errors";
 import { tradingBlocked } from "@/src/risk/circuit";
 import { settleOpenOrders } from "@/src/risk/reconcile";
+import { CASH_RULE_ID } from "@/src/rules/params";
+import { executionLocked } from "@/src/rules/disclaimer";
 import {
   resolveMarketIntent,
   sellBandSlices,
@@ -26,17 +28,17 @@ export class KisBroker implements IBroker {
   constructor(
     private readonly box: StateBox,
     private readonly client: KisApi,
-    private readonly strategyKey: string = "Level1_Stable",
-    private readonly source: OrderSource = "strategy",
+    private readonly ruleKey: string = CASH_RULE_ID,
+    private readonly source: OrderSource = "rule",
     private readonly sourceId?: string,
   ) {}
 
-  forStrategy(strategyKey: string): KisBroker {
-    return new KisBroker(this.box, this.client, strategyKey, this.source, this.sourceId);
+  forRule(ruleKey: string): KisBroker {
+    return new KisBroker(this.box, this.client, ruleKey, this.source, this.sourceId);
   }
 
   withSource(source: OrderSource, sourceId?: string): KisBroker {
-    return new KisBroker(this.box, this.client, this.strategyKey, source, sourceId);
+    return new KisBroker(this.box, this.client, this.ruleKey, source, sourceId);
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
@@ -149,9 +151,9 @@ export class KisBroker implements IBroker {
     try {
       price = ordDvsn === "limit" && limitPrice ? limitPrice : await this.getCurrentPrice(ticker);
       const qty = Math.floor(amount / price);
-      const gate = orders.canBuy(this.strategyKey, qty, price, ticker);
+      const gate = orders.canBuy(this.ruleKey, qty, price, ticker);
       if (!gate.ok) return this.reject(ticker, "buy", gate.reason);
-      const pending = orders.begin(this.strategyKey, ticker, "buy", qty, price, {
+      const pending = orders.begin(this.ruleKey, ticker, "buy", qty, price, {
         source: this.source,
         sourceId: this.sourceId,
         ordDvsn,
@@ -198,7 +200,7 @@ export class KisBroker implements IBroker {
     if (blocked) return blocked;
 
     const orders = new OrderManager(this.box);
-    const gate = orders.canSell(this.strategyKey, ticker, qty, {
+    const gate = orders.canSell(this.ruleKey, ticker, qty, {
       liquidation: this.box.current.settings.liquidating,
     });
     if (!gate.ok) return this.reject(ticker, "sell", gate.reason);
@@ -206,7 +208,7 @@ export class KisBroker implements IBroker {
     let price = 0;
     try {
       price = ordDvsn === "limit" && limitPrice ? limitPrice : await this.getCurrentPrice(ticker);
-      const pending = orders.begin(this.strategyKey, ticker, "sell", qty, price, {
+      const pending = orders.begin(this.ruleKey, ticker, "sell", qty, price, {
         source: this.source,
         sourceId: this.sourceId,
         ordDvsn,
@@ -257,6 +259,10 @@ export class KisBroker implements IBroker {
         side,
         "실전 주문이 잠겨 있습니다. KIS_LIVE_CONFIRM=I_UNDERSTAND 를 설정하세요.",
       );
+    }
+    const locked = executionLocked(this.box.current);
+    if (locked && !(this.box.current.settings.liquidating && side === "sell")) {
+      return this.reject(ticker, side, locked);
     }
     if (this.box.current.settings.liquidating && side === "buy") {
       return this.reject(ticker, side, "긴급 정지로 신규 매수를 막았습니다.");

@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   applyFill,
   conditionMatches,
-  createInitialState,
+  createPaperState,
   evaluateConditions,
   evaluateDca,
 } from "./engine";
@@ -23,7 +23,7 @@ test("tick size follows KRX bands", () => {
 });
 
 test("buy fill updates cash and average price", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const samsung = state.quotes["005930"];
   const first = applyFill(state, {
     source: "manual",
@@ -47,7 +47,7 @@ test("buy fill updates cash and average price", () => {
 });
 
 test("sell rejects when quantity is missing", () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const samsung = state.quotes["005930"];
   const result = applyFill(state, {
     source: "manual",
@@ -61,7 +61,7 @@ test("sell rejects when quantity is missing", () => {
 });
 
 test("price-below condition fires a market buy", async () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const quote = state.quotes["005930"];
   const cond: AutoCondition = {
     id: "c1",
@@ -90,7 +90,7 @@ test("price-below condition fires a market buy", async () => {
 });
 
 test("DCA buys whole shares and schedules the next run", async () => {
-  const state = createInitialState();
+  const state = createPaperState();
   const quote = state.quotes["035720"];
   const plan: DcaPlan = {
     id: "d1",
