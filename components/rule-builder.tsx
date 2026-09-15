@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import type { ConditionKind, UserRule } from "@/src/rules/params";
 import { blankRule } from "@/src/rules/params";
+import { AdminPresetBar } from "@/components/admin-preset-bar";
 
 export type RuleDraft = {
   ticker: string;
@@ -90,6 +91,7 @@ export function RuleBuilder({
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
+      <AdminPresetBar currentTicker={value.ticker} onApply={(next) => onChange({ ...value, ...next })} />
       <Field label="종목코드 (6자리)">
         <Input
           inputMode="numeric"
