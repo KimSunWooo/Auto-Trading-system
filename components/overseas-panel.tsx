@@ -63,11 +63,11 @@ export function OverseasPanel() {
   const loadAccount = useCallback(async (symbol = "NASDAQ:AAPL") => {
     try {
       const data = await api<AccountResponse>(`/api/overseas/account?symbol=${encodeURIComponent(symbol)}`);
-      setAccount(data.account);
+      if (data.account) setAccount(data.account);
       if (data.exchangeAudit) setAudit(data.exchangeAudit);
-      if (data.error) setError(data.error);
+      if (data.error && !data.account) setError(data.error);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "외화 잔고를 불러오지 못했습니다.");
+      setError((current) => current ?? (err instanceof Error ? err.message : "외화 잔고를 불러오지 못했습니다."));
     }
   }, []);
 
@@ -105,7 +105,13 @@ export function OverseasPanel() {
         <Stat label="외화잔고 (USD)" value={usd ? formatUsd(usd.cash) : "—"} hint="KIS present-balance · 원화와 합치지 않음" />
         <Stat
           label="매수가능금액"
-          value={account?.buyingPower ? formatUsd(account.buyingPower.orderableCash) : usd ? formatUsd(usd.orderableCash) : "—"}
+          value={
+            account?.buyingPower != null
+              ? formatUsd(account.buyingPower.orderableCash)
+              : usd
+                ? formatUsd(usd.orderableCash)
+                : "—"
+          }
           hint="inquire-psamount / 외화 주문가능"
         />
         <Stat
@@ -227,11 +233,23 @@ export function OverseasPanel() {
             <Row label="FX Rate" value={account?.fx ? `USD/KRW ${account.fx.rate.toLocaleString("ko-KR")}` : "—"} />
             <Row label="KRW Equivalent" value={account?.estimatedKrwValue != null ? formatWon(account.estimatedKrwValue) : "—"} />
             <div className="flex gap-2 pt-2">
-              <Button className="flex-1" disabled title="해외 PAPER 주문 게이트가 열리기 전까지 비활성화">
-                BUY
+              <Button
+                className="flex-1"
+                variant="outline"
+                disabled
+                aria-disabled
+                title="해외 PAPER 주문 게이트가 열리기 전까지 비활성화"
+              >
+                BUY 잠금
               </Button>
-              <Button className="flex-1" variant="outline" disabled title="해외 PAPER 주문 게이트가 열리기 전까지 비활성화">
-                SELL
+              <Button
+                className="flex-1"
+                variant="outline"
+                disabled
+                aria-disabled
+                title="해외 PAPER 주문 게이트가 열리기 전까지 비활성화"
+              >
+                SELL 잠금
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
