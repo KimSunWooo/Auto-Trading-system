@@ -24,8 +24,10 @@ export const KIS_TR = {
   sell: { paper: "VTTC0801U", real: "TTTC0801U" },
   price: "FHKST01010100",
   daily: "FHKST03010100",
-  dailyCcld: { paper: "VTTC8001R", real: "TTTC8001R" },
-  openOrders: { paper: "VTTC8438R", real: "TTTC8438R" },
+  /** 주식일별주문체결조회 3개월 이내. Open Orders/Executions 공통. */
+  dailyCcld: { paper: "VTTC0081R", real: "TTTC0081R" },
+  /** Alias of dailyCcld. Domestic open orders are CCLD_DVSN=02, not inquire-nccs. */
+  openOrders: { paper: "VTTC0081R", real: "TTTC0081R" },
   cancel: { paper: "VTTC0803U", real: "TTTC0803U" },
   balance: { paper: "VTTC8434R", real: "TTTC8434R" },
 } as const;

@@ -209,9 +209,13 @@ test("cancel TR ids are the KIS revise-cancel codes", () => {
   assert.equal(KIS_TR.cancel.real, "TTTC0803U");
 });
 
-test("open order TR ids are the KIS inquire-nccs codes", () => {
-  assert.equal(KIS_TR.openOrders.paper, "VTTC8438R");
-  assert.equal(KIS_TR.openOrders.real, "TTTC8438R");
+test("open order TR ids are the KIS inquire-daily-ccld 3-month codes", () => {
+  assert.equal(KIS_TR.openOrders.paper, "VTTC0081R");
+  assert.equal(KIS_TR.openOrders.real, "TTTC0081R");
+  assert.equal(KIS_TR.dailyCcld.paper, "VTTC0081R");
+  assert.equal(KIS_TR.dailyCcld.real, "TTTC0081R");
+  assert.equal(KIS_TR.openOrders.paper, KIS_TR.dailyCcld.paper);
+  assert.equal(KIS_TR.openOrders.real, KIS_TR.dailyCcld.real);
 });
 
 test("balance TR ids are the KIS inquire-balance codes", () => {

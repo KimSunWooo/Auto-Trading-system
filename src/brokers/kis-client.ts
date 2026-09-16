@@ -37,7 +37,17 @@ export type KisDayOrder = {
   filledQty: number;
   unfilledQty: number;
   avgPrice: number;
+  /** Official `ord_unpr`. */
+  orderPrice?: number;
+  /** Official `ord_dt` YYYYMMDD. */
+  ordDt?: string;
+  /** Official `ord_tmd`. */
+  ordTmd?: string;
+  /** Official `cncl_yn`. Y/N when present. */
+  cnclYn?: string;
 };
+
+export type KisCcldDvsn = "00" | "01" | "02";
 
 export type KisCancelOrder = {
   orderNo: string;
@@ -92,6 +102,48 @@ type TokenCache = { access: string; expiresAt: number };
 function asNumber(value: unknown): number {
   const n = Number(String(value ?? "").replace(/,/g, "").trim());
   return Number.isFinite(n) ? n : 0;
+}
+
+function pickQty(row: Record<string, unknown>, ...keys: string[]): unknown {
+  for (const key of keys) {
+    if (row[key] !== undefined && row[key] !== null && String(row[key]).trim() !== "") {
+      return row[key];
+    }
+  }
+  return undefined;
+}
+
+/** Map official inquire-daily-ccld output1 row. Does not invent missing KIS fields. */
+export function mapKisDailyCcldRow(row: Record<string, unknown>): KisDayOrder | null {
+  const orderNo = String(row.odno ?? row.ODNO ?? "").trim();
+  const rawTicker = String(row.pdno ?? row.PDNO ?? "").replace(/\D/g, "").slice(-6);
+  const ticker = rawTicker.padStart(6, "0");
+  if (!orderNo && (!rawTicker || ticker === "000000")) return null;
+
+  const sll = String(row.sll_buy_dvsn_cd ?? row.SLL_BUY_DVSN_CD ?? "");
+  const qty = asNumber(row.ord_qty ?? row.ORD_QTY);
+  const filledQty = asNumber(row.tot_ccld_qty ?? row.TOT_CCLD_QTY);
+  const rawRemaining = pickQty(row, "rmn_qty", "RMN_QTY", "nccs_qty", "NCCS_QTY");
+  const unfilledQty =
+    rawRemaining === undefined ? Math.max(0, qty - filledQty) : asNumber(rawRemaining);
+  const cnclYn = String(row.cncl_yn ?? row.CNCL_YN ?? "").trim();
+  const ordDt = String(row.ord_dt ?? row.ORD_DT ?? "").trim();
+  const ordTmd = String(row.ord_tmd ?? row.ORD_TMD ?? "").trim();
+  const rawPrice = pickQty(row, "ord_unpr", "ORD_UNPR");
+
+  return {
+    orderNo,
+    ticker,
+    side: sll === "01" ? "sell" : "buy",
+    qty,
+    filledQty,
+    unfilledQty,
+    avgPrice: asNumber(row.avg_prvs ?? row.AVG_PRVS) || asNumber(row.avg_ccld_unpr),
+    orderPrice: rawPrice === undefined ? undefined : asNumber(rawPrice),
+    ordDt: ordDt || undefined,
+    ordTmd: ordTmd || undefined,
+    cnclYn: cnclYn || undefined,
+  };
 }
 
 function yyyymmddSeoul(date: Date): string {
@@ -291,7 +343,19 @@ export class KisClient implements KisApi {
     });
   }
 
+  /** Executions: official CCLD_DVSN=01 (체결). */
   async inquireDailyCcld(): Promise<KisDayOrder[]> {
+    const rows = await this.inquireDailyCcldRows("01");
+    return rows.filter((row) => row.orderNo || row.ticker);
+  }
+
+  /** Open orders: official CCLD_DVSN=02 (미체결). Same domestic daily-ccld API. */
+  async inquireOpenOrders(): Promise<KisDayOrder[]> {
+    const rows = await this.inquireDailyCcldRows("02");
+    return rows.filter((row) => row.orderNo);
+  }
+
+  private async inquireDailyCcldRows(ccldDvsn: KisCcldDvsn): Promise<KisDayOrder[]> {
     this.assertConfigured();
     const day = yyyymmddSeoul(new Date());
     const json = await this.uapi(
@@ -306,11 +370,14 @@ export class KisClient implements KisApi {
           INQR_STRT_DT: day,
           INQR_END_DT: day,
           SLL_BUY_DVSN_CD: "00",
-          INQR_DVSN: "00",
           PDNO: "",
-          CCLD_DVSN: "00",
+          CCLD_DVSN: ccldDvsn,
+          INQR_DVSN: "00",
           INQR_DVSN_3: "00",
+          ORD_GNO_BRNO: "",
+          ODNO: "",
           INQR_DVSN_1: "",
+          EXCG_ID_DVSN_CD: "KRX",
           CTX_AREA_FK100: "",
           CTX_AREA_NK100: "",
         },
@@ -318,67 +385,7 @@ export class KisClient implements KisApi {
     );
     const raw = json.output1 ?? json.output ?? [];
     const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
-    return rows
-      .map((row) => {
-        const side: "buy" | "sell" =
-          String(row.sll_buy_dvsn_cd ?? "") === "01" ? "sell" : "buy";
-        const qty = asNumber(row.ord_qty);
-        const filledQty = asNumber(row.tot_ccld_qty);
-        const rawNccs = row.nccs_qty ?? row.NCCS_QTY;
-        const unfilledQty =
-          rawNccs === undefined || rawNccs === null || String(rawNccs).trim() === ""
-            ? Math.max(0, qty - filledQty)
-            : asNumber(rawNccs);
-        return {
-          orderNo: String(row.odno ?? row.ODNO ?? "").trim(),
-          ticker: String(row.pdno ?? row.PDNO ?? "").padStart(6, "0"),
-          side,
-          qty,
-          filledQty,
-          unfilledQty,
-          avgPrice: asNumber(row.avg_prvs) || asNumber(row.avg_ccld_unpr),
-        };
-      })
-      .filter((row) => row.orderNo || row.ticker);
-  }
-
-  async inquireOpenOrders(): Promise<KisDayOrder[]> {
-    this.assertConfigured();
-    const json = await this.uapi("GET", "/uapi/domestic-stock/v1/trading/inquire-nccs", {
-      trId: KIS_TR.openOrders[this.config.mode],
-      timeoutMs: HARD_LIMITS.quoteTimeoutMs,
-      query: {
-        CANO: this.config.cano,
-        ACNT_PRDT_CD: this.config.productCode,
-        INQR_DVSN: "00",
-        CTX_AREA_FK200: "",
-        CTX_AREA_NK200: "",
-      },
-    });
-    const raw = json.output1 ?? json.output ?? [];
-    const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
-    return rows
-      .map((row) => {
-        const side: "buy" | "sell" =
-          String(row.sll_buy_dvsn_cd ?? "") === "01" ? "sell" : "buy";
-        const qty = asNumber(row.ord_qty);
-        const filledQty = asNumber(row.tot_ccld_qty);
-        const rawNccs = row.nccs_qty ?? row.NCCS_QTY;
-        const unfilledQty =
-          rawNccs === undefined || rawNccs === null || String(rawNccs).trim() === ""
-            ? Math.max(0, qty - filledQty)
-            : asNumber(rawNccs);
-        return {
-          orderNo: String(row.odno ?? row.ODNO ?? "").trim(),
-          ticker: String(row.pdno ?? row.PDNO ?? "").padStart(6, "0"),
-          side,
-          qty,
-          filledQty,
-          unfilledQty,
-          avgPrice: asNumber(row.avg_prvs) || asNumber(row.ord_unpr),
-        };
-      })
-      .filter((row) => row.orderNo);
+    return rows.map((row) => mapKisDailyCcldRow(row)).filter((row): row is KisDayOrder => row !== null);
   }
 
   async inquireBalance(): Promise<KisAccountBalance> {
