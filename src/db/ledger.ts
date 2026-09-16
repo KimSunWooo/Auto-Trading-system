@@ -340,7 +340,11 @@ export class MemorySession implements LedgerSession {
   async listUnlinkedExecutions(accountId: string): Promise<ExecutionRow[]> {
     return [...this.state.executions.values()]
       .filter((row) => row.brokerAccountId === accountId && !row.tradeId)
-      .sort((a, b) => (a.executedAt < b.executedAt ? -1 : a.executedAt > b.executedAt ? 1 : a.id.localeCompare(b.id)));
+      .sort((a, b) => {
+        if (a.executedAt !== b.executedAt) return a.executedAt < b.executedAt ? -1 : a.executedAt > b.executedAt ? 1 : 0;
+        if (a.side !== b.side) return a.side === "BUY" ? -1 : 1;
+        return a.id.localeCompare(b.id);
+      });
   }
 
   async linkExecutionTrade(executionId: string, tradeId: string): Promise<void> {

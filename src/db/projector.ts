@@ -64,6 +64,11 @@ export type ProjectResult = {
   warnings: string[];
 };
 
+function fillSequenceUtc(createdAt: string, seq: number): string {
+  const ms = new Date(createdAt).getTime();
+  return toMysqlUtc(Number.isFinite(ms) ? ms + seq : seq);
+}
+
 function eventTypeFor(status: string, first: boolean): string {
   if (first) return "CREATED";
   if (status === "SUBMITTED" || status === "PENDING") return "SUBMITTED";
@@ -338,7 +343,11 @@ export async function projectAppState(
 
     let importedOrders = 0;
     let importedExecutions = 0;
-    for (const parent of parentOrders(state)) {
+    const parents = [...parentOrders(state)].sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+      return state.orders.indexOf(b) - state.orders.indexOf(a);
+    });
+    for (const [index, parent] of parents.entries()) {
       const requested = parent.orderedQty ?? parent.qty;
       if (requested <= 0) continue;
       const instrument = await ensureInstrument(tx, parent.code);
@@ -378,10 +387,13 @@ export async function projectAppState(
       if (result.inserted) importedOrders += 1;
       await maybeAppendEvent(tx, result.row, result.inserted);
 
-      const children = fillChildren(state, parent.id);
+      const children = [...fillChildren(state, parent.id)].sort((a, b) => {
+        if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+        return state.orders.indexOf(b) - state.orders.indexOf(a);
+      });
       if (children.length > 0) {
         let cumulative = 0;
-        for (const child of children) {
+        for (const [childIndex, child] of children.entries()) {
           if (child.qty <= 0) continue;
           cumulative += child.qty;
           const inserted = await insertExecution(tx, {
@@ -392,6 +404,7 @@ export async function projectAppState(
             order: child,
             parent,
             cumulativeQty: cumulative,
+            executedAt: fillSequenceUtc(child.createdAt, index * 10 + childIndex),
           });
           if (inserted) importedExecutions += 1;
         }
@@ -405,6 +418,7 @@ export async function projectAppState(
           order: parent,
           parent: undefined,
           cumulativeQty: qty,
+          executedAt: fillSequenceUtc(parent.createdAt, index * 10),
         });
         if (inserted) importedExecutions += 1;
       }
@@ -503,12 +517,14 @@ async function insertExecution(
     order: Order;
     parent: Order | undefined;
     cumulativeQty: number;
+    executedAt?: string;
   },
 ): Promise<boolean> {
   const key = executionKeyFor(input.order, input.parent, input.cumulativeQty);
   const qty = input.order.qty;
   if (qty <= 0) return false;
   const price = input.order.price;
+  const at = input.executedAt ?? toMysqlUtc(input.order.createdAt);
   const result = await tx.insertExecution({
     id: stableId("execution", `${input.accountId}:${key}`),
     brokerAccountId: input.accountId,
@@ -527,8 +543,8 @@ async function insertExecution(
     otherFee: money(0),
     realizedPnl: input.order.realizedPnl == null ? null : money(input.order.realizedPnl),
     currency: input.currency,
-    executedAt: toMysqlUtc(input.order.createdAt),
-    createdAt: toMysqlUtc(input.order.createdAt),
+    executedAt: at,
+    createdAt: at,
   });
   return result.inserted;
 }

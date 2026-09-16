@@ -4,7 +4,6 @@ import { getMysqlLedger } from "@/src/db/mysql-ledger";
 import { projectAppState, type MirrorContext } from "@/src/db/projector";
 import {
   recordMirrorDegraded,
-  recordMirrorFailure,
   recordMirrorSuccess,
   snapshotDatabaseStatus,
   type DatabasePublicStatus,
@@ -47,7 +46,6 @@ export async function mirrorAfterJsonSave(
   } catch (err) {
     const message = err instanceof Error ? err.message : "mirror failed";
     recordMirrorDegraded(message);
-    recordMirrorFailure(message);
   }
 }
 

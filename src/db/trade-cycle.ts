@@ -31,7 +31,7 @@ export function applyExecutionToTrade(trade: TradeRow, execution: ExecutionRow):
     };
   }
 
-  const realized = (price - remainingAvg) * qty - commission - tax - other;
+  const realized = Math.round((price - remainingAvg) * qty - commission - tax - other);
   const totalSellQty = moneyNumber(trade.totalSellQty) + qty;
   const totalSellAmount = moneyNumber(trade.totalSellAmount) + price * qty;
   const leftover = remainingQty - qty;
