@@ -16,6 +16,7 @@
 | Overseas VTS-A | `npm run vts:overseas-a` 로 실행. 기본 npm test 는 skip |
 | Overseas VTS-B1 | 주문 없음. PAPER는 1주 금액으로 저가주를 고르지 않음. `npm run vts:overseas-b1` |
 | PAPER order policy | 수량/횟수/중복/미체결 게이트. 10,000원 금액 상한은 PAPER 자격에서 제외 |
+| RDS MySQL mirror | JSON authority 유지. `PERSISTENCE_MODE=mirror` 일 때만 원장 projection. database SOT 없음 |
 | VTS-B2 국내/해외 주문 | 미실행. 별도 `Domestic/Overseas VTS-B2 진행` 요청 전까지 opt-in 없음 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 
@@ -94,6 +95,23 @@ npm test
 키 없이 실행하면 `BROKER=mock` 입니다. 조건식에 넣은 종목의 호가만 움직입니다.
 
 로컬에서 예전 프리셋을 쓰려면 `.env.local` 에 `NEXT_PUBLIC_ADMIN_MODE=true` 를 넣고 개발 서버를 재시작합니다. `localhost` 로 열면 이 변수가 없어도 관리자 프리셋이 보입니다.
+
+## RDS MySQL mirror (optional)
+
+기본값은 `PERSISTENCE_MODE=json` 입니다. JSON 장부가 runtime authority이고, RDS는 아직 source of truth가 아닙니다.
+
+```bash
+# 읽기 전용 점검. 비밀번호를 출력하지 않습니다.
+npm run db:check
+
+# 로컬 MySQL 8 (기존 앱 compose를 바꾸지 않습니다)
+docker compose -f docker-compose.db.yml up -d
+```
+
+`PERSISTENCE_MODE=mirror` 일 때만 JSON 저장 성공 뒤에 RDS로 projection 합니다. DB 실패는 `DB_MIRROR_DEGRADED`만 기록하고 주문을 재시도하지 않습니다.
+
+문서: `docs/DATABASE_ARCHITECTURE.md`, `docs/RDS_OPERATIONS.md`.
+
 
 ## 한국투자증권 모의투자(VTS)
 

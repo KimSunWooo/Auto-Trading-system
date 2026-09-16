@@ -14,6 +14,7 @@ import { emptySafety, safetyOf, blockSafety } from "@/src/runtime/safety";
 import { httpTickAllowed, isLiveLike } from "@/src/runtime/trading-mode";
 import { holdsWorkerLock } from "@/src/runtime/worker-lock";
 import { buildRuntimePublic } from "@/src/runtime/status";
+import { mirrorAfterJsonSave } from "@/src/db/mirror";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 export const DEFAULT_STORE_PATH = path.join(DATA_DIR, "paper-account.json");
@@ -167,6 +168,7 @@ async function loadState(): Promise<AppState> {
 
 async function saveState(state: AppState) {
   await repository.save(state);
+  await mirrorAfterJsonSave(state);
 }
 
 export function withStore<T>(fn: (state: AppState) => T | Promise<T>): Promise<T> {

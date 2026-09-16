@@ -1,0 +1,780 @@
+CREATE DATABASE IF NOT EXISTS auto_trading CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+USE auto_trading;
+SET FOREIGN_KEY_CHECKS=0;
+
+CREATE TABLE `account_snapshots` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `base_currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `total_asset_value` decimal(28,8) NOT NULL,
+  `cash_value` decimal(28,8) NOT NULL,
+  `stock_market_value` decimal(28,8) NOT NULL,
+  `realized_pnl` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `unrealized_pnl` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `captured_at` datetime(6) NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_account_snapshots_account_time` (`broker_account_id`,`captured_at`),
+  CONSTRAINT `fk_account_snapshots_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `ai_recommendations` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `candidate_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `model_name` varchar(160) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `model_version` varchar(120) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `recommendation` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `score` decimal(12,8) DEFAULT NULL,
+  `confidence` decimal(12,8) DEFAULT NULL,
+  `reason` varchar(2000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `input_snapshot_json` json DEFAULT NULL,
+  `output_raw_json` json DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_ai_rec_user_time` (`user_id`,`created_at`),
+  KEY `ix_ai_rec_instrument_time` (`instrument_id`,`created_at`),
+  KEY `fk_ai_rec_account` (`broker_account_id`),
+  KEY `fk_ai_rec_candidate` (`candidate_id`),
+  CONSTRAINT `fk_ai_rec_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_ai_rec_candidate` FOREIGN KEY (`candidate_id`) REFERENCES `trading_candidates` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_ai_rec_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_ai_rec_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `audit_logs` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `action` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `entity_type` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `entity_id` varchar(191) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `before_data_json` json DEFAULT NULL,
+  `after_data_json` json DEFAULT NULL,
+  `ip_address` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `user_agent` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_audit_user_time` (`user_id`,`created_at`),
+  KEY `ix_audit_account_time` (`broker_account_id`,`created_at`),
+  KEY `ix_audit_action_time` (`action`,`created_at`),
+  CONSTRAINT `fk_audit_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_audit_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `auth_sessions` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `session_token_hash` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `expires_at` datetime(6) NOT NULL,
+  `revoked_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_auth_session_token_hash` (`session_token_hash`),
+  KEY `ix_auth_sessions_user` (`user_id`,`expires_at`),
+  CONSTRAINT `fk_auth_sessions_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `auto_conditions` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `condition_key` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+  `config_json` json NOT NULL,
+  `last_triggered_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_auto_conditions` (`broker_account_id`,`condition_key`),
+  KEY `ix_auto_conditions_status` (`broker_account_id`,`status`),
+  KEY `fk_auto_conditions_instrument` (`instrument_id`),
+  CONSTRAINT `fk_auto_conditions_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_auto_conditions_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `ck_auto_conditions_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'PAUSED',_utf8mb4'COMPLETED',_utf8mb4'DISABLED')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `broker_accounts` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `environment` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `display_name` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `account_number_masked` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `base_currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'KRW',
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+  `is_default` tinyint(1) NOT NULL DEFAULT '0',
+  `credential_ref` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_broker_accounts_user_env` (`user_id`,`environment`),
+  KEY `ix_broker_accounts_status` (`status`),
+  CONSTRAINT `fk_broker_accounts_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_broker_accounts_broker` CHECK ((`broker` in (_utf8mb4'MOCK',_utf8mb4'KIS'))),
+  CONSTRAINT `ck_broker_accounts_env` CHECK ((`environment` in (_utf8mb4'MOCK',_utf8mb4'PAPER',_utf8mb4'REAL'))),
+  CONSTRAINT `ck_broker_accounts_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'DISABLED')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `broker_credential_refs` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `secret_provider` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `secret_ref` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `key_version` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_broker_credential_account` (`broker_account_id`),
+  CONSTRAINT `fk_broker_credential_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `cash_balance_snapshots` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `cash_balance` decimal(28,8) NOT NULL,
+  `orderable_amount` decimal(28,8) NOT NULL,
+  `withdrawable_amount` decimal(28,8) DEFAULT NULL,
+  `source` varchar(80) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `captured_at` datetime(6) NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_cash_balance_account_currency_time` (`broker_account_id`,`currency`,`captured_at`),
+  CONSTRAINT `fk_cash_balance_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `daily_performance` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `trade_date` date NOT NULL,
+  `base_currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `starting_equity` decimal(28,8) NOT NULL,
+  `ending_equity` decimal(28,8) NOT NULL,
+  `realized_pnl` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `unrealized_pnl` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `daily_return_pct` decimal(18,8) DEFAULT NULL,
+  `trade_count` int NOT NULL DEFAULT '0',
+  `win_count` int NOT NULL DEFAULT '0',
+  `loss_count` int NOT NULL DEFAULT '0',
+  `gross_profit` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `gross_loss` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `max_drawdown` decimal(18,8) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_daily_performance` (`broker_account_id`,`trade_date`),
+  CONSTRAINT `fk_daily_performance_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `dca_plans` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `plan_key` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+  `config_json` json NOT NULL,
+  `next_run_at` datetime(6) DEFAULT NULL,
+  `last_run_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_dca_plans` (`broker_account_id`,`plan_key`),
+  KEY `ix_dca_plans_next_run` (`status`,`next_run_at`),
+  KEY `fk_dca_plans_instrument` (`instrument_id`),
+  CONSTRAINT `fk_dca_plans_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_dca_plans_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_dca_plans_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'PAUSED',_utf8mb4'COMPLETED',_utf8mb4'DISABLED')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `equity_snapshots` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `equity` decimal(28,8) NOT NULL,
+  `cash` decimal(28,8) NOT NULL,
+  `market_value` decimal(28,8) NOT NULL,
+  `realized_pnl` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `unrealized_pnl` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `captured_at` datetime(6) NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_equity_snapshots_account_time` (`broker_account_id`,`captured_at`),
+  CONSTRAINT `fk_equity_snapshots_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `executions` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `order_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `trade_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `execution_key` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_execution_id` varchar(120) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_order_no` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `side` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `quantity` decimal(28,8) NOT NULL,
+  `price` decimal(28,8) NOT NULL,
+  `gross_amount` decimal(28,8) NOT NULL,
+  `commission` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `tax` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `other_fee` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `realized_pnl` decimal(28,8) DEFAULT NULL,
+  `currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `fx_rate_to_base` decimal(28,8) DEFAULT NULL,
+  `base_gross_amount` decimal(28,8) DEFAULT NULL,
+  `executed_at` datetime(6) NOT NULL,
+  `broker_payload` json DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_executions_key` (`broker_account_id`,`execution_key`),
+  KEY `ix_executions_order` (`order_id`,`executed_at`),
+  KEY `ix_executions_instrument_time` (`instrument_id`,`executed_at`),
+  KEY `ix_executions_trade` (`trade_id`),
+  KEY `ix_executions_broker_order_no` (`broker_order_no`),
+  CONSTRAINT `fk_executions_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_executions_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_executions_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_executions_trade` FOREIGN KEY (`trade_id`) REFERENCES `trades` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `ck_executions_fees` CHECK (((`commission` >= 0) and (`tax` >= 0) and (`other_fee` >= 0))),
+  CONSTRAINT `ck_executions_price` CHECK ((`price` >= 0)),
+  CONSTRAINT `ck_executions_qty` CHECK ((`quantity` > 0)),
+  CONSTRAINT `ck_executions_side` CHECK ((`side` in (_utf8mb4'BUY',_utf8mb4'SELL')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `fx_rate_snapshots` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `base_currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `quote_currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rate` decimal(28,8) NOT NULL,
+  `source` varchar(80) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `captured_at` datetime(6) NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_fx_rate_pair_time` (`base_currency`,`quote_currency`,`captured_at`),
+  CONSTRAINT `ck_fx_rate_positive` CHECK ((`rate` > 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `instrument_aliases` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `alias` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `normalized_alias` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `alias_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_instrument_alias` (`instrument_id`,`normalized_alias`),
+  KEY `ix_instrument_alias_search` (`normalized_alias`),
+  CONSTRAINT `fk_instrument_alias_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `ck_instrument_alias_type` CHECK ((`alias_type` in (_utf8mb4'SYMBOL',_utf8mb4'KOREAN',_utf8mb4'ENGLISH',_utf8mb4'SEARCH')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `instrument_sync_runs` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `country` char(2) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `source` varchar(80) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `total_count` int NOT NULL DEFAULT '0',
+  `inserted_count` int NOT NULL DEFAULT '0',
+  `updated_count` int NOT NULL DEFAULT '0',
+  `deactivated_count` int NOT NULL DEFAULT '0',
+  `warning_json` json DEFAULT NULL,
+  `started_at` datetime(6) NOT NULL,
+  `finished_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_instrument_sync_runs` (`country`,`started_at`),
+  CONSTRAINT `ck_instrument_sync_status` CHECK ((`status` in (_utf8mb4'RUNNING',_utf8mb4'PASS',_utf8mb4'FAIL',_utf8mb4'DEGRADED')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `instruments` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `country` char(2) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `market` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `symbol` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `display_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `korean_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `english_name` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `kis_exchange_code` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `instrument_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'STOCK',
+  `is_active` tinyint(1) NOT NULL DEFAULT '1',
+  `listed_at` date DEFAULT NULL,
+  `delisted_at` date DEFAULT NULL,
+  `master_updated_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_instruments_identity` (`country`,`market`,`symbol`),
+  KEY `ix_instruments_symbol` (`symbol`),
+  KEY `ix_instruments_name` (`display_name`),
+  KEY `ix_instruments_country_market` (`country`,`market`,`is_active`),
+  CONSTRAINT `ck_instruments_country` CHECK ((`country` in (_utf8mb4'KR',_utf8mb4'US'))),
+  CONSTRAINT `ck_instruments_market` CHECK ((`market` in (_utf8mb4'KOSPI',_utf8mb4'KOSDAQ',_utf8mb4'KONEX',_utf8mb4'NASDAQ',_utf8mb4'NYSE',_utf8mb4'AMEX'))),
+  CONSTRAINT `ck_instruments_type` CHECK ((`instrument_type` in (_utf8mb4'STOCK',_utf8mb4'ETF',_utf8mb4'ETN',_utf8mb4'OTHER')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `migration_runs` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `migration_type` varchar(80) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `source_path` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `imported_orders` int NOT NULL DEFAULT '0',
+  `imported_intents` int NOT NULL DEFAULT '0',
+  `imported_positions` int NOT NULL DEFAULT '0',
+  `imported_rules` int NOT NULL DEFAULT '0',
+  `warnings_json` json DEFAULT NULL,
+  `started_at` datetime(6) NOT NULL,
+  `finished_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_migration_runs_type_time` (`migration_type`,`started_at`),
+  CONSTRAINT `ck_migration_runs_status` CHECK ((`status` in (_utf8mb4'RUNNING',_utf8mb4'PASS',_utf8mb4'FAIL',_utf8mb4'PARTIAL')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `notifications` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `type` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `severity` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'INFO',
+  `title` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `message` text COLLATE utf8mb4_unicode_ci NOT NULL,
+  `read_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_notifications_user_read` (`user_id`,`read_at`,`created_at`),
+  CONSTRAINT `fk_notifications_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `ck_notifications_severity` CHECK ((`severity` in (_utf8mb4'INFO',_utf8mb4'WARNING',_utf8mb4'CRITICAL')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `order_events` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `order_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `event_type` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `previous_status` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `new_status` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_code` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_message` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `metadata_json` json DEFAULT NULL,
+  `event_at` datetime(6) NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_order_events_order_time` (`order_id`,`event_at`),
+  KEY `ix_order_events_type_time` (`event_type`,`event_at`),
+  CONSTRAINT `fk_order_events_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `order_intents` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `signal_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `candidate_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `intent_key` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rule_key` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `source` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `side` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `quantity` decimal(28,8) NOT NULL,
+  `reference_price` decimal(28,8) DEFAULT NULL,
+  `order_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MARKET',
+  `trading_mode` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `reason` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  `completed_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_order_intents_key` (`broker_account_id`,`intent_key`),
+  KEY `ix_order_intents_account_time` (`broker_account_id`,`created_at`),
+  KEY `ix_order_intents_instrument_time` (`instrument_id`,`created_at`),
+  KEY `ix_order_intents_status` (`status`),
+  KEY `fk_order_intents_signal` (`signal_id`),
+  KEY `fk_order_intents_candidate` (`candidate_id`),
+  CONSTRAINT `fk_order_intents_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_order_intents_candidate` FOREIGN KEY (`candidate_id`) REFERENCES `trading_candidates` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_order_intents_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_order_intents_signal` FOREIGN KEY (`signal_id`) REFERENCES `trade_signals` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `ck_order_intents_mode` CHECK ((`trading_mode` in (_utf8mb4'MOCK',_utf8mb4'PAPER',_utf8mb4'REAL'))),
+  CONSTRAINT `ck_order_intents_qty` CHECK ((`quantity` > 0)),
+  CONSTRAINT `ck_order_intents_side` CHECK ((`side` in (_utf8mb4'BUY',_utf8mb4'SELL'))),
+  CONSTRAINT `ck_order_intents_status` CHECK ((`status` in (_utf8mb4'PENDING',_utf8mb4'RISK_APPROVED',_utf8mb4'RISK_REJECTED',_utf8mb4'SUBMITTING',_utf8mb4'SUBMITTED',_utf8mb4'FILLED',_utf8mb4'REJECTED',_utf8mb4'UNKNOWN',_utf8mb4'CANCELLED',_utf8mb4'COMPLETED',_utf8mb4'FAILED'))),
+  CONSTRAINT `ck_order_intents_type` CHECK ((`order_type` in (_utf8mb4'MARKET',_utf8mb4'LIMIT')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `orders` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `intent_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `local_order_id` varchar(191) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_order_no` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_order_date` date DEFAULT NULL,
+  `broker_org_no` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `side` varchar(10) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `order_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `requested_qty` decimal(28,8) NOT NULL,
+  `requested_price` decimal(28,8) DEFAULT NULL,
+  `filled_qty` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `remaining_qty` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `average_fill_price` decimal(28,8) DEFAULT NULL,
+  `currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `source` varchar(40) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `source_id` varchar(191) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `rule_key` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `reason` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_code` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_message` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `submitted_at` datetime(6) DEFAULT NULL,
+  `accepted_at` datetime(6) DEFAULT NULL,
+  `completed_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_orders_local` (`broker_account_id`,`local_order_id`),
+  UNIQUE KEY `uq_orders_broker` (`broker_account_id`,`broker_order_date`,`broker_order_no`),
+  KEY `ix_orders_intent` (`intent_id`),
+  KEY `ix_orders_account_status_time` (`broker_account_id`,`status`,`created_at`),
+  KEY `ix_orders_instrument_status` (`instrument_id`,`status`),
+  KEY `ix_orders_broker_no` (`broker_order_no`),
+  CONSTRAINT `fk_orders_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_orders_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_orders_intent` FOREIGN KEY (`intent_id`) REFERENCES `order_intents` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `ck_orders_filled_qty` CHECK ((`filled_qty` >= 0)),
+  CONSTRAINT `ck_orders_remaining_qty` CHECK ((`remaining_qty` >= 0)),
+  CONSTRAINT `ck_orders_requested_qty` CHECK ((`requested_qty` > 0)),
+  CONSTRAINT `ck_orders_side` CHECK ((`side` in (_utf8mb4'BUY',_utf8mb4'SELL'))),
+  CONSTRAINT `ck_orders_status` CHECK ((`status` in (_utf8mb4'PENDING',_utf8mb4'SUBMITTING',_utf8mb4'SUBMITTED',_utf8mb4'ACCEPTED',_utf8mb4'PARTIALLY_FILLED',_utf8mb4'FILLED',_utf8mb4'CANCEL_PENDING',_utf8mb4'CANCELLED',_utf8mb4'REJECTED',_utf8mb4'UNKNOWN'))),
+  CONSTRAINT `ck_orders_type` CHECK ((`order_type` in (_utf8mb4'MARKET',_utf8mb4'LIMIT')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `positions` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rule_scope` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `quantity` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `available_quantity` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `average_price` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `total_cost` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `market_price` decimal(28,8) DEFAULT NULL,
+  `market_value` decimal(28,8) DEFAULT NULL,
+  `unrealized_pnl` decimal(28,8) DEFAULT NULL,
+  `unrealized_return_pct` decimal(18,8) DEFAULT NULL,
+  `currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `provenance` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'RUNTIME',
+  `last_price_at` datetime(6) DEFAULT NULL,
+  `last_reconciled_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_positions_scope` (`broker_account_id`,`instrument_id`,`rule_scope`),
+  KEY `ix_positions_account` (`broker_account_id`),
+  KEY `ix_positions_instrument` (`instrument_id`),
+  CONSTRAINT `fk_positions_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_positions_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_positions_available_qty` CHECK ((`available_quantity` >= 0)),
+  CONSTRAINT `ck_positions_avg_price` CHECK ((`average_price` >= 0)),
+  CONSTRAINT `ck_positions_qty` CHECK ((`quantity` >= 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `reconciliation_items` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `reconciliation_run_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `item_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `local_reference` varchar(191) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `broker_reference` varchar(191) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `local_value_json` json DEFAULT NULL,
+  `broker_value_json` json DEFAULT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `message` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_recon_items_run` (`reconciliation_run_id`),
+  KEY `ix_recon_items_type_status` (`item_type`,`status`),
+  KEY `fk_recon_items_instrument` (`instrument_id`),
+  CONSTRAINT `fk_recon_items_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_recon_items_run` FOREIGN KEY (`reconciliation_run_id`) REFERENCES `reconciliation_runs` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `ck_recon_item_status` CHECK ((`status` in (_utf8mb4'MATCH',_utf8mb4'MISMATCH',_utf8mb4'UNKNOWN'))),
+  CONSTRAINT `ck_recon_item_type` CHECK ((`item_type` in (_utf8mb4'ORDER',_utf8mb4'EXECUTION',_utf8mb4'POSITION',_utf8mb4'BALANCE')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `reconciliation_runs` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `trigger_type` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `started_at` datetime(6) NOT NULL,
+  `finished_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_recon_runs_account_time` (`broker_account_id`,`started_at`),
+  KEY `ix_recon_runs_status` (`status`),
+  CONSTRAINT `fk_recon_runs_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_recon_status` CHECK ((`status` in (_utf8mb4'RUNNING',_utf8mb4'HEALTHY',_utf8mb4'MISMATCH',_utf8mb4'UNKNOWN',_utf8mb4'FAILED'))),
+  CONSTRAINT `ck_recon_trigger` CHECK ((`trigger_type` in (_utf8mb4'STARTUP',_utf8mb4'SCHEDULED',_utf8mb4'ORDER_RECOVERY',_utf8mb4'CRASH_RECOVERY',_utf8mb4'MANUAL')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `risk_decisions` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `intent_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `decision` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `reason_code` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `reason_text` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `requested_qty` decimal(28,8) DEFAULT NULL,
+  `approved_qty` decimal(28,8) DEFAULT NULL,
+  `requested_amount` decimal(28,8) DEFAULT NULL,
+  `approved_amount` decimal(28,8) DEFAULT NULL,
+  `account_value` decimal(28,8) DEFAULT NULL,
+  `position_exposure` decimal(28,8) DEFAULT NULL,
+  `daily_exposure` decimal(28,8) DEFAULT NULL,
+  `daily_pnl` decimal(28,8) DEFAULT NULL,
+  `details_json` json DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_risk_decisions_intent` (`intent_id`,`created_at`),
+  KEY `ix_risk_decisions_decision` (`decision`,`created_at`),
+  CONSTRAINT `fk_risk_decisions_intent` FOREIGN KEY (`intent_id`) REFERENCES `order_intents` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_risk_decisions_decision` CHECK ((`decision` in (_utf8mb4'ALLOW',_utf8mb4'DENY',_utf8mb4'BLOCK')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `risk_limits` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `environment` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `max_order_amount` decimal(28,8) DEFAULT NULL,
+  `max_order_qty` decimal(28,8) DEFAULT NULL,
+  `max_daily_order_amount` decimal(28,8) DEFAULT NULL,
+  `max_daily_orders` int DEFAULT NULL,
+  `max_position_amount` decimal(28,8) DEFAULT NULL,
+  `max_daily_loss` decimal(28,8) DEFAULT NULL,
+  `max_drawdown` decimal(12,8) DEFAULT NULL,
+  `allow_trading` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_risk_limits_account_env` (`broker_account_id`,`environment`),
+  CONSTRAINT `fk_risk_limits_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_risk_limits_env` CHECK ((`environment` in (_utf8mb4'MOCK',_utf8mb4'PAPER',_utf8mb4'REAL')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `rule_allocations` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rule_key` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `budget` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `balance` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `enabled` tinyint(1) NOT NULL DEFAULT '1',
+  `last_run_at` datetime(6) DEFAULT NULL,
+  `last_message` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `meta_json` json DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_rule_allocations` (`broker_account_id`,`rule_key`),
+  CONSTRAINT `fk_rule_allocations_rule` FOREIGN KEY (`broker_account_id`, `rule_key`) REFERENCES `trading_rules` (`broker_account_id`, `rule_key`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_rule_alloc_balance` CHECK ((`balance` >= 0)),
+  CONSTRAINT `ck_rule_alloc_budget` CHECK ((`budget` >= 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `trade_signals` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rule_key` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `signal_type` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `confidence` decimal(12,8) DEFAULT NULL,
+  `reference_price` decimal(28,8) DEFAULT NULL,
+  `reason_code` varchar(80) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `reason_text` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `market_data_snapshot` json DEFAULT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'GENERATED',
+  `generated_at` datetime(6) NOT NULL,
+  `consumed_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_trade_signals_account_time` (`broker_account_id`,`generated_at`),
+  KEY `ix_trade_signals_instrument_time` (`instrument_id`,`generated_at`),
+  KEY `ix_trade_signals_status` (`status`),
+  CONSTRAINT `fk_trade_signals_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_trade_signals_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_trade_signals_status` CHECK ((`status` in (_utf8mb4'GENERATED',_utf8mb4'CONSUMED',_utf8mb4'REJECTED',_utf8mb4'EXPIRED'))),
+  CONSTRAINT `ck_trade_signals_type` CHECK ((`signal_type` in (_utf8mb4'BUY',_utf8mb4'SELL',_utf8mb4'HOLD')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `trades` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rule_scope` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '',
+  `source` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `total_buy_qty` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `total_sell_qty` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `total_buy_amount` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `total_sell_amount` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `average_buy_price` decimal(28,8) DEFAULT NULL,
+  `average_sell_price` decimal(28,8) DEFAULT NULL,
+  `total_commission` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `total_tax` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `total_other_fee` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `realized_pnl` decimal(28,8) NOT NULL DEFAULT '0.00000000',
+  `realized_return_pct` decimal(18,8) DEFAULT NULL,
+  `currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `opened_at` datetime(6) NOT NULL,
+  `closed_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_trades_account_status_time` (`broker_account_id`,`status`,`opened_at`),
+  KEY `ix_trades_instrument_time` (`instrument_id`,`opened_at`),
+  CONSTRAINT `fk_trades_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_trades_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_trades_status` CHECK ((`status` in (_utf8mb4'OPEN',_utf8mb4'PARTIALLY_CLOSED',_utf8mb4'CLOSED')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `trading_account_state` (
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `auto_trading_enabled` tinyint(1) NOT NULL DEFAULT '0',
+  `onboarding_complete` tinyint(1) NOT NULL DEFAULT '0',
+  `liquidating` tinyint(1) NOT NULL DEFAULT '0',
+  `circuit_halted` tinyint(1) NOT NULL DEFAULT '0',
+  `circuit_kind` varchar(60) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `circuit_reason` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `unknown_order_count` int NOT NULL DEFAULT '0',
+  `last_engine_at` datetime(6) DEFAULT NULL,
+  `last_balance_sync_at` datetime(6) DEFAULT NULL,
+  `last_order_at` datetime(6) DEFAULT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`broker_account_id`),
+  CONSTRAINT `fk_trading_state_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `ck_trading_state_unknown_count` CHECK ((`unknown_order_count` >= 0))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `trading_candidates` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `source` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'CANDIDATE',
+  `score` decimal(12,8) DEFAULT NULL,
+  `reason` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `expires_at` datetime(6) DEFAULT NULL,
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  KEY `ix_candidates_user_status` (`user_id`,`status`),
+  KEY `ix_candidates_instrument_status` (`instrument_id`,`status`),
+  KEY `fk_candidates_account` (`broker_account_id`),
+  CONSTRAINT `fk_candidates_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_candidates_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_candidates_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_candidates_source` CHECK ((`source` in (_utf8mb4'MANUAL_SEARCH',_utf8mb4'WATCHLIST',_utf8mb4'STRATEGY',_utf8mb4'AI_RECOMMENDATION'))),
+  CONSTRAINT `ck_candidates_status` CHECK ((`status` in (_utf8mb4'CANDIDATE',_utf8mb4'WATCHING',_utf8mb4'APPROVED',_utf8mb4'REJECTED',_utf8mb4'TRADED',_utf8mb4'EXPIRED')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `trading_rules` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `broker_account_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `rule_key` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `name` varchar(160) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `kind` varchar(60) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `interval_ms` bigint DEFAULT NULL,
+  `fast_ma` int DEFAULT NULL,
+  `slow_ma` int DEFAULT NULL,
+  `buy_pct` decimal(12,8) DEFAULT NULL,
+  `slice_amount` decimal(28,8) DEFAULT NULL,
+  `min_amount` decimal(28,8) DEFAULT NULL,
+  `stop_loss_pct` decimal(12,8) DEFAULT NULL,
+  `take_profit_pct` decimal(12,8) DEFAULT NULL,
+  `budget` decimal(28,8) DEFAULT NULL,
+  `enabled` tinyint(1) NOT NULL DEFAULT '1',
+  `config_json` json DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_trading_rules_key` (`broker_account_id`,`rule_key`),
+  KEY `ix_trading_rules_user` (`user_id`,`enabled`),
+  KEY `ix_trading_rules_instrument` (`instrument_id`),
+  CONSTRAINT `fk_trading_rules_account` FOREIGN KEY (`broker_account_id`) REFERENCES `broker_accounts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_trading_rules_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `fk_trading_rules_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `user_consents` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `consent_type` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `version` varchar(40) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `accepted_at` datetime(6) NOT NULL,
+  `revoked_at` datetime(6) DEFAULT NULL,
+  `context_json` json DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_user_consents` (`user_id`,`consent_type`,`version`),
+  KEY `ix_user_consents_user` (`user_id`,`accepted_at`),
+  CONSTRAINT `fk_user_consents_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `ck_user_consents_type` CHECK ((`consent_type` in (_utf8mb4'DISCLAIMER',_utf8mb4'TERMS',_utf8mb4'PRIVACY',_utf8mb4'LIVE_TRADING_ACK')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `user_settings` (
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `timezone` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'Asia/Seoul',
+  `default_market` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `default_currency` char(3) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'KRW',
+  `notification_enabled` tinyint(1) NOT NULL DEFAULT '1',
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_user_settings_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `users` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `email` varchar(320) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `display_name` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `role` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'USER',
+  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ACTIVE',
+  `last_login_at` datetime(6) DEFAULT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  `deleted_at` datetime(6) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_users_email` (`email`),
+  KEY `ix_users_status` (`status`),
+  CONSTRAINT `ck_users_role` CHECK ((`role` in (_utf8mb4'USER',_utf8mb4'ADMIN'))),
+  CONSTRAINT `ck_users_status` CHECK ((`status` in (_utf8mb4'ACTIVE',_utf8mb4'SUSPENDED',_utf8mb4'WITHDRAWN')))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE OR REPLACE VIEW `v_buy_history` AS select `e`.`id` AS `execution_id`,`e`.`broker_account_id` AS `broker_account_id`,`ba`.`user_id` AS `user_id`,`e`.`order_id` AS `order_id`,`e`.`instrument_id` AS `instrument_id`,`i`.`country` AS `country`,`i`.`market` AS `market`,`i`.`symbol` AS `symbol`,`i`.`display_name` AS `display_name`,`e`.`quantity` AS `quantity`,`e`.`price` AS `price`,`e`.`gross_amount` AS `gross_amount`,`e`.`commission` AS `commission`,`e`.`tax` AS `tax`,`e`.`other_fee` AS `other_fee`,`e`.`currency` AS `currency`,`e`.`broker_order_no` AS `broker_order_no`,`e`.`executed_at` AS `executed_at`,`e`.`created_at` AS `created_at` from ((`executions` `e` join `instruments` `i` on((`i`.`id` = `e`.`instrument_id`))) join `broker_accounts` `ba` on((`ba`.`id` = `e`.`broker_account_id`))) where (`e`.`side` = 'BUY');
+
+CREATE TABLE `watchlist_items` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `watchlist_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `instrument_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_watchlist_item` (`watchlist_id`,`instrument_id`),
+  KEY `ix_watchlist_items_instrument` (`instrument_id`),
+  CONSTRAINT `fk_watchlist_items_instrument` FOREIGN KEY (`instrument_id`) REFERENCES `instruments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `fk_watchlist_items_watchlist` FOREIGN KEY (`watchlist_id`) REFERENCES `watchlists` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `watchlists` (
+  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `name` varchar(120) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `updated_at` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_watchlist_name` (`user_id`,`name`),
+  CONSTRAINT `fk_watchlists_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+SET FOREIGN_KEY_CHECKS=1;
