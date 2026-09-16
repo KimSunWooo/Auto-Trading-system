@@ -102,6 +102,37 @@ export class RiskManager {
     return null;
   }
 
+  /**
+   * Overseas buys are sized in native currency (USD). KRW equivalent is reported, not mixed into KRW cash.
+   * Fees/slippage/FX buffers stay caller-supplied; this method does not invent them.
+   */
+  static checkOverseasBuy(input: {
+    qty: number;
+    nativePrice: number;
+    nativeCurrency?: string;
+    fxRate?: number | null;
+    orderableNative?: number | null;
+    fxBufferPct?: number;
+  }): { ok: true; nativeValue: number; krwEquivalent: number | null } | { ok: false; reason: string; nativeValue: number; krwEquivalent: number | null } {
+    const nativeValue = Math.max(0, input.qty) * Math.max(0, input.nativePrice);
+    const fxRate = input.fxRate ?? null;
+    const krw = fxRate && fxRate > 0 ? nativeValue * fxRate : null;
+    if (input.qty < 1) {
+      return { ok: false, reason: "1주 미만이라 주문하지 않습니다.", nativeValue, krwEquivalent: krw };
+    }
+    const buffer = input.fxBufferPct && input.fxBufferPct > 0 ? input.fxBufferPct : 0;
+    const needed = nativeValue * (1 + buffer);
+    if (input.orderableNative != null && Number.isFinite(input.orderableNative) && needed > input.orderableNative + 1e-8) {
+      return {
+        ok: false,
+        reason: `외화 매수가능금액 ${input.orderableNative} ${input.nativeCurrency ?? "USD"} 를 넘습니다.`,
+        nativeValue,
+        krwEquivalent: krw,
+      };
+    }
+    return { ok: true, nativeValue, krwEquivalent: krw };
+  }
+
   static shouldStopLoss(avgPrice: number, last: number, stopLossPct: number): boolean {
     if (avgPrice <= 0 || last <= 0) return false;
     return (last - avgPrice) / avgPrice <= -stopLossPct;

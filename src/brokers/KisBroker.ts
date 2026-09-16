@@ -2,7 +2,7 @@ import { OrderManager } from "@/src/accounts/OrderManager";
 import type { StateBox } from "@/src/accounts/StateBox";
 import type { BrokerFill, BrokerQuote, IBroker, IntentMeta } from "@/src/brokers/IBroker";
 import { canFillLimit } from "@/src/accounts/fills";
-import type { KisApi } from "@/src/brokers/kis-client";
+import { KisClient, type KisApi } from "@/src/brokers/kis-client";
 import { findStock } from "@/lib/universe";
 import { tickSize } from "@/lib/tick-size";
 import type { OrderSource, Quote } from "@/lib/types";
@@ -107,6 +107,34 @@ export class KisBroker implements IBroker {
       }
     }
     return quote.price;
+  }
+
+  private overseasClient(): KisClient {
+    if (!(this.client instanceof KisClient)) {
+      throw new Error("해외주식 API는 KisClient 가 필요합니다.");
+    }
+    return this.client;
+  }
+
+  async getOverseasQuote(instrument: import("@/src/markets/overseas/instruments").OverseasInstrument) {
+    return this.overseasClient().inquireOverseasPrice(instrument);
+  }
+
+  async getOverseasBalance(exchange?: import("@/src/markets/overseas/instruments").UsExchange) {
+    return this.overseasClient().inquireOverseasBalance(exchange);
+  }
+
+  async getOverseasPositions(exchange?: import("@/src/markets/overseas/instruments").UsExchange) {
+    const { positions } = await this.overseasClient().inquireOverseasBalance(exchange);
+    return positions;
+  }
+
+  async getOverseasOpenOrders(exchange?: import("@/src/markets/overseas/instruments").UsExchange) {
+    return this.overseasClient().inquireOverseasOpenOrders(exchange);
+  }
+
+  async getOverseasExecutions() {
+    return this.overseasClient().inquireOverseasExecutions();
   }
 
   async buyMarket(ticker: string, amount: number): Promise<BrokerFill> {

@@ -265,7 +265,10 @@ export async function probeVtsReadiness(client: KisApi, ticker = "005930"): Prom
   return result;
 }
 
-export function beginVtsTestRun(testCaseId: string): VtsTestRun {
+export function beginVtsTestRun(
+  testCaseId: string,
+  opts: { market?: "domestic" | "overseas" } = {},
+): VtsTestRun {
   assertVtsSafeEnv();
   const testRunId = makeTestRunId();
   const dir = path.join(process.cwd(), "data", "vts-test", testRunId);
@@ -280,6 +283,7 @@ export function beginVtsTestRun(testCaseId: string): VtsTestRun {
       {
         testRunId,
         testCaseId,
+        market: opts.market ?? "domestic",
         createdAt: new Date().toISOString(),
         statePath: "paper-account.json",
         note: "Do not delete on failure. Crash recovery artifact.",
@@ -289,7 +293,7 @@ export function beginVtsTestRun(testCaseId: string): VtsTestRun {
     )}\n`,
     "utf8",
   );
-  appendVtsEvent(dir, { type: "run_start", testCaseId, store: currentStorePath() });
+  appendVtsEvent(dir, { type: "run_start", testCaseId, market: opts.market ?? "domestic", store: currentStorePath() });
   return { testRunId, dir, statePath, lockPath };
 }
 
@@ -337,6 +341,10 @@ export function envSnapshotWithoutSecrets(env: EnvMap = process.env): Record<str
     VTS_TESTS_ENV,
     VTS_ORDER_TESTS_ENV,
     VTS_FLATTEN_TEST_ENV,
+    "RUN_KIS_VTS_OVERSEAS_TESTS",
+    "RUN_KIS_VTS_OVERSEAS_ORDER_TESTS",
+    "VTS_OVERSEAS_TEST_SYMBOL",
+    "VTS_OVERSEAS_TEST_EXCHANGE",
   ]) {
     const value = env[key];
     if (value) out[key] = value;

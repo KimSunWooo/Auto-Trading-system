@@ -11,6 +11,15 @@ export function formatWon(n: number): string {
   return `${krw.format(Math.round(n))}원`;
 }
 
+export function formatUsd(n: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(n);
+}
+
 export function formatWonShort(n: number): string {
   return krwFull.format(Math.round(n));
 }

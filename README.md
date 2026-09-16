@@ -11,8 +11,10 @@
 | Gate 1 (거래 코어 정적 분석) | PASS |
 | Gate 2 (VTS 장부 격리 · 테스트 하네스) | CONDITIONAL PASS |
 | Gate 2.5 (변경 범위 감사) | PASS |
-| VTS-A (실제 KIS 모의투자 읽기 전용) | FAIL — 모의투자 앱키/시크릿/계좌가 `.env.local`에 없음. Trading Core 결함 아님 |
-| VTS-B (제한 주문 1건) | 미실행. `VTS-B 진행` 요청 전까지 대기 |
+| VTS-A (국내 PAPER 읽기 전용) | PASS (이전 검증) |
+| 해외주식 UI / 시세 / 외화잔고 | 추가됨. 주문 버튼 DISABLED |
+| Overseas VTS-A | `npm run vts:overseas-a` 로 실행. 기본 npm test 는 skip |
+| VTS-B 국내/해외 주문 | 미실행. opt-in 없음 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 
 로컬 검증: TypeScript PASS, `npm test` 159 pass / 10 skip / 0 fail, build PASS.
@@ -33,7 +35,10 @@
      IBroker
    ┌────┴────┐
 MockBroker  KisBroker
- 로컬체결    KIS REST (시세·현금주문)
+ 로컬체결    KIS REST
+               ├─ DomesticTrading (시세·잔고·주문)
+               └─ OverseasTradingAdapter (미국 시세·외화잔고·주문 게이트)
+
         │
         ▼
   OrderManager  →  조건식별 예수금 버킷 (리스크 한도)
@@ -178,7 +183,11 @@ curl -X PUT http://127.0.0.1:43147/api/strategy-config \
 | `POST` | `/api/backtest` | 저장된 조건식을 일봉에 재생 |
 | `POST` | `/api/onboarding` | 예수금·조건식 저장. `autoStart` 는 `disclaimerAccepted: true` 필요 |
 | `PATCH` | `/api/settings` | `autoTrading` 은 이용 동의 후에만 true |
-| `POST` | `/api/risk/kill` | 긴급 정지 |
+| `GET` | `/api/overseas/search` | 미국 종목 검색/시드 · 읽기 전용 |
+| `GET` | `/api/overseas/quote` | 해외 현재가 HHDFS00000300 |
+| `GET` | `/api/overseas/account` | 외화잔고 · 환율 · 매수가능 · 미체결/체결 |
+
+해외 주문 버튼은 UI에서 비활성화입니다. 실제 해외 PAPER 주문은 `RUN_KIS_VTS_OVERSEAS_ORDER_TESTS` 가 있을 때만 코드 경로가 열리며, 이번 작업에서는 설정하지 않습니다.
 
 ## 주의
 

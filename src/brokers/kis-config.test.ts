@@ -12,6 +12,7 @@ import {
   KIS_LIVE_CONFIRM_VALUE,
   KIS_HOSTS,
   KIS_TR,
+  KIS_OVERSEAS_TR,
 } from "./kis-config";
 
 const PAPER = {
@@ -228,4 +229,11 @@ test("open order TR ids are the KIS inquire-daily-ccld 3-month codes", () => {
 test("balance TR ids are the KIS inquire-balance codes", () => {
   assert.equal(KIS_TR.balance.paper, "VTTC8434R");
   assert.equal(KIS_TR.balance.real, "TTTC8434R");
+});
+
+test("overseas TR ids do not overwrite domestic cash order TRs", () => {
+  assert.equal(KIS_TR.buy.paper, "VTTC0012U");
+  assert.equal(KIS_OVERSEAS_TR.usBuy.paper, "VTTT1002U");
+  assert.equal(KIS_OVERSEAS_TR.usSell.paper, "VTTT1001U");
+  assert.notEqual(KIS_OVERSEAS_TR.nccs, KIS_TR.openOrders.paper);
 });

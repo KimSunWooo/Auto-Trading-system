@@ -22,6 +22,7 @@ import { ConditionsPanel } from "@/components/conditions-panel";
 import { DcaPanel } from "@/components/dca-panel";
 import { GuidePanel } from "@/components/guide-panel";
 import { MarketBadge, OverviewPanel, BrokerBadge } from "@/components/overview-panel";
+import { OverseasPanel } from "@/components/overseas-panel";
 import { RuntimeStatusStrip } from "@/components/runtime-status";
 import { OrdersPanel } from "@/components/orders-panel";
 import { RulesPanel } from "@/components/rules-panel";
@@ -43,6 +44,7 @@ const TABS = [
 export function TradingApp({ initialState }: { initialState: PublicState }) {
   const { state, setState, error, reload } = useTrading(initialState);
   const [tab, setTab] = useState<string>("overview");
+  const [market, setMarket] = useState<"domestic" | "overseas">("domestic");
   const [menu, setMenu] = useState(false);
   const [guide, setGuide] = useState(!initialState.settings.onboardingComplete);
 
@@ -221,7 +223,27 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             ))}
           </TabsList>
           <TabsContent value="overview">
-            <OverviewPanel state={state} onState={setState} />
+            <div className="mb-4 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant={market === "domestic" ? "default" : "outline"}
+                onClick={() => setMarket("domestic")}
+              >
+                국내주식
+              </Button>
+              <Button
+                size="sm"
+                variant={market === "overseas" ? "default" : "outline"}
+                onClick={() => setMarket("overseas")}
+              >
+                해외주식
+              </Button>
+            </div>
+            {market === "overseas" ? (
+              <OverseasPanel />
+            ) : (
+              <OverviewPanel state={state} onState={setState} />
+            )}
           </TabsContent>
           <TabsContent value="rules">
             <RulesPanel state={state} onState={setState} />

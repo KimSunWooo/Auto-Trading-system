@@ -41,6 +41,29 @@ export const KIS_EXCHANGE = {
 } as const;
 export type KisExchangeId = (typeof KIS_EXCHANGE)[keyof typeof KIS_EXCHANGE];
 
+/**
+ * Official overseas TR IDs from koreainvestment/open-trading-api examples_llm (2025).
+ * Quote EXCD (NAS/NYS/AMS) is not the trading OVRS_EXCG_CD (NASD/NYSE/AMEX).
+ * US PAPER sell is VTTT1001U — official comment exception, not a blind V-prefix of TTTT1006U.
+ */
+export const KIS_OVERSEAS_TR = {
+  price: "HHDFS00000300",
+  searchInfo: "CTPF1702R",
+  inquireSearch: "HHDFS76410000",
+  countriesHoliday: "CTOS5011R",
+  balance: { paper: "VTTS3012R", real: "TTTS3012R" },
+  psamount: { paper: "VTTS3007R", real: "TTTS3007R" },
+  presentBalance: { paper: "VTRP6504R", real: "CTRP6504R" },
+  /** Official inquire_nccs.py hardcodes TTTS3018R with no demo branch. */
+  nccs: "TTTS3018R",
+  ccnl: { paper: "VTTS3035R", real: "TTTS3035R" },
+  usBuy: { paper: "VTTT1002U", real: "TTTT1002U" },
+  usSell: { paper: "VTTT1001U", real: "TTTT1006U" },
+  cancel: { paper: "VTTT1004U", real: "TTTT1004U" },
+  /** REAL-only inquiry. Official sample has no demo TR. Not an FX execution API. */
+  foreignMargin: "TTTC2101R",
+} as const;
+
 const PAPER_KEYS = {
   appKey: "KIS_PAPER_APP_KEY",
   appSecret: "KIS_PAPER_APP_SECRET",

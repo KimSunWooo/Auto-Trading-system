@@ -83,6 +83,15 @@ test("isolated VTS store does not use production paper-account.json", async () =
   assert.equal(summary.outcome, "PASS");
 });
 
+test("overseas VTS run metadata is distinct from domestic", () => {
+  const run = beginVtsTestRun("overseas-meta", { market: "overseas" });
+  const meta = JSON.parse(readFileSync(path.join(run.dir, "metadata.json"), "utf8")) as {
+    market: string;
+  };
+  assert.equal(meta.market, "overseas");
+  finishVtsTestRun(run, "PASS", { layer: "UNIT", market: "overseas" });
+});
+
 test("isolated persistStateNow writes VTS ledger, not production paper-account.json", async () => {
   const production = currentStorePath();
   const run = beginVtsTestRun("persist-seam");

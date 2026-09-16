@@ -1,5 +1,6 @@
 import {
   KIS_EXCHANGE,
+  KIS_OVERSEAS_TR,
   KIS_TR,
   loadKisConfig,
   resolveKisEnvironment,
@@ -8,6 +9,33 @@ import {
   type KisExchangeId,
   type KisMode,
 } from "@/src/brokers/kis-config";
+import { overseasPaperOrdersLocked } from "@/src/markets/overseas/env";
+import { krwEquivalent } from "@/src/markets/overseas/fx";
+import {
+  exchangeToTradingExcg,
+  KIS_US_PRODUCT_TYPE,
+  makeUsInstrument,
+  US_EXCHANGES,
+  type OverseasInstrument,
+  type UsExchange,
+} from "@/src/markets/overseas/instruments";
+import {
+  mapForeignCashRows,
+  mapOverseasExecution,
+  mapOverseasHolding,
+  mapOverseasOpenOrder,
+  mapOverseasPrice,
+  mapPsamount,
+  mapSearchInfo,
+} from "@/src/markets/overseas/mapping";
+import type {
+  OverseasAccountSnapshot,
+  OverseasBuyingPower,
+  OverseasExecution,
+  OverseasOpenOrder,
+  OverseasPosition,
+  OverseasQuote,
+} from "@/src/markets/overseas/types";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { BrokerRejectError, IndeterminateOrderError } from "@/src/risk/errors";
 import { allowLiveTrading, realKisOrdersLocked, tradingMode } from "@/src/runtime/trading-mode";
@@ -73,6 +101,34 @@ export type KisAccountBalance = {
   d2Cash: number;
   holdings: KisHolding[];
 };
+
+export type KisOverseasOrder = {
+  instrument: OverseasInstrument;
+  side: "buy" | "sell";
+  qty: number;
+  price: number;
+};
+
+export type KisOverseasCancel = {
+  instrument: OverseasInstrument;
+  orderNo: string;
+  qty: number;
+};
+
+export interface KisOverseasApi {
+  inquireOverseasPrice(instrument: OverseasInstrument): Promise<OverseasQuote>;
+  searchOverseasInstrument(symbol: string, exchange?: UsExchange): Promise<OverseasInstrument | null>;
+  inquireOverseasBalance(exchange?: UsExchange): Promise<{
+    positions: OverseasPosition[];
+    summary: Record<string, unknown>;
+  }>;
+  inquireOverseasPresentBalance(): Promise<OverseasAccountSnapshot>;
+  inquireOverseasPsamount(instrument: OverseasInstrument, price: number): Promise<OverseasBuyingPower>;
+  inquireOverseasOpenOrders(exchange?: UsExchange): Promise<OverseasOpenOrder[]>;
+  inquireOverseasExecutions(): Promise<OverseasExecution[]>;
+  orderOverseasUs(order: KisOverseasOrder): Promise<{ orderNo: string }>;
+  cancelOverseasOrder(order: KisOverseasCancel): Promise<void>;
+}
 
 export interface KisApi {
   readonly mode: KisMode;
@@ -155,6 +211,16 @@ export function mapKisDailyCcldRow(row: Record<string, unknown>): KisDayOrder | 
 function yyyymmddSeoul(date: Date): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+  return parts.replaceAll("-", "");
+}
+
+function yyyymmddNewYork(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -454,6 +520,277 @@ export class KisClient implements KisApi {
     }
 
     return { cash, d2Cash, holdings: [...holdings.values()] };
+  }
+
+  async inquireOverseasPrice(instrument: OverseasInstrument): Promise<OverseasQuote> {
+    this.assertConfigured();
+    const json = await this.uapi("GET", "/uapi/overseas-price/v1/quotations/price", {
+      trId: KIS_OVERSEAS_TR.price,
+      query: {
+        AUTH: "",
+        EXCD: instrument.quoteExcd,
+        SYMB: instrument.symbol,
+      },
+    });
+    const out = (json.output ?? json.output1 ?? {}) as Record<string, unknown>;
+    const quote = mapOverseasPrice(out, instrument);
+    if (!quote) {
+      throw new Error(`${instrument.exchange}:${instrument.symbol} 해외 현재가를 받지 못했습니다.`);
+    }
+    return quote;
+  }
+
+  async searchOverseasInstrument(
+    symbol: string,
+    exchange?: UsExchange,
+  ): Promise<OverseasInstrument | null> {
+    this.assertConfigured();
+    const ticker = String(symbol ?? "").trim().toUpperCase();
+    if (!ticker) return null;
+    const exchanges = exchange ? [exchange] : [...US_EXCHANGES];
+    for (const exch of exchanges) {
+      try {
+        const json = await this.uapi("GET", "/uapi/overseas-price/v1/quotations/search-info", {
+          trId: KIS_OVERSEAS_TR.searchInfo,
+          query: {
+            PRDT_TYPE_CD: KIS_US_PRODUCT_TYPE[exch],
+            PDNO: ticker,
+          },
+        });
+        const raw = json.output ?? json.output1;
+        const row = Array.isArray(raw) ? (raw[0] as Record<string, unknown> | undefined) : (raw as Record<string, unknown>);
+        if (!row || Object.keys(row).length === 0) continue;
+        return mapSearchInfo(row, makeUsInstrument(exch, ticker));
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  async inquireOverseasBalance(exchange: UsExchange = "NASDAQ"): Promise<{
+    positions: OverseasPosition[];
+    summary: Record<string, unknown>;
+  }> {
+    this.assertConfigured();
+    const positions: OverseasPosition[] = [];
+    let summary: Record<string, unknown> = {};
+    let fk = "";
+    let nk = "";
+    for (let page = 0; page < 10; page += 1) {
+      const json = await this.uapi("GET", "/uapi/overseas-stock/v1/trading/inquire-balance", {
+        trId: KIS_OVERSEAS_TR.balance[this.config.mode],
+        query: {
+          CANO: this.config.cano,
+          ACNT_PRDT_CD: this.config.productCode,
+          OVRS_EXCG_CD: exchangeToTradingExcg(exchange),
+          TR_CRCY_CD: "USD",
+          CTX_AREA_FK200: fk,
+          CTX_AREA_NK200: nk,
+        },
+      });
+      const raw1 = json.output1 ?? json.output ?? [];
+      const rows = Array.isArray(raw1) ? (raw1 as Array<Record<string, unknown>>) : [];
+      for (const row of rows) {
+        const holding = mapOverseasHolding(row, null);
+        if (holding) positions.push(holding);
+      }
+      const raw2 = json.output2;
+      const nextSummary = (Array.isArray(raw2) ? raw2[0] : raw2) as Record<string, unknown> | undefined;
+      if (nextSummary) summary = nextSummary;
+      nk = String(json.ctx_area_nk200 ?? json.CTX_AREA_NK200 ?? "").trim();
+      fk = String(json.ctx_area_fk200 ?? json.CTX_AREA_FK200 ?? "").trim();
+      if (!nk) break;
+    }
+    return { positions, summary };
+  }
+
+  async inquireOverseasPresentBalance(): Promise<OverseasAccountSnapshot> {
+    this.assertConfigured();
+    const json = await this.uapi("GET", "/uapi/overseas-stock/v1/trading/inquire-present-balance", {
+      trId: KIS_OVERSEAS_TR.presentBalance[this.config.mode],
+      query: {
+        CANO: this.config.cano,
+        ACNT_PRDT_CD: this.config.productCode,
+        WCRC_FRCR_DVSN_CD: "02",
+        NATN_CD: "840",
+        TR_MKET_CD: "00",
+        INQR_DVSN_CD: "00",
+      },
+    });
+    const { cash, fx } = mapForeignCashRows(json.output2 ?? json.output, null);
+    const summary = (Array.isArray(json.output3) ? json.output3[0] : json.output3) as
+      | Record<string, unknown>
+      | undefined;
+    const krwCash = summary ? asNumber(summary.dncl_amt ?? summary.tot_dncl_amt) : 0;
+    const holdingsRaw = json.output1 ?? [];
+    const holdingRows = Array.isArray(holdingsRaw)
+      ? (holdingsRaw as Array<Record<string, unknown>>)
+      : [];
+    const fxRate = fx?.rate ?? null;
+    const positions = holdingRows
+      .map((row) => mapOverseasHolding(row, fxRate))
+      .filter((row): row is OverseasPosition => row !== null);
+    const usd = cash.find((row) => row.currency === "USD");
+    const estimatedKrwValue =
+      krwEquivalent(
+        (usd?.cash ?? 0) + positions.reduce((sum, row) => sum + row.marketValue, 0),
+        fxRate,
+      ) ?? (krwCash > 0 ? krwCash : null);
+    return {
+      syncedAt: new Date().toISOString(),
+      cash,
+      fx,
+      buyingPower: usd
+        ? {
+            currency: "USD",
+            orderableCash: usd.orderableCash,
+            orderableQty: 0,
+            exchange: "NASDAQ",
+            symbol: "",
+          }
+        : null,
+      positions,
+      krwCash: krwCash > 0 ? krwCash : null,
+      estimatedKrwValue,
+      message: fx
+        ? `USD/KRW ${fx.rate.toLocaleString("ko-KR")} · 출처 KIS present-balance`
+        : "외화 잔고를 조회했습니다. 적용 환율이 응답에 없으면 환산하지 않습니다.",
+    };
+  }
+
+  async inquireOverseasPsamount(
+    instrument: OverseasInstrument,
+    price: number,
+  ): Promise<OverseasBuyingPower> {
+    this.assertConfigured();
+    const json = await this.uapi("GET", "/uapi/overseas-stock/v1/trading/inquire-psamount", {
+      trId: KIS_OVERSEAS_TR.psamount[this.config.mode],
+      query: {
+        CANO: this.config.cano,
+        ACNT_PRDT_CD: this.config.productCode,
+        OVRS_EXCG_CD: instrument.tradingExcg,
+        OVRS_ORD_UNPR: String(price),
+        ITEM_CD: instrument.symbol,
+      },
+    });
+    const out = (json.output ?? json.output1 ?? {}) as Record<string, unknown>;
+    return mapPsamount(out, instrument);
+  }
+
+  async inquireOverseasOpenOrders(exchange: UsExchange = "NASDAQ"): Promise<OverseasOpenOrder[]> {
+    this.assertConfigured();
+    const json = await this.uapi("GET", "/uapi/overseas-stock/v1/trading/inquire-nccs", {
+      trId: KIS_OVERSEAS_TR.nccs,
+      query: {
+        CANO: this.config.cano,
+        ACNT_PRDT_CD: this.config.productCode,
+        OVRS_EXCG_CD: exchangeToTradingExcg(exchange),
+        SORT_SQN: "DS",
+        CTX_AREA_FK200: "",
+        CTX_AREA_NK200: "",
+      },
+    });
+    const raw = json.output ?? json.output1 ?? [];
+    const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+    return rows.map((row) => mapOverseasOpenOrder(row)).filter((row): row is OverseasOpenOrder => row !== null);
+  }
+
+  async inquireOverseasExecutions(): Promise<OverseasExecution[]> {
+    this.assertConfigured();
+    const day = yyyymmddNewYork(new Date());
+    const json = await this.uapi("GET", "/uapi/overseas-stock/v1/trading/inquire-ccnl", {
+      trId: KIS_OVERSEAS_TR.ccnl[this.config.mode],
+      query: {
+        CANO: this.config.cano,
+        ACNT_PRDT_CD: this.config.productCode,
+        PDNO: this.config.mode === "paper" ? "" : "%",
+        ORD_STRT_DT: day,
+        ORD_END_DT: day,
+        SLL_BUY_DVSN: "00",
+        CCLD_NCCS_DVSN: "00",
+        OVRS_EXCG_CD: this.config.mode === "paper" ? "" : "%",
+        SORT_SQN: "DS",
+        ORD_DT: "",
+        ORD_GNO_BRNO: "",
+        ODNO: "",
+        CTX_AREA_NK200: "",
+        CTX_AREA_FK200: "",
+      },
+    });
+    const raw = json.output ?? json.output1 ?? [];
+    const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+    return rows.map((row) => mapOverseasExecution(row)).filter((row): row is OverseasExecution => row !== null);
+  }
+
+  async orderOverseasUs(order: KisOverseasOrder): Promise<{ orderNo: string }> {
+    this.assertConfigured();
+    this.assertRealOrdersAllowed();
+    this.assertOverseasPaperOrdersAllowed();
+    if (order.qty < 1) throw new Error("주문 수량이 1주 미만입니다.");
+    if (order.price <= 0) throw new Error("해외 PAPER 주문은 지정가만 지원합니다.");
+    const body = {
+      CANO: this.config.cano,
+      ACNT_PRDT_CD: this.config.productCode,
+      OVRS_EXCG_CD: order.instrument.tradingExcg,
+      PDNO: order.instrument.symbol,
+      ORD_QTY: String(order.qty),
+      OVRS_ORD_UNPR: String(order.price),
+      CTAC_TLNO: "",
+      MGCO_APTM_ODNO: "",
+      SLL_TYPE: order.side === "sell" ? "00" : "",
+      ORD_SVR_DVSN_CD: "0",
+      ORD_DVSN: "00",
+    };
+    const hashkey = await this.hashkey(body);
+    const trId =
+      order.side === "buy"
+        ? KIS_OVERSEAS_TR.usBuy[this.config.mode]
+        : KIS_OVERSEAS_TR.usSell[this.config.mode];
+    const json = await this.uapi("POST", "/uapi/overseas-stock/v1/trading/order", {
+      trId,
+      hashkey,
+      body,
+      timeoutMs: HARD_LIMITS.orderTimeoutMs,
+      kind: "order",
+    });
+    const out = (json.output ?? {}) as Record<string, unknown>;
+    const orderNo = String(out.ODNO ?? json.odno ?? "").trim();
+    if (!orderNo) {
+      throw new IndeterminateOrderError("KIS가 해외 주문번호를 반환하지 않았습니다. 체결 여부를 확인해야 합니다.");
+    }
+    return { orderNo };
+  }
+
+  async cancelOverseasOrder(order: KisOverseasCancel): Promise<void> {
+    this.assertConfigured();
+    this.assertRealOrdersAllowed();
+    this.assertOverseasPaperOrdersAllowed();
+    const body = {
+      CANO: this.config.cano,
+      ACNT_PRDT_CD: this.config.productCode,
+      OVRS_EXCG_CD: order.instrument.tradingExcg,
+      PDNO: order.instrument.symbol,
+      ORGN_ODNO: String(order.orderNo).trim(),
+      RVSE_CNCL_DVSN_CD: "02",
+      ORD_QTY: String(order.qty),
+      OVRS_ORD_UNPR: "0",
+      MGCO_APTM_ODNO: "",
+      ORD_SVR_DVSN_CD: "0",
+    };
+    const hashkey = await this.hashkey(body);
+    await this.uapi("POST", "/uapi/overseas-stock/v1/trading/order-rvsecncl", {
+      trId: KIS_OVERSEAS_TR.cancel[this.config.mode],
+      hashkey,
+      body,
+      timeoutMs: HARD_LIMITS.orderTimeoutMs,
+      kind: "order",
+    });
+  }
+
+  private assertOverseasPaperOrdersAllowed() {
+    const locked = overseasPaperOrdersLocked();
+    if (locked) throw new Error(locked);
   }
 
   private assertConfigured() {
