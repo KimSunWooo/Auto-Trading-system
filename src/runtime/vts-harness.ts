@@ -15,7 +15,8 @@ import type { AppState } from "@/lib/types";
 import type { KisApi } from "@/src/brokers/kis-client";
 import { loadKisConfig, resolveKisEnvironment, type EnvMap as KisEnv } from "@/src/brokers/kis-config";
 import { sessionBlockReason } from "@/src/accounts/execution-policy";
-import { DEFAULT_LIVE_TEST_CAPS, liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
+import { checkPaperOrderConstraints, PAPER_ORDER_POLICY } from "@/src/risk/order-policy";
+import { liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { safetyOf } from "@/src/runtime/safety";
 import { tradingBlocked } from "@/src/risk/circuit";
 import {
@@ -195,9 +196,13 @@ export function vtsPreflight(state: AppState, env: EnvMap = process.env): {
   }
   const hours = sessionBlockReason(state);
   if (hours) return { ok: false, blocked: hours, caps };
-  if (caps.maxOrderKrw > DEFAULT_LIVE_TEST_CAPS.maxOrderKrw) {
-    return { ok: false, blocked: "LIVE_TEST cap raised above default", caps };
-  }
+  const ticker = String(env.VTS_TEST_SYMBOL ?? "005930").trim() || "005930";
+  const paper = checkPaperOrderConstraints({
+    qty: PAPER_ORDER_POLICY.maxQtyPerOrder,
+    ticker,
+    state,
+  });
+  if (!paper.ok) return { ok: false, blocked: paper.blocked, caps };
   return { ok: true, blocked: null, caps };
 }
 
@@ -241,9 +246,13 @@ export async function probeVtsReadiness(client: KisApi, ticker = "005930"): Prom
     result.blocked = `ORDER TEST BLOCKED: ${err instanceof Error ? err.message : "balance failed"}`;
     return result;
   }
+  let existingOpenBuy = false;
   try {
-    await client.inquireOpenOrders();
+    const open = await client.inquireOpenOrders();
     result.openOrdersOk = true;
+    existingOpenBuy = open.some(
+      (row) => row.ticker === ticker && row.side === "buy" && row.unfilledQty > 0,
+    );
   } catch (err) {
     result.blocked = `ORDER TEST BLOCKED: ${err instanceof Error ? err.message : "open-order query failed"}`;
     return result;
@@ -253,6 +262,10 @@ export async function probeVtsReadiness(client: KisApi, ticker = "005930"): Prom
     result.executionsOk = true;
   } catch (err) {
     result.blocked = `ORDER TEST BLOCKED: ${err instanceof Error ? err.message : "execution query failed"}`;
+    return result;
+  }
+  if (existingOpenBuy) {
+    result.blocked = "ORDER TEST BLOCKED: Existing open BUY order detected";
     return result;
   }
   result.ok =

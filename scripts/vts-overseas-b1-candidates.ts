@@ -126,6 +126,7 @@ async function main() {
           quote,
           fxRate,
           usdOrderable,
+          env: process.env,
         }),
       );
     } catch (err) {
@@ -137,6 +138,7 @@ async function main() {
           quote: null,
           fxRate,
           usdOrderable,
+          env: process.env,
         }),
       );
       appendVtsEvent(run.dir, {

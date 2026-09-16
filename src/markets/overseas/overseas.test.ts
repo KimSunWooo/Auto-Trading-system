@@ -466,18 +466,27 @@ test("VTS-B preflight blocks USD orderable 0 without treating it as missing", ()
   assert.equal(overseasBuyCashGate(undefined).ok, false);
 });
 
-test("AAPL 1 share exceeds LIVE_TEST KRW cap without raising the cap", () => {
-  const result = overseasOneShareEligibility({
+test("AAPL 1 share is not amount-blocked under PAPER and stays blocked without PAPER policy", () => {
+  const paper = overseasOneShareEligibility({
     symbol: "AAPL",
     nativePrice: 330.98,
     usdOrderable: 400,
     fxRate: 1353.3,
     env: PAPER_PREFLIGHT_ENV,
   });
-  assert.equal(result.eligible, false);
-  assert.match(result.reason, /risk limit/);
-  assert.equal(result.riskLimitKrw, 10_000);
-  assert.ok((result.krwNotional ?? 0) > 10_000);
+  assert.equal(paper.eligible, true);
+  assert.ok((paper.krwNotional ?? 0) > 10_000);
+
+  const liveTestOnly = overseasOneShareEligibility({
+    symbol: "AAPL",
+    nativePrice: 330.98,
+    usdOrderable: 400,
+    fxRate: 1353.3,
+    env: { TRADING_MODE: "live_test" },
+  });
+  assert.equal(liveTestOnly.eligible, false);
+  assert.match(liveTestOnly.reason, /risk limit/);
+  assert.equal(liveTestOnly.riskLimitKrw, 10_000);
 });
 
 test("LIVE_TEST USD/share ceiling uses FX and never raises the 10,000 KRW cap", () => {
@@ -491,116 +500,82 @@ test("LIVE_TEST USD/share ceiling uses FX and never raises the 10,000 KRW cap", 
 
 test("VTS-B1 selection prefers a normal listed name over the cheapest penny", () => {
   const fx = 1353.3;
+  const quote = (
+    exchange: "NYSE" | "NASDAQ",
+    symbol: string,
+    displayName: string,
+    price: number,
+  ) => ({
+    identity: `${exchange}:${symbol}` as const,
+    symbol,
+    exchange,
+    displayName,
+    currency: "USD" as const,
+    price,
+    prevClose: price,
+    change: 0,
+    changeRate: 0,
+    open: price,
+    high: price,
+    low: price,
+    volume: 1,
+    timestamp: new Date().toISOString(),
+    source: "kis" as const,
+    orderable: true,
+    marketStatus: "open" as const,
+  });
   const cheap = evaluateVtsB1Quote({
     exchange: "NYSE",
     symbol: "ABEV",
     displayName: "Ambev",
-    quote: {
-      identity: "NYSE:ABEV",
-      symbol: "ABEV",
-      exchange: "NYSE",
-      displayName: "Ambev",
-      currency: "USD",
-      price: 2.1,
-      prevClose: 2,
-      change: 0,
-      changeRate: 0,
-      open: 2,
-      high: 2,
-      low: 2,
-      volume: 1,
-      timestamp: new Date().toISOString(),
-      source: "kis",
-      orderable: true,
-      marketStatus: "open",
-    },
+    quote: quote("NYSE", "ABEV", "Ambev", 2.1),
     fxRate: fx,
     usdOrderable: 100000,
+    env: PAPER_PREFLIGHT_ENV,
   });
   const preferred = evaluateVtsB1Quote({
     exchange: "NYSE",
     symbol: "NOK",
     displayName: "Nokia",
-    quote: {
-      identity: "NYSE:NOK",
-      symbol: "NOK",
-      exchange: "NYSE",
-      displayName: "Nokia",
-      currency: "USD",
-      price: 5.5,
-      prevClose: 5,
-      change: 0,
-      changeRate: 0,
-      open: 5,
-      high: 5,
-      low: 5,
-      volume: 1,
-      timestamp: new Date().toISOString(),
-      source: "kis",
-      orderable: true,
-      marketStatus: "open",
-    },
+    quote: quote("NYSE", "NOK", "Nokia", 5.5),
     fxRate: fx,
     usdOrderable: 100000,
+    env: PAPER_PREFLIGHT_ENV,
   });
   const expensive = evaluateVtsB1Quote({
     exchange: "NYSE",
     symbol: "F",
     displayName: "Ford",
-    quote: {
-      identity: "NYSE:F",
-      symbol: "F",
-      exchange: "NYSE",
-      displayName: "Ford",
-      currency: "USD",
-      price: 12,
-      prevClose: 12,
-      change: 0,
-      changeRate: 0,
-      open: 12,
-      high: 12,
-      low: 12,
-      volume: 1,
-      timestamp: new Date().toISOString(),
-      source: "kis",
-      orderable: true,
-      marketStatus: "open",
-    },
+    quote: quote("NYSE", "F", "Ford", 12),
     fxRate: fx,
     usdOrderable: 100000,
+    env: PAPER_PREFLIGHT_ENV,
   });
   const penny = evaluateVtsB1Quote({
     exchange: "NASDAQ",
     symbol: "PLUG",
     displayName: "Plug Power",
-    quote: {
-      identity: "NASDAQ:PLUG",
-      symbol: "PLUG",
-      exchange: "NASDAQ",
-      displayName: "Plug Power",
-      currency: "USD",
-      price: 0.4,
-      prevClose: 0.4,
-      change: 0,
-      changeRate: 0,
-      open: 0.4,
-      high: 0.4,
-      low: 0.4,
-      volume: 1,
-      timestamp: new Date().toISOString(),
-      source: "kis",
-      orderable: true,
-      marketStatus: "open",
-    },
+    quote: quote("NASDAQ", "PLUG", "Plug Power", 0.4),
     fxRate: fx,
     usdOrderable: 100000,
+    env: PAPER_PREFLIGHT_ENV,
+  });
+  const expensiveWithoutPaper = evaluateVtsB1Quote({
+    exchange: "NYSE",
+    symbol: "F",
+    displayName: "Ford",
+    quote: quote("NYSE", "F", "Ford", 12),
+    fxRate: fx,
+    usdOrderable: 100000,
+    env: { TRADING_MODE: "live_test" },
   });
   assert.equal(cheap.riskEligible, true);
   assert.equal(preferred.riskEligible, true);
-  assert.equal(expensive.riskEligible, false);
+  assert.equal(expensive.riskEligible, true);
   assert.equal(penny.riskEligible, false);
+  assert.equal(expensiveWithoutPaper.riskEligible, false);
   const selected = selectVtsB1Instrument([penny, cheap, expensive, preferred]);
-  assert.equal(selected?.symbol, "NOK");
+  assert.equal(selected?.symbol, "F");
   assert.notEqual(selected?.symbol, "ABEV");
   assert.notEqual(selected?.symbol, "PLUG");
 });
@@ -627,10 +602,9 @@ test("closed US market still blocks VTS-B1 even when the instrument fits the cap
 });
 
 test("adapter does not POST overseas orders when USD orderable is 0 even with opt-in", async () => {
-  const prev = process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS;
-  const prevMode = process.env.KIS_MODE;
+  const prev = { ...process.env };
+  Object.assign(process.env, PAPER_PREFLIGHT_ENV);
   process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS = "true";
-  process.env.KIS_MODE = "paper";
   try {
     let posts = 0;
     const client = {
@@ -667,9 +641,53 @@ test("adapter does not POST overseas orders when USD orderable is 0 even with op
     assert.equal(missing.ok, false);
     assert.equal(posts, 0);
 
-    const expensive = await adapter.submitLimitOnce(box, {
-      intentId: "sig:ovts:block-risk:1",
-      signalId: "sig:ovts:block-risk:1",
+    const twoShares = await adapter.submitLimitOnce(box, {
+      intentId: "sig:ovts:block-qty:1",
+      signalId: "sig:ovts:block-qty:1",
+      instrument: makeUsInstrument("NASDAQ", "AAPL"),
+      side: "buy",
+      qty: 2,
+      price: 330,
+      orderableUsd: 1000,
+      fxRate: 1353.3,
+    });
+    assert.equal(twoShares.ok, false);
+    assert.match(twoShares.reason ?? "", /qty|PAPER/i);
+    assert.equal(posts, 0);
+  } finally {
+    for (const key of [
+      "RUN_KIS_VTS_OVERSEAS_ORDER_TESTS",
+      "KIS_MODE",
+      "BROKER",
+      "TRADING_MODE",
+      "ALLOW_LIVE_TRADING",
+      "KIS_PAPER_APP_KEY",
+      "KIS_PAPER_APP_SECRET",
+      "KIS_PAPER_ACCOUNT_NO",
+    ]) {
+      if (prev[key] == null) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
+  }
+});
+
+test("adapter PAPER policy allows AAPL 1 share when USD orderable covers it", async () => {
+  const prev = { ...process.env };
+  Object.assign(process.env, PAPER_PREFLIGHT_ENV);
+  process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS = "true";
+  try {
+    let posts = 0;
+    const client = {
+      orderOverseasUs: async () => {
+        posts += 1;
+        return { orderNo: "PAPER-ODNO-1" };
+      },
+    } as unknown as KisClient;
+    const adapter = new OverseasTradingAdapter(client);
+    const box = { current: createPaperState() };
+    const first = await adapter.submitLimitOnce(box, {
+      intentId: "sig:ovts:aapl:1",
+      signalId: "sig:ovts:aapl:1",
       instrument: makeUsInstrument("NASDAQ", "AAPL"),
       side: "buy",
       qty: 1,
@@ -677,14 +695,34 @@ test("adapter does not POST overseas orders when USD orderable is 0 even with op
       orderableUsd: 1000,
       fxRate: 1353.3,
     });
-    assert.equal(expensive.ok, false);
-    assert.match(expensive.reason ?? "", /risk limit/);
-    assert.equal(posts, 0);
+    assert.equal(first.ok, true);
+    assert.equal(posts, 1);
+    const again = await adapter.submitLimitOnce(box, {
+      intentId: "sig:ovts:aapl:1",
+      signalId: "sig:ovts:aapl:1",
+      instrument: makeUsInstrument("NASDAQ", "AAPL"),
+      side: "buy",
+      qty: 1,
+      price: 330,
+      orderableUsd: 1000,
+      fxRate: 1353.3,
+    });
+    assert.equal(posts, 1);
+    assert.match(again.reason ?? "", /intent/i);
   } finally {
-    if (prev == null) delete process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS;
-    else process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS = prev;
-    if (prevMode == null) delete process.env.KIS_MODE;
-    else process.env.KIS_MODE = prevMode;
+    for (const key of [
+      "RUN_KIS_VTS_OVERSEAS_ORDER_TESTS",
+      "KIS_MODE",
+      "BROKER",
+      "TRADING_MODE",
+      "ALLOW_LIVE_TRADING",
+      "KIS_PAPER_APP_KEY",
+      "KIS_PAPER_APP_SECRET",
+      "KIS_PAPER_ACCOUNT_NO",
+    ]) {
+      if (prev[key] == null) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
   }
 });
 

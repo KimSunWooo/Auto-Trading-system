@@ -273,19 +273,17 @@ test("VTS-006 Buy Order", async (t) => {
     return;
   }
   const quote = await live.inquirePrice(TICKER);
-  const qty = Math.floor(pre.caps.maxOrderKrw / quote.price);
+  const qty = 1;
   const limit = checkHardLimits(box.current, {
     side: "buy",
     ticker: TICKER,
-    qty: Math.max(1, qty),
+    qty,
     price: quote.price,
   });
-  if (qty < 1 || limit) {
+  if (limit) {
     mark("VTS-006", "NOT VERIFIED");
-    noteBlock(
-      `ORDER TEST BLOCKED: LIVE_TEST cap ${pre.caps.maxOrderKrw}원 cannot buy 1 share of ${TICKER} at ${quote.price} (${limit ?? "qty < 1"})`,
-    );
-    t.skip(orderBlocked ?? "ORDER TEST BLOCKED: LIVE_TEST risk cap");
+    noteBlock(`ORDER TEST BLOCKED: ${limit}`);
+    t.skip(`ORDER TEST BLOCKED: ${limit}`);
     return;
   }
 
@@ -293,7 +291,7 @@ test("VTS-006 Buy Order", async (t) => {
   setSharedKisClientForTest(live);
   const fill = await new KisBroker(box, live, "cash")
     .withIntent({ intentId, signalId: intentId })
-    .buyMarket(TICKER, pre.caps.maxOrderKrw);
+    .buyMarket(TICKER, quote.price);
   await persistStateNow(box.current);
   const local = box.current.orders.find((row) => row.intentId === intentId);
   const trace: VtsTrace = {

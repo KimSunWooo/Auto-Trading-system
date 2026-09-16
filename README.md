@@ -14,11 +14,12 @@
 | VTS-A (국내 PAPER 읽기 전용) | PASS (이전 검증) |
 | 해외주식 UI / 시세 / 외화잔고 | 추가됨. 주문 버튼 DISABLED |
 | Overseas VTS-A | `npm run vts:overseas-a` 로 실행. 기본 npm test 는 skip |
-| Overseas VTS-B Preflight | 주문 없음. 외화예수금과 매수가능금액(psamount)을 구분. AAPL 1주는 LIVE_TEST 한도 초과로 BLOCK. `npm run vts:overseas-b-preflight` |
-| VTS-B 국내/해외 주문 | 미실행. opt-in 없음 |
+| Overseas VTS-B1 | 주문 없음. PAPER는 1주 금액으로 저가주를 고르지 않음. `npm run vts:overseas-b1` |
+| PAPER order policy | 수량/횟수/중복/미체결 게이트. 10,000원 금액 상한은 PAPER 자격에서 제외 |
+| VTS-B2 국내/해외 주문 | 미실행. 별도 `Domestic/Overseas VTS-B2 진행` 요청 전까지 opt-in 없음 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 
-로컬 검증: TypeScript PASS, `npm test` 199 pass / 12 skip / 0 fail, build PASS.
+로컬 검증: TypeScript PASS, `npm test` 202 pass / 12 skip / 0 fail, build PASS.
 
 유지 중인 안전장치:
 
@@ -134,7 +135,9 @@ npm run dev
 
 화면 상단 배지가 **KIS 모의** / `LIVE_TEST` 인지 확인합니다. `TRADING_MODE=live_test`에서는 실전 호스트 주문을 거절합니다.
 
-LIVE_TEST 한도(서버 `OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다.
+PAPER(`TRADING_MODE=live_test` + `KIS_MODE=paper|demo` + `BROKER=kis`, REAL 플래그 없음) 주문 한도는 금액이 아니라 수량/횟수입니다. 1회 1주, 동일 testRun 신규 BUY 1건, 동일 intent 1회, 동일 종목 미체결 BUY 금지, 하루 PAPER 테스트 주문 최대 5건. 삼성전자/AAPL 1주가 예전 10,000원을 넘어도 PAPER 자격만으로 막지 않습니다.
+
+REAL 및 PAPER가 아닌 LIVE_TEST 한도(`OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다. PAPER 정책은 REAL에 적용되지 않습니다.
 
 `npm test`는 실제 KIS 주문을 내지 않습니다. 읽기 전용 VTS는 `RUN_KIS_VTS_TESTS=true`, 주문은 `RUN_KIS_VTS_ORDER_TESTS=true`가 추가로 있을 때만 실행됩니다. REAL 관련 플래그가 보이면 테스트를 ABORT 합니다. VTS 장부는 `data/vts-test/<testRunId>/`에만 쌓이며 운영 `paper-account.json`과 섞이지 않습니다.
 

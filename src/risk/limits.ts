@@ -1,5 +1,6 @@
 import type { AppState, Order, Side } from "@/lib/types";
-import { liveTestCaps, tradingMode } from "@/src/runtime/trading-mode";
+import { checkPaperOrderConstraints, usesPaperOrderPolicy } from "@/src/risk/order-policy";
+import { liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 
 /** Caps that still apply if the local book is wrong. */
 export const HARD_LIMITS = {
@@ -28,8 +29,21 @@ function countsTowardDaily(order: Order): boolean {
 export function checkHardLimits(
   state: AppState,
   input: { side: Side; ticker: string; qty: number; price: number },
+  env: EnvMap = process.env,
 ): string | null {
-  const live = tradingMode() === "live_test" ? liveTestCaps() : null;
+  if (usesPaperOrderPolicy(env)) {
+    if (input.side === "buy") {
+      const paper = checkPaperOrderConstraints({
+        qty: input.qty,
+        ticker: input.ticker,
+        state,
+      });
+      if (!paper.ok) return paper.blocked;
+    }
+    return null;
+  }
+
+  const live = tradingMode(env) === "live_test" ? liveTestCaps(env) : null;
   const maxOrderKrw = live ? Math.min(HARD_LIMITS.maxOrderKrw, live.maxOrderKrw) : HARD_LIMITS.maxOrderKrw;
   const maxDailyBuyKrw = live
     ? Math.min(HARD_LIMITS.maxDailyBuyKrw, live.maxDailyBuyKrw)

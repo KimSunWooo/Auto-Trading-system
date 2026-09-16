@@ -17,8 +17,9 @@ import type {
   OverseasOpenOrder,
   OverseasQuote,
 } from "@/src/markets/overseas/types";
-import { findOrderByIntent, upsertIntent } from "@/src/runtime/intents";
+import { findIntent, findOrderByIntent, upsertIntent } from "@/src/runtime/intents";
 import type { StateBox } from "@/src/accounts/StateBox";
+import { checkPaperOrderConstraints, existingOpenBuy, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { RiskManager } from "@/src/risk/RiskManager";
 
 export class OverseasTradingAdapter {
@@ -112,21 +113,47 @@ export class OverseasTradingAdapter {
         orderNo: existing.brokerOrderNo,
       };
     }
-    const upserted = upsertIntent(box.current, {
-      intentId: input.intentId,
-      signalId: input.signalId,
-      ruleId: "overseas",
-      ticker: identity,
-      side: input.side,
-      qty: input.qty,
-      price: input.price,
-      reason: "overseas-limit",
-    });
-    box.current = upserted.state;
-    if (upserted.duplicate) {
-      return { ok: false as const, status: "rejected" as const, reason: "same intent already submitted", orderNo: upserted.intent.brokerOrderNo };
+    const priorIntent = findIntent(box.current, input.intentId);
+    if (priorIntent) {
+      return {
+        ok: priorIntent.status !== "rejected",
+        status:
+          priorIntent.status === "rejected"
+            ? "rejected"
+            : priorIntent.status === "unknown"
+              ? "unknown"
+              : "pending",
+        reason: priorIntent.reason ?? "same intent already submitted",
+        orderNo: priorIntent.brokerOrderNo,
+      };
     }
     if (input.side === "buy") {
+      if (
+        existingOpenBuy(box.current, identity) ||
+        existingOpenBuy(box.current, input.instrument.symbol)
+      ) {
+        return {
+          ok: false as const,
+          status: "rejected" as const,
+          reason: "ORDER TEST BLOCKED: Existing open BUY order detected",
+          orderNo: undefined,
+        };
+      }
+      if (usesPaperOrderPolicy()) {
+        const paper = checkPaperOrderConstraints({
+          qty: input.qty,
+          ticker: identity,
+          state: box.current,
+        });
+        if (!paper.ok) {
+          return {
+            ok: false as const,
+            status: "rejected" as const,
+            reason: paper.blocked ?? "ORDER TEST BLOCKED",
+            orderNo: undefined,
+          };
+        }
+      }
       const cashGate = overseasBuyCashGate(input.orderableUsd);
       if (!cashGate.ok) {
         return { ok: false as const, status: "rejected" as const, reason: cashGate.blocked, orderNo: undefined };
@@ -147,10 +174,25 @@ export class OverseasTradingAdapter {
         usdOrderable: input.orderableUsd,
         fxRate: input.fxRate,
         qty: input.qty,
+        env: process.env,
       });
       if (!instrument.eligible) {
         return { ok: false as const, status: "rejected" as const, reason: instrument.reason, orderNo: undefined };
       }
+    }
+    const upserted = upsertIntent(box.current, {
+      intentId: input.intentId,
+      signalId: input.signalId,
+      ruleId: "overseas",
+      ticker: identity,
+      side: input.side,
+      qty: input.qty,
+      price: input.price,
+      reason: "overseas-limit",
+    });
+    box.current = upserted.state;
+    if (upserted.duplicate) {
+      return { ok: false as const, status: "rejected" as const, reason: "same intent already submitted", orderNo: upserted.intent.brokerOrderNo };
     }
     try {
       const placed = await this.client.orderOverseasUs({

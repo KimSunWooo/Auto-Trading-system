@@ -1,13 +1,12 @@
 import { krwEquivalent } from "@/src/markets/overseas/fx";
 import { makeUsInstrument, type UsExchange } from "@/src/markets/overseas/instruments";
 import { overseasMaxUsdPricePerShare, overseasOneShareEligibility } from "@/src/markets/overseas/preflight";
-import { DEFAULT_LIVE_TEST_CAPS } from "@/src/runtime/trading-mode";
+import { DEFAULT_LIVE_TEST_CAPS, type EnvMap } from "@/src/runtime/trading-mode";
 import type { OverseasMarketStatus, OverseasQuote } from "@/src/markets/overseas/types";
 
 /**
  * Read-only VTS-B1 quote probes. Not the UI seed universe.
- * Well-known NASDAQ/NYSE listings that may fit the 10,000 KRW 1-share cap.
- * Order is selection priority (not cheapest-first).
+ * Priority listings for a 1-share PAPER lifecycle test. Amount is not an eligibility cap under PAPER policy.
  */
 export const US_VTS_B1_PROBE_UNIVERSE: Array<{ exchange: UsExchange; symbol: string; displayName: string }> = [
   { exchange: "NYSE", symbol: "F", displayName: "Ford" },
@@ -51,8 +50,8 @@ export function evaluateVtsB1Quote(input: {
   fxRate: number;
   usdOrderable: number;
   maxOrderKrw?: number;
+  env?: EnvMap;
 }): OverseasVtsB1Candidate {
-  const maxOrderKrw = input.maxOrderKrw ?? DEFAULT_LIVE_TEST_CAPS.maxOrderKrw;
   const quote = input.quote;
   const priceUsd = quote && quote.price > 0 ? quote.price : null;
   const quoteAvailable = priceUsd != null && quote?.source === "kis";
@@ -67,6 +66,7 @@ export function evaluateVtsB1Quote(input: {
           usdOrderable: input.usdOrderable,
           fxRate: input.fxRate,
           qty: 1,
+          env: input.env,
         })
       : null;
   const krwNotional =
@@ -86,7 +86,7 @@ export function evaluateVtsB1Quote(input: {
   };
 }
 
-/** First priority listing that is quote-healthy, >= $1, and within the 10,000 KRW cap. Not cheapest-first. */
+/** First priority listing that is quote-healthy, >= $1, and PAPER-eligible. Not cheapest-first. */
 export function selectVtsB1Instrument(
   rows: OverseasVtsB1Candidate[],
 ): OverseasVtsB1Candidate | null {

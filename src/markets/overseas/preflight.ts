@@ -2,6 +2,7 @@ import { loadKisConfig, resolveKisEnvironment, type EnvMap as KisEnv } from "@/s
 import { overseasPaperOrdersLocked, vtsOverseasOrderTestsEnabled } from "@/src/markets/overseas/env";
 import { krwEquivalent } from "@/src/markets/overseas/fx";
 import type { OverseasMarketStatus } from "@/src/markets/overseas/types";
+import { PAPER_ORDER_POLICY, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { DEFAULT_LIVE_TEST_CAPS, liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 
 export const OVERSEAS_ORDER_TEST_BLOCKED = "ORDER TEST BLOCKED";
@@ -21,6 +22,7 @@ export type OverseasVtsBPreflightInput = {
   qty?: number;
   fxRate?: number | null;
   symbol?: string;
+  existingOpenBuy?: boolean;
 };
 
 export type OverseasVtsBPreflightResult = {
@@ -94,6 +96,14 @@ export function overseasOneShareEligibility(input: {
       riskLimitKrw: caps.maxOrderKrw,
     };
   }
+  if (usesPaperOrderPolicy(input.env) && qty !== PAPER_ORDER_POLICY.maxQtyPerOrder) {
+    return {
+      eligible: false,
+      reason: `${OVERSEAS_ORDER_TEST_BLOCKED}: PAPER qty must be ${PAPER_ORDER_POLICY.maxQtyPerOrder}`,
+      krwNotional,
+      riskLimitKrw: caps.maxOrderKrw,
+    };
+  }
   if (nativeValue > (input.usdOrderable ?? 0) + 1e-8) {
     return {
       eligible: false,
@@ -102,7 +112,11 @@ export function overseasOneShareEligibility(input: {
       riskLimitKrw: caps.maxOrderKrw,
     };
   }
-  if (krwNotional != null && krwNotional > caps.maxOrderKrw) {
+  if (
+    !usesPaperOrderPolicy(input.env) &&
+    krwNotional != null &&
+    krwNotional > caps.maxOrderKrw
+  ) {
     return {
       eligible: false,
       reason: `${OVERSEAS_ORDER_TEST_BLOCKED}: Instrument exceeds VTS overseas risk limit`,
@@ -162,14 +176,16 @@ export function overseasVtsBPreflight(
   const envCheck = overseasVtsBEnvironment(env);
   const orderableOk = overseasUsdOrderableOk(input.usdOrderable);
   const marketOk = input.marketStatus === "open";
+  const paper = usesPaperOrderPolicy(env);
   const caps = liveTestCaps(env);
-  const capOk = caps.maxOrderKrw <= DEFAULT_LIVE_TEST_CAPS.maxOrderKrw;
+  const capOk = paper || caps.maxOrderKrw <= DEFAULT_LIVE_TEST_CAPS.maxOrderKrw;
   const qty = input.qty && input.qty > 0 ? input.qty : 1;
   const krwNotional =
     input.nativePrice != null && input.nativePrice > 0
       ? krwEquivalent(input.nativePrice * qty, input.fxRate)
       : null;
-  const exceedsRiskLimit = krwNotional != null && krwNotional > caps.maxOrderKrw;
+  const exceedsRiskLimit =
+    !paper && krwNotional != null && krwNotional > caps.maxOrderKrw;
   const instrument =
     input.nativePrice != null && input.nativePrice > 0
       ? overseasOneShareEligibility({
@@ -202,7 +218,9 @@ export function overseasVtsBPreflight(
   else if (!input.foreignBalanceHealthy) blocked = `${OVERSEAS_ORDER_TEST_BLOCKED}: foreign balance unhealthy`;
   else if (!orderableOk) blocked = `${OVERSEAS_ORDER_TEST_BLOCKED}: USD orderable amount is 0`;
   else if (!marketOk) blocked = `${OVERSEAS_ORDER_TEST_BLOCKED}: US market is not open`;
-  else if (!input.riskHealthy || !capOk) blocked = `${OVERSEAS_ORDER_TEST_BLOCKED}: risk unhealthy`;
+  else if (input.existingOpenBuy) {
+    blocked = `${OVERSEAS_ORDER_TEST_BLOCKED}: Existing open BUY order detected`;
+  } else if (!input.riskHealthy || !capOk) blocked = `${OVERSEAS_ORDER_TEST_BLOCKED}: risk unhealthy`;
   else if (instrument && !instrument.eligible) blocked = instrument.reason;
 
   return {
