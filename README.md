@@ -15,7 +15,7 @@
 | VTS-B (제한 주문 1건) | 미실행. `VTS-B 진행` 요청 전까지 대기 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 
-로컬 검증: TypeScript PASS, `npm test` 146 pass / 10 skip / 0 fail, build PASS.
+로컬 검증: TypeScript PASS, `npm test` 159 pass / 10 skip / 0 fail, build PASS.
 
 유지 중인 안전장치:
 
@@ -96,10 +96,10 @@ npm test
 BROKER=mock
 TRADING_MODE=MOCK
 ALLOW_LIVE_TRADING=false
-KIS_MODE=demo
+KIS_MODE=paper
 ```
 
-VTS 검증은 `.env.local`에만 키를 넣고, **모의투자 앱키**와 `KIS_MODE=demo`만 사용합니다. 값은 Git에 넣지 않습니다.
+VTS 검증은 `.env.local`에만 키를 넣고, **모의투자 `KIS_PAPER_*`** 와 `KIS_MODE=paper`(또는 `demo`)만 사용합니다. 값은 Git에 넣지 않습니다. 실전 `KIS_REAL_*` 는 있어도 모의 모드에서 읽히지 않습니다.
 
 VTS-A(읽기 전용)용 `.env.local` 예. 앱키·시크릿·계좌는 직접 채우세요. 채팅이나 README에 실제 값을 적지 마세요.
 
@@ -107,14 +107,14 @@ VTS-A(읽기 전용)용 `.env.local` 예. 앱키·시크릿·계좌는 직접 �
 BROKER=kis
 TRADING_MODE=live_test
 ALLOW_LIVE_TRADING=false
-KIS_MODE=demo
+KIS_MODE=paper
 RUN_KIS_VTS_TESTS=true
-KIS_APP_KEY=
-KIS_APP_SECRET=
-KIS_ACCOUNT_NO=
+KIS_PAPER_ACCOUNT_NO=
+KIS_PAPER_APP_KEY=
+KIS_PAPER_APP_SECRET=
 ```
 
-`KIS_ACCOUNT_NO`는 8자리 계좌 + 2자리 상품코드입니다. 예: `12345678-01`.
+`KIS_PAPER_ACCOUNT_NO`는 8자리 계좌 + 2자리 상품코드입니다. 예: `12345678-01`.
 
 넣지 마세요: `KIS_MODE=real`, `ALLOW_LIVE_TRADING=true`, `KIS_LIVE_CONFIRM`, `RUN_KIS_VTS_ORDER_TESTS=true`, `RUN_KIS_VTS_FLATTEN_TEST=true`.
 
@@ -138,7 +138,7 @@ LIVE_TEST 한도(서버 `OrderManager.canBuy` → `checkHardLimits`): 1건 10,00
 
 ## 한국투자증권 실전 (이번 단계에서 사용하지 않음)
 
-실전은 `TRADING_MODE=live` + `ALLOW_LIVE_TRADING=true` + `KIS_MODE=real` + `KIS_LIVE_CONFIRM=I_UNDERSTAND`가 **모두** 있을 때만 열립니다. VTS 시나리오가 통과하기 전에는 켜지 마세요.
+실전은 `TRADING_MODE=live` + `ALLOW_LIVE_TRADING=true` + `KIS_MODE=real` + `KIS_REAL_*` + `KIS_LIVE_CONFIRM=I_UNDERSTAND`가 **모두** 있을 때만 열립니다. VTS 시나리오가 통과하기 전에는 켜지 마세요.
 
 ## 주문 경로
 

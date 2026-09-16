@@ -243,7 +243,7 @@ export type AppState = {
 
 export type BrokerPublicStatus = {
   driver: BrokerDriver;
-  mode: "demo" | "real" | null;
+  mode: "paper" | "real" | null;
   configured: boolean;
   liveEnabled: boolean;
   accountMasked: string | null;

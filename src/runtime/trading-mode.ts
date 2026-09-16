@@ -42,7 +42,7 @@ export function liveOrdersLocked(env: EnvMap = process.env): string | null {
 /** Real-host KIS orders require TRADING_MODE=live and ALLOW_LIVE_TRADING=true. */
 export function realKisOrdersLocked(env: EnvMap = process.env): string | null {
   if (tradingMode(env) === "live" && allowLiveTrading(env)) return null;
-  return "실전 KIS 주문은 TRADING_MODE=live 와 ALLOW_LIVE_TRADING=true 가 필요합니다. 모의투자는 KIS_MODE=demo 를 사용하세요.";
+  return "실전 KIS 주문은 TRADING_MODE=live 와 ALLOW_LIVE_TRADING=true 가 필요합니다. 모의투자는 KIS_MODE=paper 와 KIS_PAPER_* 를 사용하세요.";
 }
 
 export function mockBrokerMode(env: EnvMap = process.env): MockBrokerMode {

@@ -58,7 +58,7 @@ test("VTS order tests are off by default", () => {
   const eligibility = vtsOrderEligibility({
     RUN_KIS_VTS_ORDER_TESTS: "true",
     TRADING_MODE: "live_test",
-    KIS_MODE: "demo",
+    KIS_MODE: "paper",
     BROKER: "kis",
   });
   assert.equal(eligibility.ok, false);
@@ -98,11 +98,11 @@ test("order preflight blocks when the worker lock is not held", () => {
   const result = vtsPreflight(createPaperState(), {
     RUN_KIS_VTS_ORDER_TESTS: "true",
     TRADING_MODE: "live_test",
-    KIS_MODE: "demo",
+    KIS_MODE: "paper",
     BROKER: "kis",
-    KIS_APP_KEY: "unit-test-key",
-    KIS_APP_SECRET: "unit-test-secret",
-    KIS_ACCOUNT_NO: "12345678-01",
+    KIS_PAPER_APP_KEY: "unit-test-key",
+    KIS_PAPER_APP_SECRET: "unit-test-secret",
+    KIS_PAPER_ACCOUNT_NO: "12345678-01",
   });
   assert.equal(result.ok, false);
   assert.match(result.blocked ?? "", /worker lock/i);
@@ -111,10 +111,16 @@ test("order preflight blocks when the worker lock is not held", () => {
 
 test("env snapshot never includes raw secrets", () => {
   const snap = envSnapshotWithoutSecrets({
-    KIS_APP_KEY: "should-not-appear",
-    KIS_APP_SECRET: "should-not-appear",
+    KIS_PAPER_APP_KEY: "should-not-appear",
+    KIS_PAPER_APP_SECRET: "should-not-appear",
+    KIS_REAL_APP_KEY: "real-should-not-appear",
+    KIS_APP_KEY: "legacy-should-not-appear",
     BROKER: "mock",
   });
-  assert.equal(JSON.stringify(snap).includes("should-not-appear"), false);
-  assert.equal(snap.KIS_APP_KEY, "[REDACTED]");
+  const dumped = JSON.stringify(snap);
+  assert.equal(dumped.includes("should-not-appear"), false);
+  assert.equal(dumped.includes("real-should-not-appear"), false);
+  assert.equal(dumped.includes("legacy-should-not-appear"), false);
+  assert.equal(snap.KIS_PAPER_APP_KEY, "[REDACTED]");
+  assert.equal(snap.KIS_REAL_APP_KEY, "[REDACTED]");
 });

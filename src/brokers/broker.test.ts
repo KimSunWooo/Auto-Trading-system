@@ -28,7 +28,7 @@ function fakePrice(ticker: string, price = 70_000): KisPrice {
 }
 
 class FakeKis implements KisApi {
-  readonly mode = "demo" as const;
+  mode: KisApi["mode"] = "paper";
   configured: boolean;
   liveEnabled: boolean;
   issues: string[];
@@ -123,11 +123,11 @@ test("KisBroker without credentials refuses orders and does not hit KIS", async 
   const client = new FakeKis({
     configured: false,
     liveEnabled: false,
-    issues: ["KIS_APP_KEY 가 없습니다."],
+    issues: ["KIS_PAPER_APP_KEY가 없습니다."],
   });
   const fill = await new KisBroker(box, client).buyMarket("005930", 100_000);
   assert.equal(fill.ok, false);
-  assert.match(fill.reason ?? "", /KIS_APP_KEY/);
+  assert.match(fill.reason ?? "", /KIS_PAPER_APP_KEY/);
   assert.equal(client.orders.length, 0);
 });
 

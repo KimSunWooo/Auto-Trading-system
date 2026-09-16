@@ -54,11 +54,12 @@ export function GuidePanel({
               에서 앱키·앱시크릿을 발급합니다. 모의용과 실전용 키는 다릅니다.
             </li>
             <li>
-              `.env.local`에 `BROKER=kis`, `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_ACCOUNT_NO`(예:
-              12345678-01)를 넣습니다.
+              `.env.local`에 `BROKER=kis`, 모의투자라면 `KIS_PAPER_APP_KEY` /
+              `KIS_PAPER_APP_SECRET` / `KIS_PAPER_ACCOUNT_NO`(예: 12345678-01)를 넣습니다. 실전은
+              `KIS_REAL_*` 만 사용하며 모의 키와 섞이지 않습니다.
             </li>
             <li>
-              모의투자는 `KIS_MODE=demo` 입니다. 실전은 `KIS_MODE=real` 과{" "}
+              모의투자는 `KIS_MODE=paper`(또는 `demo`) 입니다. 실전은 `KIS_MODE=real` 과{" "}
               <code className="rounded bg-muted px-1">KIS_LIVE_CONFIRM=I_UNDERSTAND</code> 가 있어야
               주문이 열립니다.
             </li>

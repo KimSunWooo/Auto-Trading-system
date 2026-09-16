@@ -6,7 +6,7 @@ import { createPaperState } from "@/lib/engine";
 import { HARD_LIMITS } from "@/src/risk/limits";
 
 class FakeBalanceClient implements KisApi {
-  readonly mode = "demo" as const;
+  readonly mode = "paper" as const;
   configured = true;
   liveEnabled = true;
   issues: string[] = [];

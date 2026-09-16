@@ -1,7 +1,9 @@
 import {
   KIS_TR,
   loadKisConfig,
+  resolveKisEnvironment,
   type KisConfig,
+  type KisEnvironment,
   type KisMode,
 } from "@/src/brokers/kis-config";
 import { HARD_LIMITS } from "@/src/risk/limits";
@@ -61,6 +63,7 @@ export interface KisApi {
   readonly configured: boolean;
   readonly liveEnabled: boolean;
   readonly issues: string[];
+  readonly cano?: string;
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
   inquireDailyCcld(): Promise<KisDayOrder[]>;
@@ -105,8 +108,9 @@ function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 86_400_000);
 }
 
+const ACCESS_TOKENS = new Map<string, TokenCache>();
+
 export class KisClient implements KisApi {
-  private token: TokenCache | null = null;
   private inflight = 0;
   private readonly waiters: Array<() => void> = [];
   private readonly priceCache = new Map<string, { at: number; value: KisPrice }>();
@@ -123,7 +127,23 @@ export class KisClient implements KisApi {
   }
 
   get mode(): KisMode {
-    return this.config.mode;
+    return this.config.environment;
+  }
+
+  get environment(): KisEnvironment {
+    return this.config.environment;
+  }
+
+  get cano(): string {
+    return this.config.cano;
+  }
+
+  get host(): string {
+    return this.config.host;
+  }
+
+  get tokenCacheKey(): string {
+    return this.config.tokenCacheKey;
   }
 
   get configured(): boolean {
@@ -452,9 +472,15 @@ export class KisClient implements KisApi {
     return hash;
   }
 
+  private clearAccessToken() {
+    ACCESS_TOKENS.delete(this.config.tokenCacheKey);
+  }
+
   private async getAccessToken(): Promise<string> {
-    if (this.token && Date.now() < this.token.expiresAt) {
-      return this.token.access;
+    const cacheKey = this.config.tokenCacheKey;
+    const cached = ACCESS_TOKENS.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.access;
     }
     const json = await this.request("POST", `${this.config.host}/oauth2/tokenP`, {
       headers: { "content-type": "application/json; charset=utf-8" },
@@ -469,10 +495,10 @@ export class KisClient implements KisApi {
       throw new Error("접근 토큰을 받지 못했습니다. 앱키와 모의/실전 도메인을 확인하세요.");
     }
     const expiresIn = asNumber(json.expires_in) || 86_400;
-    this.token = {
+    ACCESS_TOKENS.set(cacheKey, {
       access,
       expiresAt: Date.now() + Math.max(60, expiresIn - 3_600) * 1000,
-    };
+    });
     return access;
   }
 
@@ -545,11 +571,11 @@ export class KisClient implements KisApi {
       const rt = json.rt_cd;
       const message = String(json.msg1 ?? json.error_description ?? json.msg_cd ?? `KIS HTTP ${res.status}`);
       if (!res.ok) {
-        if (String(json.msg_cd ?? "").includes("EGW00123")) this.token = null;
+        if (String(json.msg_cd ?? "").includes("EGW00123")) this.clearAccessToken();
         throw this.httpFailure(kind, res.status, message);
       }
       if (rt !== undefined && String(rt) !== "0") {
-        if (String(json.msg_cd ?? "").includes("EGW00123")) this.token = null;
+        if (String(json.msg_cd ?? "").includes("EGW00123")) this.clearAccessToken();
         if (kind === "order") throw new BrokerRejectError(message);
         throw new Error(message);
       }
@@ -597,17 +623,41 @@ export class KisClient implements KisApi {
   }
 }
 
-let shared: KisApi | null = null;
+const sharedByEnv = new Map<KisEnvironment, KisApi>();
+let testOverride: KisApi | null = null;
 
 export function getSharedKisClient(): KisApi {
-  shared ??= KisClient.fromEnv();
-  return shared;
+  if (testOverride) return testOverride;
+  const environment = resolveKisEnvironment();
+  const existing = sharedByEnv.get(environment);
+  if (existing) {
+    if (existing.mode !== environment) {
+      throw new Error("KIS client environment mismatch. REAL/PAPER token 을 재사용하지 않습니다.");
+    }
+    return existing;
+  }
+  const created = KisClient.fromEnv();
+  if (created.mode !== environment) {
+    throw new Error("KIS client environment mismatch. REAL/PAPER token 을 재사용하지 않습니다.");
+  }
+  sharedByEnv.set(environment, created);
+  return created;
 }
 
 export function setSharedKisClientForTest(client: KisApi | null) {
-  shared = client;
+  testOverride = client;
+  if (!client) {
+    sharedByEnv.clear();
+    ACCESS_TOKENS.clear();
+  }
 }
 
 export function resetSharedKisClient() {
-  shared = null;
+  testOverride = null;
+  sharedByEnv.clear();
+  ACCESS_TOKENS.clear();
+}
+
+export function resetKisTokenCacheForTest() {
+  ACCESS_TOKENS.clear();
 }

@@ -57,7 +57,7 @@ function fakePrice(ticker: string, price = 100): KisPrice {
 }
 
 class FakeKis implements KisApi {
-  mode: KisApi["mode"] = "demo";
+  mode: KisApi["mode"] = "paper";
   configured = true;
   liveEnabled = true;
   issues: string[] = [];

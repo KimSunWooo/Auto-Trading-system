@@ -18,5 +18,5 @@ export type { IBroker, BrokerFill, BrokerQuote } from "@/src/brokers/IBroker";
 export type { BrokerPublicStatus } from "@/lib/types";
 export { MockBroker } from "@/src/brokers/MockBroker";
 export { KisBroker } from "@/src/brokers/KisBroker";
-export { brokerDriver, getBrokerPublicStatus, loadKisConfig } from "@/src/brokers/kis-config";
+export { brokerDriver, getBrokerPublicStatus, getKisConfig, loadKisConfig } from "@/src/brokers/kis-config";
 export { KisClient, getSharedKisClient } from "@/src/brokers/kis-client";

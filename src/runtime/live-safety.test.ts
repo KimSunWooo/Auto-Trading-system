@@ -61,7 +61,7 @@ function fakePrice(ticker: string, price = 70_000): KisPrice {
 }
 
 class FakeKis implements KisApi {
-  mode: KisApi["mode"] = "demo";
+  mode: KisApi["mode"] = "paper";
   configured = true;
   liveEnabled = true;
   issues: string[] = [];
@@ -530,7 +530,7 @@ test("LIVE_TEST rejects real-host KisBroker orders", async () => {
   const box = { current: createPaperState() };
   const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 10_000);
   assert.equal(fill.ok, false);
-  assert.match(fill.reason ?? "", /모의투자|KIS_MODE=demo/);
+  assert.match(fill.reason ?? "", /모의투자|KIS_MODE=paper|KIS_PAPER/);
   assert.equal(client.orders.length, 0);
   releaseWorkerLock("vts-real-block");
 });

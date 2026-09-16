@@ -120,7 +120,7 @@ test("executeKillSwitch band-limit sells mock positions then halts", async () =>
 });
 
 class KillKis implements KisApi {
-  readonly mode = "demo" as const;
+  readonly mode = "paper" as const;
   configured = true;
   liveEnabled = true;
   issues: string[] = [];

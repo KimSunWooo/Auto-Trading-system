@@ -60,10 +60,10 @@ KIS         src/brokers/kis-client.ts orderCash, inquireDailyCcld, inquireOpenOr
 BROKER=kis
 TRADING_MODE=live_test
 ALLOW_LIVE_TRADING=false
-KIS_MODE=demo
-KIS_APP_KEY=
-KIS_APP_SECRET=
-KIS_ACCOUNT_NO=
+KIS_MODE=paper
+KIS_PAPER_ACCOUNT_NO=
+KIS_PAPER_APP_KEY=
+KIS_PAPER_APP_SECRET=
 ```
 
 4. 넣지 말 것: `KIS_MODE=real`, `KIS_LIVE_CONFIRM`, `ALLOW_LIVE_TRADING=true`

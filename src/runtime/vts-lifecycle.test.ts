@@ -3,8 +3,8 @@
  *
  * Default: SKIP / NOT VERIFIED. `npm test` never places a KIS order.
  *
- * Read-only: RUN_KIS_VTS_TESTS=true  (KIS_MODE=demo, never REAL)
- * Orders:    RUN_KIS_VTS_ORDER_TESTS=true + TRADING_MODE=live_test + KIS_MODE=demo + BROKER=kis
+ * Read-only: RUN_KIS_VTS_TESTS=true  (KIS_MODE=paper|demo, never REAL)
+ * Orders:    RUN_KIS_VTS_ORDER_TESTS=true + TRADING_MODE=live_test + KIS_MODE=paper + BROKER=kis
  * Flatten:   RUN_KIS_VTS_FLATTEN_TEST=true — still simulation-only here; does not liquidate VTS.
  *
  * REAL flags abort the process (not skip).
@@ -84,7 +84,7 @@ function liveClient(): KisClient | null {
   assertVtsSafeEnv();
   if (!vtsReadTestsEnabled()) return null;
   const cfg = loadKisConfig();
-  if (cfg.mode !== "demo") {
+  if (cfg.environment !== "paper") {
     console.error("VTS TEST ABORTED");
     console.error("REAL trading configuration detected.");
     throw new Error("VTS TEST ABORTED: REAL trading configuration detected.");

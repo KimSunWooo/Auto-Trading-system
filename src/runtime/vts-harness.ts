@@ -13,7 +13,7 @@ import path from "node:path";
 import { configureStateStore, currentStorePath, resetStateStoreForTest } from "@/lib/store";
 import type { AppState } from "@/lib/types";
 import type { KisApi } from "@/src/brokers/kis-client";
-import { loadKisConfig, type EnvMap as KisEnv } from "@/src/brokers/kis-config";
+import { loadKisConfig, resolveKisEnvironment, type EnvMap as KisEnv } from "@/src/brokers/kis-config";
 import { sessionBlockReason } from "@/src/accounts/execution-policy";
 import { DEFAULT_LIVE_TEST_CAPS, liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { safetyOf } from "@/src/runtime/safety";
@@ -49,6 +49,12 @@ export type VtsTestRun = {
 };
 
 const SECRET_ENV_KEYS = [
+  "KIS_PAPER_APP_KEY",
+  "KIS_PAPER_APP_SECRET",
+  "KIS_PAPER_ACCOUNT_NO",
+  "KIS_REAL_APP_KEY",
+  "KIS_REAL_APP_SECRET",
+  "KIS_REAL_ACCOUNT_NO",
   "KIS_APP_KEY",
   "KIS_APP_SECRET",
   "KIS_LIVE_CONFIRM",
@@ -132,15 +138,19 @@ export function vtsOrderEligibility(env: EnvMap & KisEnv = process.env): {
   if (tradingMode(env) !== "live_test") {
     return { ok: false, blocked: "TRADING_MODE must be live_test" };
   }
-  if (String(env.KIS_MODE ?? "demo").trim().toLowerCase() !== "demo") {
-    return { ok: false, blocked: "KIS_MODE must be demo" };
+  try {
+    if (resolveKisEnvironment(env) !== "paper") {
+      return { ok: false, blocked: "KIS_MODE must be paper (or demo alias)" };
+    }
+  } catch {
+    return { ok: false, blocked: "KIS_MODE must be paper (or demo alias)" };
   }
   if (env.BROKER !== "kis") {
     return { ok: false, blocked: "BROKER must be kis" };
   }
   const kis = loadKisConfig(env);
-  if (kis.mode !== "demo") {
-    return { ok: false, blocked: "KIS host is not VTS demo" };
+  if (kis.environment !== "paper") {
+    return { ok: false, blocked: "KIS host is not VTS paper" };
   }
   if (!kis.configured) {
     return { ok: false, blocked: "KIS VTS credentials are not configured" };

@@ -30,8 +30,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files — never commit secrets. .env.example is the only exception.
+.env
+.env.local
+.env.*
 !.env.example
 
 # paper trading store

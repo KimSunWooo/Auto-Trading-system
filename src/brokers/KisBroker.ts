@@ -300,8 +300,20 @@ export class KisBroker implements IBroker {
       return this.reject(
         ticker,
         side,
-        "LIVE_TEST/MOCK에서는 KIS 모의투자(VTS)만 주문합니다. KIS_MODE=demo 로 설정하세요.",
+        "LIVE_TEST/MOCK에서는 KIS 모의투자(VTS)만 주문합니다. KIS_MODE=paper 와 KIS_PAPER_* 를 사용하세요.",
       );
+    }
+    if (this.client.mode === "real") {
+      if (!this.client.configured) {
+        return this.reject(
+          ticker,
+          side,
+          this.client.issues[0] ?? "REAL credential 이 없습니다. 주문하지 않습니다.",
+        );
+      }
+      if (!this.client.cano?.trim()) {
+        return this.reject(ticker, side, "REAL 계좌번호가 없습니다. 주문하지 않습니다.");
+      }
     }
     const liquidatingSell = this.box.current.settings.liquidating && side === "sell";
     if (isLiveLike() && !holdsWorkerLock() && !liquidatingSell) {
