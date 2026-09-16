@@ -1,5 +1,6 @@
 import type { KisClient, KisOverseasCancel } from "@/src/brokers/kis-client";
 import { overseasPaperOrdersLocked } from "@/src/markets/overseas/env";
+import { overseasBuyCashGate, overseasOneShareEligibility } from "@/src/markets/overseas/preflight";
 import { KIS_CURRENCY_EXCHANGE_AUDIT } from "@/src/markets/overseas/exchange-audit";
 import { pickUsdCash } from "@/src/markets/overseas/fx";
 import {
@@ -126,6 +127,10 @@ export class OverseasTradingAdapter {
       return { ok: false as const, status: "rejected" as const, reason: "same intent already submitted", orderNo: upserted.intent.brokerOrderNo };
     }
     if (input.side === "buy") {
+      const cashGate = overseasBuyCashGate(input.orderableUsd);
+      if (!cashGate.ok) {
+        return { ok: false as const, status: "rejected" as const, reason: cashGate.blocked, orderNo: undefined };
+      }
       const risk = RiskManager.checkOverseasBuy({
         qty: input.qty,
         nativePrice: input.price,
@@ -135,6 +140,16 @@ export class OverseasTradingAdapter {
       });
       if (!risk.ok) {
         return { ok: false as const, status: "rejected" as const, reason: risk.reason, orderNo: undefined };
+      }
+      const instrument = overseasOneShareEligibility({
+        symbol: input.instrument.symbol,
+        nativePrice: input.price,
+        usdOrderable: input.orderableUsd,
+        fxRate: input.fxRate,
+        qty: input.qty,
+      });
+      if (!instrument.eligible) {
+        return { ok: false as const, status: "rejected" as const, reason: instrument.reason, orderNo: undefined };
       }
     }
     try {

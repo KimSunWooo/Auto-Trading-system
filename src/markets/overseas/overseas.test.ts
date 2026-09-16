@@ -5,7 +5,8 @@ import { createPaperState } from "@/lib/engine";
 import { RiskManager } from "@/src/risk/RiskManager";
 import { getKisConfig, KIS_HOSTS, KIS_LIVE_CONFIRM_VALUE, KIS_OVERSEAS_TR, KIS_TR } from "@/src/brokers/kis-config";
 import { KisClient, resetKisTokenCacheForTest } from "@/src/brokers/kis-client";
-import { KIS_CURRENCY_EXCHANGE_AUDIT } from "@/src/markets/overseas/exchange-audit";
+import { OverseasTradingAdapter } from "@/src/markets/overseas/adapter";
+import { KIS_CURRENCY_EXCHANGE_AUDIT, KIS_PAPER_OVERSEAS_FUNDING_AUDIT } from "@/src/markets/overseas/exchange-audit";
 import { overseasPaperOrdersLocked } from "@/src/markets/overseas/env";
 import { krwEquivalent, overseasOrderExposure } from "@/src/markets/overseas/fx";
 import {
@@ -23,7 +24,16 @@ import {
   mapOverseasOpenOrder,
   mapOverseasPrice,
   mapForeignCashRows,
+  mapPsamount,
+  sanitizeKisRecord,
 } from "@/src/markets/overseas/mapping";
+import {
+  overseasBuyCashGate,
+  overseasOneShareEligibility,
+  overseasVtsBPreflight,
+  OVERSEAS_ORDER_TEST_BLOCKED,
+} from "@/src/markets/overseas/preflight";
+import { vtsOrderEligibility } from "@/src/runtime/vts-harness";
 
 test("overseas instrument parsing keeps exchange in identity", () => {
   const aapl = parseOverseasInstrument("NASDAQ:AAPL");
@@ -208,6 +218,8 @@ test("official overseas TR IDs match KIS samples and stay off domestic paths", (
   assert.notEqual(KIS_OVERSEAS_TR.usBuy.paper, KIS_TR.buy.paper);
   assert.equal(KIS_CURRENCY_EXCHANGE_AUDIT.supported, "NO");
   assert.equal(KIS_CURRENCY_EXCHANGE_AUDIT.paperVtsExecutionSupported, "NO");
+  assert.equal(KIS_PAPER_OVERSEAS_FUNDING_AUDIT.paperUsdFundingMethod, "NOT VERIFIED");
+  assert.equal(KIS_PAPER_OVERSEAS_FUNDING_AUDIT.paperFxExecutionApi, "UNSUPPORTED");
 });
 
 test("overseas PAPER orders stay locked without dedicated opt-in", () => {
@@ -337,4 +349,216 @@ test("PAPER overseas credentials stay on the VTS host", async () => {
   assert.ok(hosts.every((url) => url.startsWith(KIS_HOSTS.paper) || url.includes("tokenP") || true));
   assert.ok(hosts.some((url) => url.startsWith(KIS_HOSTS.paper)));
   assert.equal(hosts.some((url) => url.startsWith(KIS_HOSTS.real)), false);
+});
+
+test("present-balance mapping uses official 외화예수금/사용가능 fields, not evaluation", () => {
+  const official = mapForeignCashRows(
+    [{ crcy_cd: "USD", frcr_dncl_amt_2: "50.25", frcr_use_psbl_amt: "40.00", frst_bltn_exrt: "1353.3" }],
+    null,
+  );
+  assert.equal(official.cash[0]?.cash, 50.25);
+  assert.equal(official.cash[0]?.orderableCash, 40);
+  assert.equal(official.fx?.rate, 1353.3);
+
+  const zero = mapForeignCashRows(
+    [{ crcy_cd: "USD", frcr_dncl_amt_2: "0", frcr_use_psbl_amt: "0", frst_bltn_exrt: "1353.3" }],
+    null,
+  );
+  assert.equal(zero.cash[0]?.cash, 0);
+  assert.equal(zero.cash[0]?.orderableCash, 0);
+
+  const evalOnly = mapForeignCashRows(
+    [{ crcy_cd: "USD", frcr_evlu_amt: "9999", ovrs_stck_evlu_amt1: "8888", frst_bltn_exrt: "1353.3" }],
+    null,
+  );
+  assert.equal(evalOnly.cash[0]?.cash, 0);
+  assert.equal(evalOnly.cash[0]?.orderableCash, 0);
+  assert.equal(evalOnly.fx?.rate, 1353.3);
+
+  const cashWithoutOrderable = mapForeignCashRows(
+    [{ crcy_cd: "USD", frcr_dncl_amt_2: "100", frst_bltn_exrt: "1300" }],
+    null,
+  );
+  assert.equal(cashWithoutOrderable.cash[0]?.cash, 100);
+  assert.equal(cashWithoutOrderable.cash[0]?.orderableCash, 0);
+});
+
+test("psamount mapping prefers 주문가능외화금액 and ignores 환전이후 inquiry", () => {
+  const mapped = mapPsamount(
+    {
+      ord_psbl_frcr_amt: "12.5",
+      ovrs_ord_psbl_amt: "10",
+      echm_af_ord_psbl_amt: "9999",
+      max_ord_psbl_qty: "3",
+    },
+    makeUsInstrument("NASDAQ", "AAPL"),
+  );
+  assert.equal(mapped.orderableCash, 12.5);
+  assert.equal(mapped.orderableQty, 3);
+  assert.notEqual(mapped.orderableCash, 9999);
+});
+
+test("sanitizeKisRecord drops account-shaped values", () => {
+  const sanitized = sanitizeKisRecord({
+    crcy_cd: "USD",
+    frcr_dncl_amt_2: "0",
+    cano: "12345678",
+    CANO: "12345678",
+    nested: { appsecret: "nope", frst_bltn_exrt: "1353.3" },
+  }) as Record<string, unknown>;
+  assert.equal(sanitized.crcy_cd, "USD");
+  assert.equal(sanitized.cano, undefined);
+  assert.equal(sanitized.CANO, undefined);
+  const nested = sanitized.nested as Record<string, unknown>;
+  assert.equal(nested.appsecret, undefined);
+  assert.equal(nested.frst_bltn_exrt, "1353.3");
+});
+
+const PAPER_PREFLIGHT_ENV = {
+  BROKER: "kis",
+  TRADING_MODE: "live_test",
+  KIS_MODE: "demo",
+  ALLOW_LIVE_TRADING: "false",
+  KIS_PAPER_APP_KEY: "paper-key",
+  KIS_PAPER_APP_SECRET: "paper-secret",
+  KIS_PAPER_ACCOUNT_NO: "11111111-01",
+};
+
+test("VTS-B preflight blocks USD orderable 0 without treating it as missing", () => {
+  const blocked = overseasVtsBPreflight({
+    env: { ...PAPER_PREFLIGHT_ENV, RUN_KIS_VTS_OVERSEAS_ORDER_TESTS: "true" },
+    quoteHealthy: true,
+    foreignBalanceHealthy: true,
+    reconciliationHealthy: true,
+    marketStatus: "open",
+    riskHealthy: true,
+    usdCash: 0,
+    usdOrderable: 0,
+    nativePrice: 330,
+    fxRate: 1353.3,
+    symbol: "AAPL",
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.checks.orderableUsd, "FAIL");
+  assert.equal(blocked.checks.environment, "PASS");
+  assert.equal(blocked.checks.realDisabled, "PASS");
+  assert.equal(blocked.checks.optIn, "PASS");
+  assert.match(blocked.blocked ?? "", /USD orderable/);
+  assert.equal(overseasBuyCashGate(0).ok, false);
+  assert.equal(overseasBuyCashGate(undefined).ok, false);
+});
+
+test("AAPL 1 share exceeds LIVE_TEST KRW cap without raising the cap", () => {
+  const result = overseasOneShareEligibility({
+    symbol: "AAPL",
+    nativePrice: 330.98,
+    usdOrderable: 400,
+    fxRate: 1353.3,
+    env: PAPER_PREFLIGHT_ENV,
+  });
+  assert.equal(result.eligible, false);
+  assert.match(result.reason, /risk limit/);
+  assert.equal(result.riskLimitKrw, 10_000);
+  assert.ok((result.krwNotional ?? 0) > 10_000);
+});
+
+test("adapter does not POST overseas orders when USD orderable is 0 even with opt-in", async () => {
+  const prev = process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS;
+  const prevMode = process.env.KIS_MODE;
+  process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS = "true";
+  process.env.KIS_MODE = "paper";
+  try {
+    let posts = 0;
+    const client = {
+      orderOverseasUs: async () => {
+        posts += 1;
+        return { orderNo: "should-not" };
+      },
+    } as unknown as KisClient;
+    const adapter = new OverseasTradingAdapter(client);
+    const box = { current: createPaperState() };
+    const zero = await adapter.submitLimitOnce(box, {
+      intentId: "sig:ovts:block-zero:1",
+      signalId: "sig:ovts:block-zero:1",
+      instrument: makeUsInstrument("NASDAQ", "AAPL"),
+      side: "buy",
+      qty: 1,
+      price: 190,
+      orderableUsd: 0,
+      fxRate: 1353.3,
+    });
+    assert.equal(zero.ok, false);
+    assert.match(zero.reason ?? "", new RegExp(OVERSEAS_ORDER_TEST_BLOCKED));
+    assert.equal(posts, 0);
+
+    const missing = await adapter.submitLimitOnce(box, {
+      intentId: "sig:ovts:block-missing:1",
+      signalId: "sig:ovts:block-missing:1",
+      instrument: makeUsInstrument("NASDAQ", "AAPL"),
+      side: "buy",
+      qty: 1,
+      price: 190,
+      fxRate: 1353.3,
+    });
+    assert.equal(missing.ok, false);
+    assert.equal(posts, 0);
+
+    const expensive = await adapter.submitLimitOnce(box, {
+      intentId: "sig:ovts:block-risk:1",
+      signalId: "sig:ovts:block-risk:1",
+      instrument: makeUsInstrument("NASDAQ", "AAPL"),
+      side: "buy",
+      qty: 1,
+      price: 330,
+      orderableUsd: 1000,
+      fxRate: 1353.3,
+    });
+    assert.equal(expensive.ok, false);
+    assert.match(expensive.reason ?? "", /risk limit/);
+    assert.equal(posts, 0);
+  } finally {
+    if (prev == null) delete process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS;
+    else process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS = prev;
+    if (prevMode == null) delete process.env.KIS_MODE;
+    else process.env.KIS_MODE = prevMode;
+  }
+});
+
+test("overseas order opt-in does not unlock domestic VTS-B", () => {
+  const eligibility = vtsOrderEligibility({
+    RUN_KIS_VTS_OVERSEAS_ORDER_TESTS: "true",
+    TRADING_MODE: "live_test",
+    KIS_MODE: "paper",
+    BROKER: "kis",
+    KIS_PAPER_APP_KEY: "unit-test-key",
+    KIS_PAPER_APP_SECRET: "unit-test-secret",
+    KIS_PAPER_ACCOUNT_NO: "12345678-01",
+  });
+  assert.equal(eligibility.ok, false);
+  assert.match(eligibility.blocked ?? "", /RUN_KIS_VTS_ORDER_TESTS/);
+});
+
+test("REAL lock stays independent of overseas preflight", () => {
+  const blocked = overseasVtsBPreflight({
+    env: {
+      ...PAPER_PREFLIGHT_ENV,
+      KIS_MODE: "real",
+      RUN_KIS_VTS_OVERSEAS_ORDER_TESTS: "true",
+      ALLOW_LIVE_TRADING: "true",
+      KIS_LIVE_CONFIRM: "I_UNDERSTAND",
+      TRADING_MODE: "live",
+    },
+    quoteHealthy: true,
+    foreignBalanceHealthy: true,
+    reconciliationHealthy: true,
+    marketStatus: "open",
+    riskHealthy: true,
+    usdCash: 100,
+    usdOrderable: 100,
+    nativePrice: 1,
+    fxRate: 1300,
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.checks.realDisabled, "FAIL");
+  assert.match(blocked.blocked ?? "", /REAL/);
 });

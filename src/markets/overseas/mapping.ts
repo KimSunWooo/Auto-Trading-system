@@ -132,6 +132,12 @@ export function mapOverseasHolding(
   };
 }
 
+/**
+ * Official present-balance output2 cash is `frcr_dncl_amt_2` (외화예수금액2).
+ * Usable/orderable-like is `frcr_use_psbl_amt` (외화사용가능금액).
+ * Evaluation (`frcr_evlu_amt`, `ovrs_stck_evlu_amt1`) is not cash and is never used as USD.
+ * Missing orderable stays 0 — do not copy cash into orderable, and do not treat 0 as missing.
+ */
 export function mapForeignCashRows(
   rows: unknown,
   fxFallback: number | null,
@@ -139,25 +145,26 @@ export function mapForeignCashRows(
   const cash: ForeignCashBalance[] = [];
   let fx: FxQuote | null = null;
   for (const row of asRows(rows)) {
-    const currency = pickStr(row, "crcy_cd", "CRCY_CD", "tr_crcy_cd", "natn_cd") || "USD";
-    if (!/^[A-Z]{3}$/.test(currency) && currency !== "USD") continue;
-    const code = currency === "840" ? "USD" : currency;
-    if (!/^[A-Z]{3}$/.test(code)) continue;
-    const amount = asKisNumber(
-      pick(row, "frcr_dncl_amt", "frcr_cblc_amt", "frcr_evlu_amt", "ovrs_stck_evlu_amt1"),
+    const currency = pickStr(row, "crcy_cd", "CRCY_CD", "tr_crcy_cd").toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) continue;
+    const amount = asKisNumber(pick(row, "frcr_dncl_amt_2", "frcr_dncl_amt"));
+    const orderableRaw = pick(
+      row,
+      "frcr_use_psbl_amt",
+      "frcr_ord_psbl_amt1",
+      "ord_psbl_frcr_amt",
+      "ovrs_ord_psbl_amt",
     );
-    const orderable = asKisNumber(
-      pick(row, "frcr_ord_psbl_amt1", "ord_psbl_frcr_amt", "frcr_grant_amt", "ovrs_ord_psbl_amt"),
-    );
+    const orderableCash = orderableRaw === undefined ? 0 : asKisNumber(orderableRaw);
     const rate = asKisNumber(pick(row, "frst_bltn_exrt", "bass_exrt", "fx_rate", "exrt"));
     const fxRate = rate > 0 ? rate : fxFallback;
-    if (code === "USD" && fxRate && fxRate > 0) {
+    if (currency === "USD" && fxRate && fxRate > 0) {
       fx = usdKrwPair(fxRate);
     }
     cash.push({
-      currency: code,
+      currency,
       cash: amount,
-      orderableCash: orderable || amount,
+      orderableCash,
       exchangeRate: fxRate && fxRate > 0 ? fxRate : null,
       krwEquivalent: krwEquivalent(amount, fxRate),
     });
@@ -165,17 +172,40 @@ export function mapForeignCashRows(
   return { cash, fx };
 }
 
+/**
+ * Official inquire-psamount: `ord_psbl_frcr_amt` 주문가능외화금액.
+ * `echm_af_ord_psbl_amt` is 환전이후주문가능금액 inquiry — not current USD cash and not used here.
+ */
 export function mapPsamount(
   row: Record<string, unknown>,
   instrument: OverseasInstrument,
 ): OverseasBuyingPower {
   return {
     currency: "USD",
-    orderableCash: asKisNumber(pick(row, "ovrs_ord_psbl_amt", "frcr_ord_psbl_amt1", "max_ord_psbl_amt")),
-    orderableQty: asKisNumber(pick(row, "ovrs_ord_psbl_qty", "max_ord_psbl_qty")),
+    orderableCash: asKisNumber(
+      pick(row, "ord_psbl_frcr_amt", "ovrs_ord_psbl_amt", "frcr_ord_psbl_amt1"),
+    ),
+    orderableQty: asKisNumber(
+      pick(row, "max_ord_psbl_qty", "ovrs_max_ord_psbl_qty", "ord_psbl_qty", "ovrs_ord_psbl_qty"),
+    ),
     exchange: instrument.exchange,
     symbol: instrument.symbol,
   };
+}
+
+const SENSITIVE_KIS_KEY = /cano|acnt|account|token|secret|appkey|appsecret|authorization|hashkey|phone|tlno|passwd/i;
+
+/** Drop account/token-shaped keys. Safe for VTS-B preflight dumps. */
+export function sanitizeKisRecord(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((row) => sanitizeKisRecord(row));
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_KIS_KEY.test(key)) continue;
+    if (typeof nested === "string" && /^\d{8}-?\d{2}$/.test(nested.trim())) continue;
+    out[key] = sanitizeKisRecord(nested);
+  }
+  return out;
 }
 
 function mapWorkingOrder(
