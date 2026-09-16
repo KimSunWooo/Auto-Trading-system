@@ -17,7 +17,7 @@ import type {
   OverseasOpenOrder,
   OverseasQuote,
 } from "@/src/markets/overseas/types";
-import { findIntent, findOrderByIntent, upsertIntent } from "@/src/runtime/intents";
+import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/runtime/intents";
 import type { StateBox } from "@/src/accounts/StateBox";
 import { checkPaperOrderConstraints, existingOpenBuy, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { RiskManager } from "@/src/risk/RiskManager";
@@ -115,8 +115,9 @@ export class OverseasTradingAdapter {
     }
     const priorIntent = findIntent(box.current, input.intentId);
     if (priorIntent) {
+      const blockedUnknown = priorIntent.status === "unknown" || priorIntent.status === "rejected";
       return {
-        ok: priorIntent.status !== "rejected",
+        ok: !blockedUnknown,
         status:
           priorIntent.status === "rejected"
             ? "rejected"
@@ -201,9 +202,14 @@ export class OverseasTradingAdapter {
         qty: input.qty,
         price: input.price,
       });
+      box.current = patchIntent(box.current, input.intentId, {
+        status: "submitted",
+        brokerOrderNo: placed.orderNo,
+      });
       return { ok: true as const, status: "pending" as const, reason: undefined, orderNo: placed.orderNo };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "해외 주문 실패";
+      box.current = patchIntent(box.current, input.intentId, { status: "unknown", reason });
       return { ok: false as const, status: "unknown" as const, reason, orderNo: undefined };
     }
   }

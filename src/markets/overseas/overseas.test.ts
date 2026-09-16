@@ -708,7 +708,7 @@ test("adapter PAPER policy allows AAPL 1 share when USD orderable covers it", as
       fxRate: 1353.3,
     });
     assert.equal(posts, 1);
-    assert.match(again.reason ?? "", /intent/i);
+    assert.equal(again.orderNo, first.orderNo);
   } finally {
     for (const key of [
       "RUN_KIS_VTS_OVERSEAS_ORDER_TESTS",
