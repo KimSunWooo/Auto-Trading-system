@@ -14,7 +14,7 @@
 | VTS-A (국내 PAPER 읽기 전용) | PASS (이전 검증) |
 | 해외주식 UI / 시세 / 외화잔고 | 추가됨. 주문 버튼 DISABLED |
 | Overseas VTS-A | `npm run vts:overseas-a` 로 실행. 기본 npm test 는 skip |
-| Overseas VTS-B Preflight | 주문 없음. USD 주문가능금액 0 이면 BLOCK. `npm run vts:overseas-b-preflight` |
+| Overseas VTS-B Preflight | 주문 없음. 외화예수금과 매수가능금액(psamount)을 구분. AAPL 1주는 LIVE_TEST 한도 초과로 BLOCK. `npm run vts:overseas-b-preflight` |
 | VTS-B 국내/해외 주문 | 미실행. opt-in 없음 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 

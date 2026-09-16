@@ -383,6 +383,21 @@ test("present-balance mapping uses official 외화예수금/사용가능 fields,
   assert.equal(cashWithoutOrderable.cash[0]?.orderableCash, 0);
 });
 
+test("psamount orderable is independent of present-balance 외화예수금", () => {
+  const { cash } = mapForeignCashRows(
+    [{ crcy_cd: "USD", frcr_dncl_amt_2: "0", frst_bltn_exrt: "1353.3" }],
+    null,
+  );
+  const power = mapPsamount(
+    { tr_crcy_cd: "USD", ord_psbl_frcr_amt: "100000.00", ovrs_ord_psbl_amt: "100000.00", frcr_ord_psbl_amt1: "214289.26", max_ord_psbl_qty: "298" },
+    makeUsInstrument("NASDAQ", "AAPL"),
+  );
+  assert.equal(cash[0]?.cash, 0);
+  assert.equal(cash[0]?.orderableCash, 0);
+  assert.equal(power.orderableCash, 100000);
+  assert.notEqual(power.orderableCash, 214289.26);
+});
+
 test("psamount mapping prefers 주문가능외화금액 and ignores 환전이후 inquiry", () => {
   const mapped = mapPsamount(
     {

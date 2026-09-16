@@ -200,6 +200,8 @@ async function main() {
       officialCashFieldPresent,
       officialCashValue: Number.isFinite(officialCashValue) ? officialCashValue : null,
       officialUseValue: Number.isFinite(officialUseValue) ? officialUseValue : null,
+      presentOutput3: sanitizeKisRecord(presentJson.output3),
+      psamountRaw: sanitizeKisRecord(psamountJson.output ?? psamountJson.output1),
       mappedPresentUsd: mappedFromRaw.cash.find((row) => row.currency === "USD") ?? null,
       mappedPsamount: psamountMapped,
       clientUsd: usd ?? null,
