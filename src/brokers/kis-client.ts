@@ -1,9 +1,11 @@
 import {
+  KIS_EXCHANGE,
   KIS_TR,
   loadKisConfig,
   resolveKisEnvironment,
   type KisConfig,
   type KisEnvironment,
+  type KisExchangeId,
   type KisMode,
 } from "@/src/brokers/kis-config";
 import { HARD_LIMITS } from "@/src/risk/limits";
@@ -27,6 +29,8 @@ export type KisCashOrder = {
   qty: number;
   ordDvsn: "market" | "limit";
   price: number;
+  /** Official EXCG_ID_DVSN_CD. Defaults to KRX. */
+  exchange?: KisExchangeId;
 };
 
 export type KisDayOrder = {
@@ -53,6 +57,8 @@ export type KisCancelOrder = {
   orderNo: string;
   krxOrgNo: string;
   ordDvsn: "market" | "limit";
+  /** Official EXCG_ID_DVSN_CD. Defaults to KRX. */
+  exchange?: KisExchangeId;
 };
 
 export type KisHolding = {
@@ -288,6 +294,7 @@ export class KisClient implements KisApi {
       throw new Error("주문 수량이 1주 미만입니다.");
     }
 
+    const exchange = order.exchange ?? KIS_EXCHANGE.krx;
     const body = {
       CANO: this.config.cano,
       ACNT_PRDT_CD: this.config.productCode,
@@ -295,6 +302,9 @@ export class KisClient implements KisApi {
       ORD_DVSN: order.ordDvsn === "market" ? "01" : "00",
       ORD_QTY: String(order.qty),
       ORD_UNPR: order.ordDvsn === "market" ? "0" : String(order.price),
+      EXCG_ID_DVSN_CD: exchange,
+      SLL_TYPE: "",
+      CNDT_PRIC: "",
     };
     const hashkey = await this.hashkey(body);
     const trId =
@@ -320,6 +330,7 @@ export class KisClient implements KisApi {
   async cancelOrder(order: KisCancelOrder): Promise<void> {
     this.assertConfigured();
     this.assertRealOrdersAllowed();
+    const exchange = order.exchange ?? KIS_EXCHANGE.krx;
     const body = {
       CANO: this.config.cano,
       ACNT_PRDT_CD: this.config.productCode,
@@ -330,8 +341,7 @@ export class KisClient implements KisApi {
       ORD_QTY: "0",
       ORD_UNPR: "0",
       QTY_ALL_ORD_YN: "Y",
-      EXCG_ID_DVSN_CD: "KRX",
-      CNDT_PRIC: "0",
+      EXCG_ID_DVSN_CD: exchange,
     };
     const hashkey = await this.hashkey(body);
     await this.uapi("POST", "/uapi/domestic-stock/v1/trading/order-rvsecncl", {
@@ -377,7 +387,7 @@ export class KisClient implements KisApi {
           ORD_GNO_BRNO: "",
           ODNO: "",
           INQR_DVSN_1: "",
-          EXCG_ID_DVSN_CD: "KRX",
+          EXCG_ID_DVSN_CD: KIS_EXCHANGE.krx,
           CTX_AREA_FK100: "",
           CTX_AREA_NK100: "",
         },

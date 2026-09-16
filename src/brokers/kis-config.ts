@@ -20,17 +20,26 @@ export const KIS_WS: Record<KisEnvironment, string> = {
 };
 
 export const KIS_TR = {
-  buy: { paper: "VTTC0802U", real: "TTTC0802U" },
-  sell: { paper: "VTTC0801U", real: "TTTC0801U" },
+  buy: { paper: "VTTC0012U", real: "TTTC0012U" },
+  sell: { paper: "VTTC0011U", real: "TTTC0011U" },
   price: "FHKST01010100",
   daily: "FHKST03010100",
   /** 주식일별주문체결조회 3개월 이내. Open Orders/Executions 공통. */
   dailyCcld: { paper: "VTTC0081R", real: "TTTC0081R" },
   /** Alias of dailyCcld. Domestic open orders are CCLD_DVSN=02, not inquire-nccs. */
   openOrders: { paper: "VTTC0081R", real: "TTTC0081R" },
-  cancel: { paper: "VTTC0803U", real: "TTTC0803U" },
+  cancel: { paper: "VTTC0013U", real: "TTTC0013U" },
   balance: { paper: "VTTC8434R", real: "TTTC8434R" },
 } as const;
+
+/** Official EXCG_ID_DVSN_CD values. Default KRX; NXT/SOR remain valid later. */
+export const KIS_EXCHANGE = {
+  krx: "KRX",
+  nxt: "NXT",
+  sor: "SOR",
+  all: "ALL",
+} as const;
+export type KisExchangeId = (typeof KIS_EXCHANGE)[keyof typeof KIS_EXCHANGE];
 
 const PAPER_KEYS = {
   appKey: "KIS_PAPER_APP_KEY",

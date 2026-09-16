@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { KisClient, mapKisDailyCcldRow, resetKisTokenCacheForTest } from "./kis-client";
-import { getKisConfig, KIS_HOSTS, KIS_LIVE_CONFIRM_VALUE } from "./kis-config";
+import { getKisConfig, KIS_HOSTS, KIS_LIVE_CONFIRM_VALUE, KIS_TR } from "./kis-config";
 
 function jsonResponse(body: unknown): Response {
   return {
@@ -249,3 +249,133 @@ test("open-order query does not submit or cancel orders", async () => {
     false,
   );
 });
+
+type Captured = { url: string; trId: string; method: string; body: Record<string, string> };
+
+function mockOrderTransport(onOrder: (call: Captured) => void, realHttp: { count: number }) {
+  return (async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    if (url.includes("tokenP")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { appkey?: string };
+      return jsonResponse({
+        access_token: body.appkey === "real-key" ? "real-token-value" : "paper-token-value",
+        expires_in: 86_400,
+      });
+    }
+    if (url.includes("/uapi/hashkey")) {
+      return jsonResponse({ HASH: "hash-value" });
+    }
+    const parsedBody = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+    onOrder({
+      url,
+      trId: headers.tr_id,
+      method: String(init?.method ?? "GET"),
+      body: parsedBody,
+    });
+    if (url.includes("order-rvsecncl")) {
+      return jsonResponse({ rt_cd: "0", output: {} });
+    }
+    return jsonResponse({
+      rt_cd: "0",
+      output: { ODNO: "0000000042", KRX_FWDG_ORD_ORGNO: "06010" },
+    });
+  }) as typeof fetch;
+}
+
+test("PAPER cash buy uses VTTC0012U and official body including EXCG_ID_DVSN_CD=KRX", async () => {
+  resetKisTokenCacheForTest();
+  const realHttp = { count: 0 };
+  const calls: Captured[] = [];
+  const placed = await paperClient(mockOrderTransport((call) => calls.push(call), realHttp)).orderCash({
+    ticker: "015760",
+    side: "buy",
+    qty: 1,
+    ordDvsn: "limit",
+    price: 8000,
+  });
+  assert.equal(placed.orderNo, "0000000042");
+  assert.equal(placed.krxOrgNo, "06010");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.method, "POST");
+  assert.equal(calls[0]!.trId, "VTTC0012U");
+  assert.ok(calls[0]!.url.startsWith(`${KIS_HOSTS.paper}/uapi/domestic-stock/v1/trading/order-cash`));
+  assert.equal(calls[0]!.body.CANO, "11111111");
+  assert.equal(calls[0]!.body.ACNT_PRDT_CD, "01");
+  assert.equal(calls[0]!.body.PDNO, "015760");
+  assert.equal(calls[0]!.body.ORD_DVSN, "00");
+  assert.equal(calls[0]!.body.ORD_QTY, "1");
+  assert.equal(calls[0]!.body.ORD_UNPR, "8000");
+  assert.equal(calls[0]!.body.EXCG_ID_DVSN_CD, "KRX");
+  assert.equal(realHttp.count, 0);
+});
+
+test("PAPER cash sell uses VTTC0011U", async () => {
+  resetKisTokenCacheForTest();
+  const realHttp = { count: 0 };
+  const calls: Captured[] = [];
+  await paperClient(mockOrderTransport((call) => calls.push(call), realHttp)).orderCash({
+    ticker: "015760",
+    side: "sell",
+    qty: 1,
+    ordDvsn: "limit",
+    price: 8000,
+  });
+  assert.equal(calls[0]!.trId, "VTTC0011U");
+  assert.equal(realHttp.count, 0);
+});
+
+test("REAL cash/cancel TR ids are official latest and orderCash is blocked without live process flags", async () => {
+  resetKisTokenCacheForTest();
+  const realHttp = { count: 0 };
+  const calls: Captured[] = [];
+  const client = realClient(mockOrderTransport((call) => calls.push(call), realHttp));
+  assert.equal(client.mode, "real");
+  assert.equal(KIS_TR.buy[client.mode], "TTTC0012U");
+  assert.equal(KIS_TR.sell[client.mode], "TTTC0011U");
+  assert.equal(KIS_TR.cancel[client.mode], "TTTC0013U");
+  await assert.rejects(
+    () =>
+      client.orderCash({
+        ticker: "015760",
+        side: "buy",
+        qty: 1,
+        ordDvsn: "limit",
+        price: 8000,
+      }),
+    /실전 KIS 주문/,
+  );
+  await assert.rejects(
+    () =>
+      client.cancelOrder({
+        orderNo: "42",
+        krxOrgNo: "06010",
+        ordDvsn: "limit",
+      }),
+    /실전 KIS 주문/,
+  );
+  assert.equal(calls.length, 0);
+  assert.equal(realHttp.count, 0);
+});
+
+test("PAPER cancel uses VTTC0013U and the exact original ODNO", async () => {
+  resetKisTokenCacheForTest();
+  const realHttp = { count: 0 };
+  const calls: Captured[] = [];
+  await paperClient(mockOrderTransport((call) => calls.push(call), realHttp)).cancelOrder({
+    orderNo: "42",
+    krxOrgNo: "06010",
+    ordDvsn: "limit",
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.trId, "VTTC0013U");
+  assert.ok(calls[0]!.url.startsWith(`${KIS_HOSTS.paper}/uapi/domestic-stock/v1/trading/order-rvsecncl`));
+  assert.equal(calls[0]!.body.ORGN_ODNO, "0000000042");
+  assert.equal(calls[0]!.body.KRX_FWDG_ORD_ORGNO, "06010");
+  assert.equal(calls[0]!.body.RVSE_CNCL_DVSN_CD, "02");
+  assert.equal(calls[0]!.body.QTY_ALL_ORD_YN, "Y");
+  assert.equal(calls[0]!.body.EXCG_ID_DVSN_CD, "KRX");
+  assert.equal(calls[0]!.body.ORD_DVSN, "00");
+  assert.equal(realHttp.count, 0);
+});
+

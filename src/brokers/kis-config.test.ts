@@ -204,9 +204,16 @@ test("public status masks PAPER account numbers", () => {
   assert.equal(JSON.stringify(status).includes("paper-secret"), false);
 });
 
-test("cancel TR ids are the KIS revise-cancel codes", () => {
-  assert.equal(KIS_TR.cancel.paper, "VTTC0803U");
-  assert.equal(KIS_TR.cancel.real, "TTTC0803U");
+test("cash order TR ids are the latest KIS inquire-order-cash codes", () => {
+  assert.equal(KIS_TR.buy.paper, "VTTC0012U");
+  assert.equal(KIS_TR.sell.paper, "VTTC0011U");
+  assert.equal(KIS_TR.buy.real, "TTTC0012U");
+  assert.equal(KIS_TR.sell.real, "TTTC0011U");
+});
+
+test("cancel TR ids are the latest KIS revise-cancel codes", () => {
+  assert.equal(KIS_TR.cancel.paper, "VTTC0013U");
+  assert.equal(KIS_TR.cancel.real, "TTTC0013U");
 });
 
 test("open order TR ids are the KIS inquire-daily-ccld 3-month codes", () => {
