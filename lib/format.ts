@@ -82,23 +82,59 @@ export function intervalLabel(sec: number): string {
   return `${Math.round(sec / 86400)}일`;
 }
 
-export function formatSeoul(iso: string): string {
-  return new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
+export const SEOUL_TIME_ZONE = "Asia/Seoul";
+
+function seoulParts(
+  value: string | number,
+  options: Intl.DateTimeFormatOptions,
+): Record<string, string> {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return {};
+  return Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: SEOUL_TIME_ZONE,
+      hourCycle: "h23",
+      ...options,
+    })
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+}
+
+function pad2(value: string | undefined): string {
+  return String(value ?? "").padStart(2, "0");
+}
+
+/** Clock time in Asia/Seoul. Epoch ms or ISO. Same string on SSR and the browser. */
+export function formatSeoulTime(at: string | number): string {
+  const parts = seoulParts(at, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  if (parts.hour == null) return "";
+  return `${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}`;
+}
+
+export function formatSeoul(iso: string | number): string {
+  const parts = seoulParts(iso, {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
-  }).format(new Date(iso));
+  });
+  if (!parts.month) return "";
+  return `${pad2(parts.month)}. ${pad2(parts.day)}. ${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}`;
 }
 
-export function formatSeoulDate(iso: string): string {
-  return new Intl.DateTimeFormat("ko-KR", {
-    timeZone: "Asia/Seoul",
+export function formatSeoulDate(iso: string | number): string {
+  const parts = seoulParts(iso, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date(iso));
+  });
+  if (!parts.year) return "";
+  return `${parts.year}. ${pad2(parts.month)}. ${pad2(parts.day)}.`;
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { formatSeoulTime } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
 
 function tone(ok: boolean): "secondary" | "destructive" {
@@ -36,13 +37,13 @@ export function RuntimeStatusStrip({ state }: { state: PublicState }) {
         <div className="text-[11px] text-muted-foreground">
           {runtime.lastError ? (
             <span className="text-destructive">
-              오류 {runtime.lastErrorAt ? new Date(runtime.lastErrorAt).toLocaleTimeString("ko-KR") : ""} ·{" "}
+              오류 {runtime.lastErrorAt ? formatSeoulTime(runtime.lastErrorAt) : ""} ·{" "}
               {runtime.lastError}
             </span>
           ) : (
             <span>
-              마지막 틱 {runtime.lastTickAt ? new Date(runtime.lastTickAt).toLocaleTimeString("ko-KR") : "-"}
-              {runtime.lastOrderAt ? ` · 주문 ${new Date(runtime.lastOrderAt).toLocaleTimeString("ko-KR")}` : ""}
+              마지막 틱 {runtime.lastTickAt ? formatSeoulTime(runtime.lastTickAt) : "-"}
+              {runtime.lastOrderAt ? ` · 주문 ${formatSeoulTime(runtime.lastOrderAt)}` : ""}
             </span>
           )}
         </div>
