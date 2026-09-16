@@ -30,9 +30,12 @@ import {
 import {
   overseasBuyCashGate,
   overseasOneShareEligibility,
+  overseasMaxUsdPricePerShare,
   overseasVtsBPreflight,
   OVERSEAS_ORDER_TEST_BLOCKED,
 } from "@/src/markets/overseas/preflight";
+import { evaluateVtsB1Quote, selectVtsB1Instrument } from "@/src/markets/overseas/vts-b1-candidates";
+import { DEFAULT_LIVE_TEST_CAPS } from "@/src/runtime/trading-mode";
 import { vtsOrderEligibility } from "@/src/runtime/vts-harness";
 
 test("overseas instrument parsing keeps exchange in identity", () => {
@@ -475,6 +478,152 @@ test("AAPL 1 share exceeds LIVE_TEST KRW cap without raising the cap", () => {
   assert.match(result.reason, /risk limit/);
   assert.equal(result.riskLimitKrw, 10_000);
   assert.ok((result.krwNotional ?? 0) > 10_000);
+});
+
+test("LIVE_TEST USD/share ceiling uses FX and never raises the 10,000 KRW cap", () => {
+  assert.equal(DEFAULT_LIVE_TEST_CAPS.maxOrderKrw, 10_000);
+  assert.equal(overseasMaxUsdPricePerShare(1353.3), 10_000 / 1353.3);
+  assert.ok((overseasMaxUsdPricePerShare(1353.3) ?? 0) < 7.4);
+  assert.ok((overseasMaxUsdPricePerShare(1353.3) ?? 0) > 7.3);
+  assert.equal(overseasMaxUsdPricePerShare(null), null);
+  assert.equal(overseasMaxUsdPricePerShare(0), null);
+});
+
+test("VTS-B1 selection prefers a normal listed name over the cheapest penny", () => {
+  const fx = 1353.3;
+  const cheap = evaluateVtsB1Quote({
+    exchange: "NYSE",
+    symbol: "ABEV",
+    displayName: "Ambev",
+    quote: {
+      identity: "NYSE:ABEV",
+      symbol: "ABEV",
+      exchange: "NYSE",
+      displayName: "Ambev",
+      currency: "USD",
+      price: 2.1,
+      prevClose: 2,
+      change: 0,
+      changeRate: 0,
+      open: 2,
+      high: 2,
+      low: 2,
+      volume: 1,
+      timestamp: new Date().toISOString(),
+      source: "kis",
+      orderable: true,
+      marketStatus: "open",
+    },
+    fxRate: fx,
+    usdOrderable: 100000,
+  });
+  const preferred = evaluateVtsB1Quote({
+    exchange: "NYSE",
+    symbol: "NOK",
+    displayName: "Nokia",
+    quote: {
+      identity: "NYSE:NOK",
+      symbol: "NOK",
+      exchange: "NYSE",
+      displayName: "Nokia",
+      currency: "USD",
+      price: 5.5,
+      prevClose: 5,
+      change: 0,
+      changeRate: 0,
+      open: 5,
+      high: 5,
+      low: 5,
+      volume: 1,
+      timestamp: new Date().toISOString(),
+      source: "kis",
+      orderable: true,
+      marketStatus: "open",
+    },
+    fxRate: fx,
+    usdOrderable: 100000,
+  });
+  const expensive = evaluateVtsB1Quote({
+    exchange: "NYSE",
+    symbol: "F",
+    displayName: "Ford",
+    quote: {
+      identity: "NYSE:F",
+      symbol: "F",
+      exchange: "NYSE",
+      displayName: "Ford",
+      currency: "USD",
+      price: 12,
+      prevClose: 12,
+      change: 0,
+      changeRate: 0,
+      open: 12,
+      high: 12,
+      low: 12,
+      volume: 1,
+      timestamp: new Date().toISOString(),
+      source: "kis",
+      orderable: true,
+      marketStatus: "open",
+    },
+    fxRate: fx,
+    usdOrderable: 100000,
+  });
+  const penny = evaluateVtsB1Quote({
+    exchange: "NASDAQ",
+    symbol: "PLUG",
+    displayName: "Plug Power",
+    quote: {
+      identity: "NASDAQ:PLUG",
+      symbol: "PLUG",
+      exchange: "NASDAQ",
+      displayName: "Plug Power",
+      currency: "USD",
+      price: 0.4,
+      prevClose: 0.4,
+      change: 0,
+      changeRate: 0,
+      open: 0.4,
+      high: 0.4,
+      low: 0.4,
+      volume: 1,
+      timestamp: new Date().toISOString(),
+      source: "kis",
+      orderable: true,
+      marketStatus: "open",
+    },
+    fxRate: fx,
+    usdOrderable: 100000,
+  });
+  assert.equal(cheap.riskEligible, true);
+  assert.equal(preferred.riskEligible, true);
+  assert.equal(expensive.riskEligible, false);
+  assert.equal(penny.riskEligible, false);
+  const selected = selectVtsB1Instrument([penny, cheap, expensive, preferred]);
+  assert.equal(selected?.symbol, "NOK");
+  assert.notEqual(selected?.symbol, "ABEV");
+  assert.notEqual(selected?.symbol, "PLUG");
+});
+
+test("closed US market still blocks VTS-B1 even when the instrument fits the cap", () => {
+  const pre = overseasVtsBPreflight({
+    env: { ...PAPER_PREFLIGHT_ENV, RUN_KIS_VTS_OVERSEAS_ORDER_TESTS: "true" },
+    quoteHealthy: true,
+    foreignBalanceHealthy: true,
+    reconciliationHealthy: true,
+    marketStatus: "closed",
+    riskHealthy: true,
+    usdCash: 0,
+    usdOrderable: 100000,
+    nativePrice: 5.5,
+    fxRate: 1353.3,
+    symbol: "NOK",
+  });
+  assert.equal(pre.ok, false);
+  assert.equal(pre.checks.risk, "PASS");
+  assert.equal(pre.checks.orderableUsd, "PASS");
+  assert.equal(pre.checks.market, "FAIL");
+  assert.match(pre.blocked ?? "", /market|not open/i);
 });
 
 test("adapter does not POST overseas orders when USD orderable is 0 even with opt-in", async () => {

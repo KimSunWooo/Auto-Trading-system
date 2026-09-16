@@ -13,5 +13,11 @@ export {
   overseasVtsBPreflight,
   overseasBuyCashGate,
   overseasOneShareEligibility,
+  overseasMaxUsdPricePerShare,
   OVERSEAS_ORDER_TEST_BLOCKED,
 } from "./preflight";
+export {
+  US_VTS_B1_PROBE_UNIVERSE,
+  evaluateVtsB1Quote,
+  selectVtsB1Instrument,
+} from "./vts-b1-candidates";

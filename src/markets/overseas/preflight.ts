@@ -47,6 +47,16 @@ function flag(ok: boolean): OverseasPreflightCheck {
   return ok ? "PASS" : "FAIL";
 }
 
+/** LIVE_TEST 1주 상한. Does not raise the KRW cap. Missing FX is not invented. */
+export function overseasMaxUsdPricePerShare(
+  fxRate: number | null | undefined,
+  maxOrderKrw: number = DEFAULT_LIVE_TEST_CAPS.maxOrderKrw,
+): number | null {
+  if (fxRate == null || !Number.isFinite(fxRate) || fxRate <= 0) return null;
+  if (!Number.isFinite(maxOrderKrw) || maxOrderKrw <= 0) return null;
+  return maxOrderKrw / fxRate;
+}
+
 export function overseasUsdOrderableOk(orderable: number | null | undefined): boolean {
   return orderable != null && Number.isFinite(orderable) && orderable > 0;
 }

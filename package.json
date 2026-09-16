@@ -11,7 +11,8 @@
     "emergency:stop": "tsx scripts/emergency-stop.ts",
     "emergency:flatten": "tsx scripts/emergency-flatten.ts",
     "vts:overseas-a": "tsx scripts/vts-overseas-a.ts",
-    "vts:overseas-b-preflight": "tsx scripts/vts-overseas-b-preflight.ts"
+    "vts:overseas-b-preflight": "tsx scripts/vts-overseas-b-preflight.ts",
+    "vts:overseas-b1": "tsx scripts/vts-overseas-b1-candidates.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
