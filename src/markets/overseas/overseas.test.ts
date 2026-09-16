@@ -196,7 +196,8 @@ test("official overseas TR IDs match KIS samples and stay off domestic paths", (
   assert.equal(KIS_OVERSEAS_TR.price, "HHDFS00000300");
   assert.equal(KIS_OVERSEAS_TR.balance.paper, "VTTS3012R");
   assert.equal(KIS_OVERSEAS_TR.psamount.paper, "VTTS3007R");
-  assert.equal(KIS_OVERSEAS_TR.nccs, "TTTS3018R");
+  assert.equal(KIS_OVERSEAS_TR.nccs.paper, "VTTS3018R");
+  assert.equal(KIS_OVERSEAS_TR.nccs.real, "TTTS3018R");
   assert.equal(KIS_OVERSEAS_TR.ccnl.paper, "VTTS3035R");
   assert.equal(KIS_OVERSEAS_TR.usBuy.paper, "VTTT1002U");
   assert.equal(KIS_OVERSEAS_TR.usSell.paper, "VTTT1001U");
@@ -262,7 +263,7 @@ test("overseas open orders use inquire-nccs not domestic daily-ccld", async () =
     return jsonResponse({ rt_cd: "0", output: [] });
   }) as typeof fetch;
   await paperClient(fetchImpl).inquireOverseasOpenOrders("NASDAQ");
-  assert.equal(calls[0]!.trId, "TTTS3018R");
+  assert.equal(calls[0]!.trId, "VTTS3018R");
   assert.ok(calls[0]!.url.includes("/uapi/overseas-stock/v1/trading/inquire-nccs"));
   assert.equal(calls[0]!.url.includes("inquire-daily-ccld"), false);
   assert.equal(new URL(calls[0]!.url).searchParams.get("OVRS_EXCG_CD"), "NASD");

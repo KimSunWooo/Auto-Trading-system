@@ -54,8 +54,8 @@ export const KIS_OVERSEAS_TR = {
   balance: { paper: "VTTS3012R", real: "TTTS3012R" },
   psamount: { paper: "VTTS3007R", real: "TTTS3007R" },
   presentBalance: { paper: "VTRP6504R", real: "CTRP6504R" },
-  /** Official inquire_nccs.py hardcodes TTTS3018R with no demo branch. */
-  nccs: "TTTS3018R",
+  /** Official inquire_nccs.py hardcodes TTTS3018R and omits the demo branch. VTS rejects it as not a mock TR. Paper uses the official demo prefix rule `V` + rest → VTTS3018R. */
+  nccs: { paper: "VTTS3018R", real: "TTTS3018R" },
   ccnl: { paper: "VTTS3035R", real: "TTTS3035R" },
   usBuy: { paper: "VTTT1002U", real: "TTTT1002U" },
   usSell: { paper: "VTTT1001U", real: "TTTT1006U" },

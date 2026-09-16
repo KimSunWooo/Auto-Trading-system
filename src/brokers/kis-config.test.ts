@@ -235,5 +235,5 @@ test("overseas TR ids do not overwrite domestic cash order TRs", () => {
   assert.equal(KIS_TR.buy.paper, "VTTC0012U");
   assert.equal(KIS_OVERSEAS_TR.usBuy.paper, "VTTT1002U");
   assert.equal(KIS_OVERSEAS_TR.usSell.paper, "VTTT1001U");
-  assert.notEqual(KIS_OVERSEAS_TR.nccs, KIS_TR.openOrders.paper);
+  assert.notEqual(KIS_OVERSEAS_TR.nccs.paper, KIS_TR.openOrders.paper);
 });

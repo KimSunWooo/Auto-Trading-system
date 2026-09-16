@@ -681,7 +681,7 @@ export class KisClient implements KisApi {
   async inquireOverseasOpenOrders(exchange: UsExchange = "NASDAQ"): Promise<OverseasOpenOrder[]> {
     this.assertConfigured();
     const json = await this.uapi("GET", "/uapi/overseas-stock/v1/trading/inquire-nccs", {
-      trId: KIS_OVERSEAS_TR.nccs,
+      trId: KIS_OVERSEAS_TR.nccs[this.config.mode],
       query: {
         CANO: this.config.cano,
         ACNT_PRDT_CD: this.config.productCode,

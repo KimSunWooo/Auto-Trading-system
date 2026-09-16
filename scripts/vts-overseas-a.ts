@@ -71,6 +71,7 @@ async function main() {
 
   async function step(name: string, fn: () => Promise<string | void>) {
     try {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
       const detail = (await fn()) ?? "";
       steps.push({ name, status: "PASS", detail });
       appendVtsEvent(run.dir, { kind: "step", name, status: "PASS", detail });
