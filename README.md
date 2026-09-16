@@ -17,7 +17,7 @@
 | VTS-B 국내/해외 주문 | 미실행. opt-in 없음 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 
-로컬 검증: TypeScript PASS, `npm test` 159 pass / 10 skip / 0 fail, build PASS.
+로컬 검증: TypeScript PASS, `npm test` 190 pass / 12 skip / 0 fail, build PASS.
 
 유지 중인 안전장치:
 
