@@ -19,8 +19,9 @@
 | RDS MySQL mirror | JSON authority 유지. `PERSISTENCE_MODE=mirror` 일 때만 원장 projection. database SOT 없음 |
 | VTS-B2 국내/해외 주문 | 미실행. 별도 `Domestic/Overseas VTS-B2 진행` 요청 전까지 opt-in 없음 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
+| Domestic PAPER soak | 기존 Worker. 시세만 KIS. 전략 파라미터 변경 없음. 신규 주문 ≤5 · 1주 |
 
-로컬 검증: TypeScript PASS, `npm test` 259 pass / 12 skip / 0 fail, build PASS, `npm run db:check` PASS.
+로컬 검증: TypeScript PASS, `npm test` (soak 게이트 추가 후 재실행), build PASS, `npm run db:check` PASS.
 
 유지 중인 안전장치:
 
@@ -210,6 +211,15 @@ curl -X PUT http://127.0.0.1:43147/api/strategy-config \
 | `GET` | `/api/overseas/account` | 외화잔고 · 환율 · 매수가능 · 미체결/체결 |
 
 해외 주문 버튼은 UI에서 비활성화입니다. 실제 해외 PAPER 주문은 `RUN_KIS_VTS_OVERSEAS_ORDER_TESTS` 가 있을 때만 코드 경로가 열리며, 이번 작업에서는 설정하지 않습니다.
+
+국내 PAPER 장중 제한 운용은 기존 Worker 경로만 사용합니다.
+
+```bash
+TRADING_MODE=live_test KIS_MODE=demo BROKER=kis PERSISTENCE_MODE=mirror ALLOW_LIVE_TRADING=false npm run soak:preflight
+npm run soak:report
+```
+
+Ready=NO 이면 자동매매를 시작하지 않습니다. 시세 실패 시 주문하지 않으며, 강제 시그널은 만들지 않습니다.
 
 ## 주의
 

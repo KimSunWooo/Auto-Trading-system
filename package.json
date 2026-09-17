@@ -17,7 +17,9 @@
     "db:migrate": "tsx scripts/db-migrate.ts",
     "db:check": "tsx scripts/db-check.ts",
     "db:import-legacy": "tsx scripts/db-import-legacy.ts",
-    "db:test": "tsx --test --test-concurrency=1 src/db/*.test.ts"
+    "db:test": "tsx --test --test-concurrency=1 src/db/*.test.ts",
+    "soak:preflight": "tsx scripts/domestic-paper-soak.ts",
+    "soak:report": "tsx scripts/domestic-paper-soak.ts --report"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

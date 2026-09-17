@@ -16,6 +16,8 @@ import { sellBandSlices } from "@/src/accounts/execution-policy";
 import { getRuleConfig } from "@/src/rules/config";
 import { autoRunAllowed } from "@/src/rules/disclaimer";
 import { blockSafety, safetyOf } from "@/src/runtime/safety";
+import { isLiveLike } from "@/src/runtime/trading-mode";
+import { recordControlledEvent } from "@/src/runtime/controlled-run";
 
 function riskOf(state: AppState): ProductRisk {
   return state.settings?.risk ?? DEFAULT_PRODUCT_RISK;
@@ -454,6 +456,7 @@ export class RiskManager {
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;
       const quote = this.box.current.quotes[pos.code];
+      if (isLiveLike() && (quote?.source !== "kis" || !quote.freshAt)) continue;
       const last = quote?.price ?? pos.avgPrice;
       const rule = rules.find((row) => row.id === pos.ruleId);
       const stopPct = rule?.stopLossPct ?? product.stopLossPct;
@@ -463,6 +466,13 @@ export class RiskManager {
       if (!takeHit && !stopHit) continue;
       const label = takeHit ? "익절" : "손절";
       const pct = takeHit ? takePct : stopPct;
+      if (this.box.current.controlledRun) {
+        this.box.current = recordControlledEvent(
+          this.box.current,
+          takeHit ? "TAKE_PROFIT" : "STOP_LOSS",
+          `${pos.name} ${label} (${Math.round(pct * 100)}%)`,
+        );
+      }
       await sellBandSlices(root.forRule(pos.ruleId), pos.code, pos.qty, last, quote?.prevClose);
       const key = `${pos.ruleId}:${pos.code}`;
       const prevSafety = safetyOf(this.box.current);

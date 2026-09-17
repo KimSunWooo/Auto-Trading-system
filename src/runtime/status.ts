@@ -1,7 +1,13 @@
 import { getMarketClock } from "@/lib/market-hours";
 import { getBrokerPublicStatus } from "@/src/brokers/kis-config";
+import { publicDatabaseStatus } from "@/src/db/mirror";
+import { seoulDay } from "@/src/risk/limits";
 import { tradingBlocked } from "@/src/risk/circuit";
 import { safetyOf } from "@/src/runtime/safety";
+import {
+  realizedFromOrders,
+  unrealizedFromState,
+} from "@/src/runtime/controlled-run";
 import {
   allowLiveTrading,
   httpTickAllowed,
@@ -38,6 +44,27 @@ export function buildRuntimePublic(state: AppState): RuntimePublic {
       ? "warning"
       : "normal";
   const lastOrder = state.orders.find((row) => !row.parentOrderId);
+  const run = state.controlledRun;
+  const today = seoulDay();
+  const todayOrders = state.orders.filter(
+    (order) =>
+      !order.parentOrderId &&
+      (order.status === "filled" || order.status === "pending" || order.status === "unknown") &&
+      seoulDay(new Date(order.createdAt)) === today,
+  ).length;
+  const todayExecutions = state.orders.filter(
+    (order) =>
+      order.parentOrderId &&
+      order.status === "filled" &&
+      seoulDay(new Date(order.createdAt)) === today,
+  ).length;
+  const db = publicDatabaseStatus();
+  const autoTrading: RuntimePublic["autoTrading"] =
+    !state.settings.autoTrading || safety.kind === "emergency_stop" || run?.status === "stopped"
+      ? "stopped"
+      : !clock.open || run?.status === "paused" || Boolean(blocked)
+        ? "paused"
+        : "on";
   return {
     tradingMode: mode,
     allowLiveTrading: allowLiveTrading(),
@@ -56,5 +83,14 @@ export function buildRuntimePublic(state: AppState): RuntimePublic {
     lastError: safety.lastError ?? state.circuit?.lastError,
     lastErrorAt: safety.lastErrorAt ?? state.circuit?.openedAt,
     ordersAllowed: ordersCurrentlyAllowed(state) && !blocked && clock.open,
+    autoTrading,
+    selectedStrategy: run?.strategyName,
+    currentSymbols: run?.symbols,
+    soakStatus: run?.status,
+    todayOrders,
+    todayExecutions,
+    realizedPnl: realizedFromOrders(state, run?.startedAt),
+    unrealizedPnl: unrealizedFromState(state),
+    rdsMirror: db.mode !== "mirror" ? "off" : db.lastError ? "degraded" : db.connected ? "connected" : "off",
   };
 }

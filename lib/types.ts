@@ -1,6 +1,7 @@
 import type { RuleConfigFile } from "@/src/rules/params";
 import type { ProductRisk } from "@/src/risk/product";
 import type { SafetyState } from "@/src/runtime/safety";
+import type { ControlledRunState } from "@/src/runtime/controlled-run";
 
 export type Market = "KOSPI" | "KOSDAQ";
 export type Side = "buy" | "sell";
@@ -126,7 +127,8 @@ export type CircuitKind =
   | "balance"
   | "hard"
   | "recon"
-  | "data";
+  | "data"
+  | "soak-stop";
 
 export type OrderIntentStatus =
   | "pending"
@@ -166,6 +168,15 @@ export type RuntimePublic = {
   lastError?: string;
   lastErrorAt?: string;
   ordersAllowed: boolean;
+  autoTrading: "on" | "paused" | "stopped";
+  selectedStrategy?: string;
+  currentSymbols?: string[];
+  soakStatus?: "idle" | "running" | "paused" | "stopped";
+  todayOrders?: number;
+  todayExecutions?: number;
+  realizedPnl?: number;
+  unrealizedPnl?: number;
+  rdsMirror?: "connected" | "degraded" | "off";
 };
 
 export type CircuitState = {
@@ -251,6 +262,7 @@ export type AppState = {
   killReport?: KillReport;
   intents?: OrderIntent[];
   safety?: SafetyState;
+  controlledRun?: ControlledRunState;
 };
 
 export type BrokerPublicStatus = {

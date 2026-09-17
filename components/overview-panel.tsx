@@ -50,13 +50,15 @@ export function OverviewPanel({
 }) {
   const stats = dashboardStats(state);
   const pnl = stats.pnl;
-  const quotes = useMemo(
-    () =>
-      Object.values(state.quotes).sort(
-        (a, b) => a.market.localeCompare(b.market) || a.name.localeCompare(b.name, "ko"),
-      ),
-    [state.quotes],
-  );
+  const quotes = useMemo(() => {
+    const symbols = new Set(state.runtime?.currentSymbols ?? []);
+    const rows = Object.values(state.quotes).filter((row) =>
+      symbols.size === 0 ? true : symbols.has(row.code),
+    );
+    return rows.sort(
+      (a, b) => a.market.localeCompare(b.market) || a.name.localeCompare(b.name, "ko"),
+    );
+  }, [state.quotes, state.runtime?.currentSymbols]);
   const kisHoldingRows = state.kisBalance ? holdingRows(state) : [];
   const risk = state.settings.risk ?? DEFAULT_PRODUCT_RISK;
   const rules = state.ruleConfig?.rules ?? [];
@@ -107,6 +109,51 @@ export function OverviewPanel({
           hint={stats.winRatePct == null ? "청산된 매도가 없습니다" : "당일 매도 기준"}
         />
       </div>
+
+      {state.controlledRun || state.runtime?.soakStatus ? (
+        <Card size="sm" className="border-primary/30">
+          <CardHeader>
+            <CardDescription>Domestic PAPER Live-Market Controlled Auto-Trading</CardDescription>
+            <CardTitle className="text-base">
+              {state.market.open ? "정규장" : state.market.sessionLabel} · Auto{" "}
+              {(state.runtime.autoTrading ?? "stopped").toUpperCase()}
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Strategy {state.runtime.selectedStrategy ?? "none"} ·{" "}
+              {(state.runtime.currentSymbols ?? []).join(", ") || "symbols none"} · Recon{" "}
+              {state.runtime.reconciliation} · RDS {state.runtime.rdsMirror ?? "off"} · Last tick{" "}
+              {state.runtime.lastTickAt ? formatSeoul(state.runtime.lastTickAt) : "-"}
+            </p>
+          </CardHeader>
+          <CardContent className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <div className="text-[11px] text-muted-foreground">Open Positions</div>
+              <div className="tabular-nums">
+                {state.positions.filter((row) => row.qty > 0).map((row) => `${row.code}×${row.qty}`).join(" ") ||
+                  "none"}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] text-muted-foreground">Open Orders</div>
+              <div className="tabular-nums">
+                {state.orders.filter((row) => !row.parentOrderId && (row.status === "pending" || row.status === "unknown")).length}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] text-muted-foreground">Today Orders / Executions</div>
+              <div className="tabular-nums">
+                {state.runtime.todayOrders ?? 0} / {state.runtime.todayExecutions ?? 0}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] text-muted-foreground">Realized / Unrealized</div>
+              <div className="tabular-nums">
+                {formatWon(state.runtime.realizedPnl ?? 0)} / {formatWon(state.runtime.unrealizedPnl ?? 0)}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {(state.equityHistory?.length ?? 0) > 2 ? (
         <Card size="sm">

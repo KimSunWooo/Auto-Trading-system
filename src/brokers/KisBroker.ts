@@ -22,6 +22,7 @@ import { findOrderByIntent } from "@/src/runtime/intents";
 import { nowMs } from "@/src/clock";
 import { blockSafety } from "@/src/runtime/safety";
 import { holdsWorkerLock } from "@/src/runtime/worker-lock";
+import { preTradeGate } from "@/src/runtime/controlled-run";
 
 /**
  * 한국투자증권 Open API adapter.
@@ -349,6 +350,10 @@ export class KisBroker implements IBroker {
     const liquidatingSell = this.box.current.settings.liquidating && side === "sell";
     if (isLiveLike() && !holdsWorkerLock() && !liquidatingSell) {
       return this.reject(ticker, side, "트레이딩 워커 락이 없어 주문하지 않습니다.");
+    }
+    if (this.box.current.controlledRun) {
+      const soak = preTradeGate(this.box.current, { side, ticker, qty: 1 });
+      if (!soak.ok) return this.reject(ticker, side, soak.blocked);
     }
     if (!this.client.configured) {
       return this.reject(

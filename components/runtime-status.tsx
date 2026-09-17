@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import { formatSeoulTime } from "@/lib/format";
+import { formatSeoulTime, formatWon } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
 
 function tone(ok: boolean): "secondary" | "destructive" {
@@ -33,6 +33,20 @@ export function RuntimeStatusStrip({ state }: { state: PublicState }) {
           <Badge variant={runtime.reconciliation === "synced" ? "secondary" : "destructive"}>
             Recon {runtime.reconciliation}
           </Badge>
+          <Badge variant={runtime.autoTrading === "on" ? "secondary" : "outline"}>
+            Auto {runtime.autoTrading?.toUpperCase() ?? "STOPPED"}
+          </Badge>
+          {runtime.selectedStrategy ? (
+            <Badge variant="outline">Strategy {runtime.selectedStrategy}</Badge>
+          ) : null}
+          {runtime.currentSymbols && runtime.currentSymbols.length > 0 ? (
+            <Badge variant="outline">{runtime.currentSymbols.join(" ")}</Badge>
+          ) : null}
+          <Badge variant="outline">Orders {runtime.todayOrders ?? 0}</Badge>
+          <Badge variant="outline">Fills {runtime.todayExecutions ?? 0}</Badge>
+          <Badge variant={runtime.rdsMirror === "connected" ? "secondary" : "destructive"}>
+            RDS {runtime.rdsMirror ?? "off"}
+          </Badge>
         </div>
         <div className="text-[11px] text-muted-foreground">
           {runtime.lastError ? (
@@ -44,6 +58,8 @@ export function RuntimeStatusStrip({ state }: { state: PublicState }) {
             <span>
               마지막 틱 {runtime.lastTickAt ? formatSeoulTime(runtime.lastTickAt) : "-"}
               {runtime.lastOrderAt ? ` · 주문 ${formatSeoulTime(runtime.lastOrderAt)}` : ""}
+              {runtime.unrealizedPnl != null ? ` · 평가 ${formatWon(runtime.unrealizedPnl)}` : ""}
+              {runtime.realizedPnl != null ? ` · 실현 ${formatWon(runtime.realizedPnl)}` : ""}
             </span>
           )}
         </div>

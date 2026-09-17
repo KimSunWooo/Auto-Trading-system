@@ -10,13 +10,13 @@ import type { StateBox } from "@/src/accounts/StateBox";
 import type { BrokerFill } from "@/src/brokers/IBroker";
 import { findStock } from "@/lib/universe";
 import type { Order, OrderSource } from "@/lib/types";
-import { checkHardLimits } from "@/src/risk/limits";
+import { applyAutoStop, preTradeGate, recordControlledEvent } from "@/src/runtime/controlled-run";
 import { openCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { RiskManager } from "@/src/risk/RiskManager";
 import { executionLocked } from "@/src/rules/disclaimer";
 import { guardLog } from "@/src/rules/guard-log";
 import { noteRuleOutcome, ruleThrottleReason } from "@/src/rules/throttle";
-import { seoulDay } from "@/src/risk/limits";
+import { checkHardLimits, seoulDay } from "@/src/risk/limits";
 import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/runtime/intents";
 import { safetyOf, stopKey } from "@/src/runtime/safety";
 import { isLiveLike } from "@/src/runtime/trading-mode";
@@ -73,6 +73,10 @@ export class OrderManager {
     if (blocked) return { ok: false, reason: blocked };
     if (qty < 1) {
       return { ok: false, reason: "1주 미만이라 주문하지 않습니다." };
+    }
+    if (this.box.current.controlledRun) {
+      const soak = preTradeGate(this.box.current, { side: "buy", ticker, qty });
+      if (!soak.ok) return { ok: false, reason: soak.blocked };
     }
     const { net } = feeBreakdown("buy", qty * price);
     const bucket = this.box.current.allocations.find((a) => a.ruleId === ruleId);
@@ -179,6 +183,10 @@ export class OrderManager {
         return { ok: false, reason: `${ticker} 미체결 매도가 있어 대기합니다.` };
       }
     }
+    if (this.box.current.controlledRun && !opts.liquidation) {
+      const soak = preTradeGate(this.box.current, { side: "sell", ticker, qty });
+      if (!soak.ok) return { ok: false, reason: soak.blocked };
+    }
     return { ok: true };
   }
 
@@ -249,6 +257,14 @@ export class OrderManager {
     });
     this.box.current = started.state;
     this.touchOrderClock();
+    if (this.box.current.controlledRun) {
+      this.box.current = recordControlledEvent(
+        this.box.current,
+        "INTENT_CREATED",
+        `${side.toUpperCase()} ${ticker} qty=${qty}`,
+      );
+      this.box.current = recordControlledEvent(this.box.current, "RISK_ALLOW", `${side} ${ticker}`);
+    }
     if (opts.intentId) {
       this.box.current = patchIntent(this.box.current, opts.intentId, {
         status: "pending",
@@ -275,6 +291,26 @@ export class OrderManager {
       return this.reject("", "buy", reason);
     }
     this.box.current = patched.state;
+    if (this.box.current.controlledRun) {
+      this.box.current = recordControlledEvent(
+        this.box.current,
+        "ORDER_SUBMITTED",
+        `${patched.order.side.toUpperCase()} ${patched.order.code}`,
+      );
+      this.box.current = recordControlledEvent(this.box.current, "ODNO", patched.order.brokerOrderNo ?? brokerOrderNo);
+      const sideKey = patched.order.side === "sell" ? "sellCount" : "buyCount";
+      const run = this.box.current.controlledRun;
+      if (run) {
+        this.box.current = {
+          ...this.box.current,
+          controlledRun: {
+            ...run,
+            buyCount: sideKey === "buyCount" ? run.buyCount + 1 : run.buyCount,
+            sellCount: sideKey === "sellCount" ? run.sellCount + 1 : run.sellCount,
+          },
+        };
+      }
+    }
     const fill = this.toFill(patched.order);
     this.observe(patched.order.ruleId, patched.order.code, fill);
     return fill;
@@ -294,6 +330,14 @@ export class OrderManager {
     };
     const fill = this.toFill(withNo);
     this.observe(withNo.ruleId, withNo.code, fill);
+    if (this.box.current.controlledRun && withNo.status === "filled") {
+      this.box.current = recordControlledEvent(
+        this.box.current,
+        "FILLED",
+        `${withNo.side} ${withNo.code} qty=${withNo.qty} ODNO=${withNo.brokerOrderNo ?? ""}`,
+      );
+      this.box.current = recordControlledEvent(this.box.current, "POSITION_CHANGED", withNo.code);
+    }
     return fill;
   }
 
@@ -310,6 +354,9 @@ export class OrderManager {
       `주문 결과를 확인하지 못했습니다. ${reason}`,
       patched.order,
     );
+    if (this.box.current.controlledRun) {
+      this.box.current = applyAutoStop(this.box.current, "UNKNOWN unresolved");
+    }
     const fill = this.toFill(patched.order);
     this.observe(patched.order.ruleId, patched.order.code, fill);
     return fill;
@@ -331,6 +378,18 @@ export class OrderManager {
   gateReject(ruleId: string, ticker: string, side: "buy" | "sell", reason: string): BrokerFill {
     const fill = this.reject(ticker, side, reason);
     this.observe(ruleId, ticker, fill);
+    if (this.box.current.controlledRun) {
+      this.box.current = recordControlledEvent(this.box.current, "RISK_BLOCK", reason);
+      if (/Existing open BUY|already|동일 intent|maxNewBuy/i.test(reason)) {
+        const run = this.box.current.controlledRun;
+        if (run) {
+          this.box.current = {
+            ...this.box.current,
+            controlledRun: { ...run, duplicateSubmit: run.duplicateSubmit + 1 },
+          };
+        }
+      }
+    }
     return fill;
   }
 

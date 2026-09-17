@@ -128,6 +128,7 @@ async function main() {
 
     const quote = await client.inquirePrice(TICKER);
     const balance = await client.inquireBalance();
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     let psbl: Awaited<ReturnType<KisClient["inquirePsblOrder"]>> | undefined;
     try {
       psbl = await client.inquirePsblOrder({ ticker: TICKER, price: quote.price });

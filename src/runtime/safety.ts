@@ -112,6 +112,7 @@ export function safetyBlocksTrading(state: AppState, mode: TradingMode = trading
   }
   if (
     safety.reconciliation === "unavailable" ||
+    safety.reconciliation === "mismatch" ||
     safety.kind === "reconciliation_unavailable" ||
     safety.kind === "reconciliation_required"
   ) {

@@ -39,6 +39,7 @@ import type {
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { BrokerRejectError, IndeterminateOrderError } from "@/src/risk/errors";
 import { allowLiveTrading, realKisOrdersLocked, tradingMode } from "@/src/runtime/trading-mode";
+import { noteKisHttp } from "@/src/runtime/kis-http-audit";
 
 export type KisPrice = {
   ticker: string;
@@ -982,6 +983,7 @@ export class KisClient implements KisApi {
     timeoutMs: number,
     kind: "query" | "order" = "query",
   ): Promise<Record<string, unknown>> {
+    noteKisHttp(url, method);
     return this.slot(async () => {
       let res: Response;
       try {

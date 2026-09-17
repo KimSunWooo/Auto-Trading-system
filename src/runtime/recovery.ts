@@ -7,6 +7,7 @@ import { CASH_RULE_ID } from "@/src/rules/params";
 import { openCircuit } from "@/src/risk/circuit";
 import { blockSafety, safetyOf } from "@/src/runtime/safety";
 import { upsertIntent, patchIntent } from "@/src/runtime/intents";
+import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
 import type { AppState, Order } from "@/lib/types";
 
 export type InquiryResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -199,8 +200,7 @@ export function markInquiryFailure(state: AppState, kind: "recon" | "data" | "br
 }
 
 export function resetRecoverableHalt(state: AppState): AppState {
-  const kind = state.circuit?.kind;
-  if (kind !== "recon" && kind !== "data") return state;
+  if (!isRecoverableInquiryHalt(state)) return state;
   if (state.orders.some((order) => order.status === "unknown")) return state;
   return {
     ...state,

@@ -79,10 +79,13 @@ export function existingOpenBuy(state: AppState, ticker: string): Order | undefi
   );
 }
 
-export function testRunBuyCount(state: AppState): number {
-  return state.orders.filter(
-    (order) => !order.parentOrderId && order.side === "buy" && countsTowardPaperDay(order),
-  ).length;
+export function testRunBuyCount(state: AppState, sinceIso?: string): number {
+  const startMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  return state.orders.filter((order) => {
+    if (order.parentOrderId || order.side !== "buy" || !countsTowardPaperDay(order)) return false;
+    if (Number.isFinite(startMs) && Date.parse(order.createdAt) < startMs) return false;
+    return true;
+  }).length;
 }
 
 export function hasUnknownOrder(state: AppState): boolean {
@@ -108,10 +111,13 @@ export function checkPaperOrderConstraints(input: {
   if (input.ticker && existingOpenBuy(state, input.ticker)) {
     return { ok: false, blocked: "ORDER TEST BLOCKED: Existing open BUY order detected" };
   }
-  const buyIntents = (state.intents ?? []).filter(
-    (row) => row.side === "buy" && row.status !== "rejected",
-  ).length;
-  if (Math.max(testRunBuyCount(state), buyIntents) >= PAPER_ORDER_POLICY.maxNewBuyPerTestRun) {
+  const buyIntents = (state.intents ?? []).filter((row) => {
+    if (row.side !== "buy" || row.status === "rejected") return false;
+    const since = state.controlledRun?.startedAt;
+    if (!since) return true;
+    return Date.parse(row.createdAt) >= Date.parse(since);
+  }).length;
+  if (Math.max(testRunBuyCount(state, state.controlledRun?.startedAt), buyIntents) >= PAPER_ORDER_POLICY.maxNewBuyPerTestRun) {
     return {
       ok: false,
       blocked: `ORDER TEST BLOCKED: maxNewBuyPerTestRun ${PAPER_ORDER_POLICY.maxNewBuyPerTestRun}`,

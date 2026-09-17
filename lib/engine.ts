@@ -26,6 +26,15 @@ import { recoverExternalOrders, markInquiryFailure, resetRecoverableHalt } from 
 import { makeSignalId } from "@/src/runtime/intents";
 import { nowMs } from "@/src/clock";
 import { engineReconciliationFlag } from "@/src/risk/kis-balance-semantics";
+import {
+  applyAutoStop,
+  autoStopReason,
+  bumpTick,
+  noteInquiry,
+  noteQuoteResult,
+  reconStatusOf,
+  syncHttpAudit,
+} from "@/src/runtime/controlled-run";
 
 const HISTORY_LEN = 40;
 
@@ -101,6 +110,9 @@ export function createPaperState(): AppState {
 }
 
 export function ensureUniverseQuotes(state: AppState): AppState {
+  if (isLiveLike() && brokerDriver() === "kis") {
+    return state;
+  }
   const quotes = { ...state.quotes };
   for (const code of watchedTickersFrom(state)) {
     if (!quotes[code]) quotes[code] = seedQuote(code);
@@ -160,14 +172,21 @@ function watchedTickers(state: AppState): string[] {
 
 async function refreshLiveQuotes(box: StateBox, broker: IBroker): Promise<boolean> {
   let ok = true;
-  for (const code of watchedTickers(box.current)) {
+  const codes = watchedTickers(box.current);
+  if (codes.length === 0) {
+    box.current = noteQuoteResult(box.current, true);
+    return true;
+  }
+  for (const code of codes) {
     try {
       const quote = await broker.getQuote(code);
       if (!quote) ok = false;
+      else if (isLiveLike() && box.current.quotes[code]?.source !== "kis") ok = false;
     } catch {
       ok = false;
     }
   }
+  box.current = noteQuoteResult(box.current, ok);
   if (!ok && isLiveLike()) {
     box.current = markInquiryFailure(box.current, "data", "KIS 시세 조회에 실패해 신규 주문을 막았습니다.");
   }
@@ -356,6 +375,7 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
   if (root.driver === "kis") {
     expireStaleInFlight(box);
     const settled = await settleOpenOrders(box, getSharedKisClient());
+    let recoveredOk = settled.ok;
     if (!settled.ok) {
       box.current = markInquiryFailure(
         box.current,
@@ -365,6 +385,7 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
       liveReady = false;
     } else {
       const recovered = await recoverExternalOrders(box, getSharedKisClient());
+      recoveredOk = recovered.ok;
       if (!recovered.ok) {
         box.current = markInquiryFailure(box.current, "recon", recovered.error);
         liveReady = false;
@@ -377,6 +398,16 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
     }
     const quotesOk = await refreshLiveQuotes(box, root);
     if (!quotesOk && isLiveLike()) liveReady = false;
+    box.current = noteInquiry(box.current, {
+      quoteOk: quotesOk,
+      balanceOk: synced.ok,
+      orderableOk: Boolean(box.current.kisBalance?.orderableCash != null && box.current.kisBalance.orderableCash >= 0),
+      positionOk: synced.ok,
+      openOrdersOk: settled.ok && recoveredOk,
+      executionOk: settled.ok,
+      recon: reconStatusOf(box.current),
+    });
+    box.current = syncHttpAudit(box.current);
     if (liveReady && isLiveLike()) {
       box.current = clearSafetyBlock(resetRecoverableHalt(box.current), {
         quoteOk: true,
@@ -384,6 +415,11 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
         reconciliation: engineReconciliationFlag(box.current),
         workerHealthy: true,
       });
+    }
+    const stop = box.current.controlledRun ? autoStopReason(box.current) : null;
+    if (stop) {
+      box.current = applyAutoStop(box.current, stop);
+      liveReady = false;
     }
   } else {
     if (box.current.settings.ignoreMarketHours || clock.open) {
@@ -439,10 +475,14 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
   }
 
   const equity = accountValue(box.current);
-  return {
-    ...box.current,
-    equityHistory: [...(box.current.equityHistory ?? []), equity].slice(-120),
-  };
+  const withTick = bumpTick(
+    {
+      ...box.current,
+      equityHistory: [...(box.current.equityHistory ?? []), equity].slice(-120),
+    },
+    clock.open,
+  );
+  return withTick;
 }
 
 export { accountValue, accountValue as portfolioValue };
