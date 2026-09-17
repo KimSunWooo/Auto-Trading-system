@@ -16,6 +16,13 @@ export function resetDbClientForTest(): void {
   void closing?.end().catch(() => undefined);
 }
 
+export async function closeDb(): Promise<void> {
+  const closing = pool;
+  pool = null;
+  db = null;
+  if (closing) await closing.end().catch(() => undefined);
+}
+
 export function createMysqlPool(env: EnvMap = process.env): mysql.Pool | null {
   const cfg = loadDbConnection(env);
   if (!cfg) return null;
