@@ -10,7 +10,6 @@ export function usesPaperBrokerBalanceSemantics(env: EnvMap = process.env): bool
   if (brokerDriver(env) !== "kis") return false;
   const raw = String(env.KIS_MODE ?? "").trim().toLowerCase();
   if (raw !== "paper" && raw !== "demo") return false;
-  if (raw === "real") return false;
   if (String(env.TRADING_MODE ?? "").trim().toLowerCase() === "live") return false;
   if (env.ALLOW_LIVE_TRADING === "true") return false;
   if (env.KIS_LIVE_CONFIRM === "I_UNDERSTAND") return false;

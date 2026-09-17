@@ -168,7 +168,7 @@ export interface KisApi {
 }
 
 /** Strip punctuation/leading zeros so "0000000123" matches "123". */
-export function sameOdno(a: string | undefined, b: string | undefined): boolean {
+export function sameOdno(a: string | undefined | null, b: string | undefined | null): boolean {
   const na = String(a ?? "").replace(/\D/g, "").replace(/^0+/, "");
   const nb = String(b ?? "").replace(/\D/g, "").replace(/^0+/, "");
   return na.length > 0 && na === nb;
