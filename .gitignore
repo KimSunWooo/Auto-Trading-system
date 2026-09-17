@@ -30,11 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files — never commit secrets. .env.example is the only exception.
+# env files — never commit secrets. Example templates only.
 .env
 .env.local
 .env.*
 !.env.example
+!.env.ec2.example
 
 # paper trading store
 /data/*.json
