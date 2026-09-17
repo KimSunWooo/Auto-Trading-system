@@ -177,6 +177,6 @@ PAPER/VTS may keep `dnca_tot_amt` unchanged after a fill while `thdt_buy_amt` an
 Reconciliation:
 
 - **POSITION / ORDER / EXECUTION**: strict identity against broker evidence.
-- **BALANCE (PAPER)**: broker snapshot freshness + orderable cash. Do **not** require `localLedgerCash == dnca_tot_amt`.
+- **BALANCE (PAPER)**: broker snapshot freshness + orderable cash. Item status stays `MATCH` (RDS CHECK allows MATCH/MISMATCH/UNKNOWN only). Do **not** require `localLedgerCash == dnca_tot_amt`.
 - **BALANCE (REAL)**: keep cash equality of local ledger vs `dnca_tot_amt` (unchanged).
 - Stale `kisBalance.matched=true` must not persist as a new `HEALTHY` run. Failed or post-order unrefreshed broker reads are `UNKNOWN` and block new orders. Broker inquiry failure never retries an order.

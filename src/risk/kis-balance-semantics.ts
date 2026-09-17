@@ -201,7 +201,7 @@ export function reconProjectionFromState(state: AppState, env: EnvMap = process.
       { itemType: "EXECUTION", status: "MATCH", message: "EXECUTION MATCH" },
       {
         itemType: "BALANCE",
-        status: paper ? "INFORMATIONAL" : "MATCH",
+        status: "MATCH",
         message: paper
           ? "PAPER: local ledger cash is not compared to broker deposit cash (dnca_tot_amt)."
           : "BALANCE MATCH",
