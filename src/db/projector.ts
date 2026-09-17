@@ -125,8 +125,8 @@ async function ensureInstrument(tx: LedgerSession, code: string) {
 
 async function maybeAppendEvent(tx: LedgerSession, order: OrderRow, first: boolean) {
   const last = await tx.lastOrderEvent(order.id);
+  if (last && last.newStatus === order.status) return;
   const eventType = eventTypeFor(order.status, first && !last);
-  if (last && last.newStatus === order.status && last.eventType === eventType) return;
   await tx.appendOrderEvent({
     id: newId(),
     orderId: order.id,
