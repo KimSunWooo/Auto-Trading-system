@@ -10,9 +10,12 @@ import {
   usesPaperBrokerBalanceSemantics,
 } from "@/src/risk/kis-balance-semantics";
 import {
+  CONTROLLED_RUN_MAX_BROKER_SUBMITS,
   PAPER_ORDER_POLICY,
   existingOpenBuy,
   hasUnknownOrder,
+  sessionBrokerSubmitCount,
+  sessionOrders,
   testRunBuyCount,
 } from "@/src/risk/order-policy";
 import type { UserRule } from "@/src/rules/params";
@@ -27,7 +30,7 @@ import {
 import { overseasPaperOrdersLocked } from "@/src/markets/overseas/env";
 
 export const CONTROLLED_RUN_GATE = "Domestic PAPER Live-Market Controlled Auto-Trading";
-export const CONTROLLED_RUN_MAX_BROKER_SUBMITS = 5;
+export { CONTROLLED_RUN_MAX_BROKER_SUBMITS, sessionBrokerSubmitCount, sessionOrders } from "@/src/risk/order-policy";
 export const CONTROLLED_RUN_QUOTE_FRESH_MS = 15_000;
 export const MAX_CONTROLLED_EVENTS = 240;
 
@@ -261,25 +264,6 @@ export function recordControlledEvent(
 
 export function seoulDayIso(iso: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date(iso));
-}
-
-function countsTowardSubmit(order: Order): boolean {
-  if (order.parentOrderId) return false;
-  return order.status === "filled" || order.status === "pending" || order.status === "unknown";
-}
-
-export function sessionOrders(state: AppState, startedAt?: string): Order[] {
-  const start = startedAt ?? state.controlledRun?.startedAt;
-  if (!start) return state.orders.filter((order) => countsTowardSubmit(order));
-  const startMs = Date.parse(start);
-  return state.orders.filter((order) => {
-    if (!countsTowardSubmit(order)) return false;
-    return Date.parse(order.createdAt) >= startMs;
-  });
-}
-
-export function sessionBrokerSubmitCount(state: AppState): number {
-  return sessionOrders(state, state.controlledRun?.startedAt).length;
 }
 
 export function duplicateOdnoDetected(state: AppState): boolean {

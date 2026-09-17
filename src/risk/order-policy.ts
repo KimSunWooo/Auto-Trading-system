@@ -88,6 +88,22 @@ export function testRunBuyCount(state: AppState, sinceIso?: string): number {
   }).length;
 }
 
+export const CONTROLLED_RUN_MAX_BROKER_SUBMITS = 5;
+
+export function sessionOrders(state: AppState, startedAt?: string): Order[] {
+  const start = startedAt ?? state.controlledRun?.startedAt;
+  if (!start) return state.orders.filter((order) => countsTowardPaperDay(order));
+  const startMs = Date.parse(start);
+  return state.orders.filter((order) => {
+    if (!countsTowardPaperDay(order)) return false;
+    return Date.parse(order.createdAt) >= startMs;
+  });
+}
+
+export function sessionBrokerSubmitCount(state: AppState): number {
+  return sessionOrders(state, state.controlledRun?.startedAt).length;
+}
+
 export function hasUnknownOrder(state: AppState): boolean {
   return state.orders.some((order) => !order.parentOrderId && order.status === "unknown");
 }

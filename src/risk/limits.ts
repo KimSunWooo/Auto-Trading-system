@@ -1,6 +1,5 @@
 import type { AppState, Order, Side } from "@/lib/types";
-import { checkPaperOrderConstraints, PAPER_ORDER_POLICY, usesPaperOrderPolicy } from "@/src/risk/order-policy";
-import { CONTROLLED_RUN_MAX_BROKER_SUBMITS, sessionBrokerSubmitCount } from "@/src/runtime/controlled-run";
+import { checkPaperOrderConstraints, CONTROLLED_RUN_MAX_BROKER_SUBMITS, PAPER_ORDER_POLICY, sessionBrokerSubmitCount, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 
 /** Caps that still apply if the local book is wrong. */

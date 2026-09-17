@@ -16,6 +16,7 @@ import {
 } from "@/src/runtime/controlled-run";
 import { checkPaperOrderConstraints, testRunBuyCount } from "@/src/risk/order-policy";
 import { blankRule } from "@/src/rules/params";
+import { tryAcquireWorkerLock, releaseWorkerLock, resetWorkerLockForTest } from "@/src/runtime/worker-lock";
 
 test("empty strategy-config selects none without inventing a rule", () => {
   const state = createPaperState();
@@ -132,11 +133,14 @@ test("pre-trade gate rejects mock/seed quotes during a controlled run", () => {
   process.env.KIS_PAPER_APP_KEY = "paper-key";
   process.env.KIS_PAPER_APP_SECRET = "paper-secret";
   process.env.KIS_PAPER_ACCOUNT_NO = "11111111-01";
+  tryAcquireWorkerLock("soak-mock-quote");
   try {
     const gate = preTradeGate(state, { side: "buy", ticker: "005930", qty: 1 });
     assert.equal(gate.ok, false);
-    if (!gate.ok) assert.match(gate.blocked, /quote|Mock|unhealthy|PAPER|KIS_MODE|semantics|lock|RDS|mirror/i);
+    if (!gate.ok) assert.match(gate.blocked, /quote|Mock|unhealthy|PAPER|KIS_MODE|semantics|lock|락|RDS|mirror/i);
   } finally {
+    releaseWorkerLock("soak-mock-quote");
+    resetWorkerLockForTest();
     delete process.env.TRADING_MODE;
     delete process.env.BROKER;
     delete process.env.KIS_MODE;
