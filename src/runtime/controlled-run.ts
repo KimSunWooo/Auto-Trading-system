@@ -493,7 +493,7 @@ export function preTradeGate(
   }
 
   const dailyCap = paperMaxBrokerSubmitsPerDay(env);
-  if (dailyBrokerSubmitCount(state) >= dailyCap) {
+  if (dailyCap != null && dailyBrokerSubmitCount(state) >= dailyCap) {
     return { ok: false, blocked: `Daily PAPER broker submit cap ${dailyCap}` };
   }
 
@@ -502,7 +502,8 @@ export function preTradeGate(
     return { ok: false, blocked: "RDS mirror is required for this run" };
   }
   if (db.lastError?.includes("DB_MIRROR_DEGRADED") && input.side === "buy") {
-    // Mirror errors do not retry the broker; new buys still require a connected mirror.
+    // Mirror errors must never retry the broker; persistent degrade blocks new buys only.
+    return { ok: false, blocked: "RDS mirror degraded — new BUY blocked" };
   }
   return { ok: true };
 }
@@ -525,7 +526,8 @@ export function autoStopReason(state: AppState, env: EnvMap = process.env): stri
   if (isLiveLike(tradingMode(env)) && !holdsWorkerLock() && !workerLockHealthy()) {
     return "Worker lock lost";
   }
-  if (dailyBrokerSubmitCount(state) >= paperMaxBrokerSubmitsPerDay(env)) {
+  const dailyCap = paperMaxBrokerSubmitsPerDay(env);
+  if (dailyCap != null && dailyBrokerSubmitCount(state) >= dailyCap) {
     return "Daily order limit reached";
   }
   if (run && run.jsonRdsDivergence > 0) return "DB / JSON position divergence";
@@ -691,7 +693,10 @@ export function formatStartSummary(input: {
     String(paperMaxQtyPerOrder()),
     "",
     "Daily Limit:",
-    String(paperMaxBrokerSubmitsPerDay()),
+    (() => {
+      const cap = paperMaxBrokerSubmitsPerDay();
+      return cap == null ? "NONE" : String(cap);
+    })(),
     "",
     "Reconciliation:",
     input.recon,
@@ -909,7 +914,11 @@ export function formatSoakReport(state: AppState): string {
     "0",
     "",
     "Daily Limit Violation:",
-    dailyBrokerSubmitCount(state) > paperMaxBrokerSubmitsPerDay() ? "1" : "0",
+    (() => {
+      const cap = paperMaxBrokerSubmitsPerDay();
+      if (cap == null) return "0";
+      return dailyBrokerSubmitCount(state) > cap ? "1" : "0";
+    })(),
     "",
     "Blind Retry:",
     "0",

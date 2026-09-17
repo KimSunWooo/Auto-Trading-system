@@ -162,12 +162,13 @@ npm run dev
 
 PAPER(`TRADING_MODE=live_test` + `KIS_MODE=paper|demo` + `BROKER=kis`, REAL 플래그 없음) operational 한도:
 
-- 1회 최대 `PAPER_MAX_QTY_PER_ORDER` (기본 11주)
-- 일일 브로커 submit `PAPER_MAX_BROKER_SUBMITS_PER_DAY` (기본 20)
+- 1회 최대 `PAPER_MAX_QTY_PER_ORDER` (기본 5주) — quantity hard cap
+- 일일 브로커 submit COUNT: **없음** (장시간 soak에서 COUNT로 AUTO STOP 하지 않음)
 - 종목별 포지션 `PAPER_MAX_POSITION_QTY_PER_SYMBOL` (기본 50)
-- 동일 intent 1회, 동일 종목 미체결 BUY 금지, UNKNOWN/recon 게이트 유지
-- VTS 단발 하네스(`PAPER_POLICY_MODE=test` 또는 `RUN_KIS_VTS_ORDER_TESTS`)만 예전 1주/1 BUY 제한
+- 동일 intent 1회, 동일 종목 미체결 BUY 금지, UNKNOWN/recon/Startup Sync 게이트 유지
+- VTS 단발 하네스(`PAPER_POLICY_MODE=test` 또는 `RUN_KIS_VTS_ORDER_TESTS`)만 1주 / 1 BUY / 일 5건 제한
 
+`PAPER_MAX_BROKER_SUBMITS_PER_DAY`는 operational PAPER에서 deprecated·무시됩니다. `0`으로 무제한을 표현하지 마세요.
 REAL 및 PAPER가 아닌 LIVE_TEST 한도(`OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다. PAPER 정책은 REAL에 적용되지 않습니다.
 
 `npm test`는 실제 KIS 주문을 내지 않습니다. 읽기 전용 VTS는 `RUN_KIS_VTS_TESTS=true`, 주문은 `RUN_KIS_VTS_ORDER_TESTS=true`가 추가로 있을 때만 실행됩니다. REAL 관련 플래그가 보이면 테스트를 ABORT 합니다. VTS 장부는 `data/vts-test/<testRunId>/`에만 쌓이며 운영 `paper-account.json`과 섞이지 않습니다.

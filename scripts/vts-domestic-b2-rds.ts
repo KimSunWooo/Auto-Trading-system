@@ -212,8 +212,11 @@ async function main() {
   if (PAPER_TEST_POLICY.maxQtyPerOrder !== 1) {
     throw new Error("PAPER_TEST_POLICY maxQtyPerOrder is not 1");
   }
-  if (PAPER_ORDER_POLICY.maxQtyPerOrder < 11) {
-    throw new Error("PAPER operational maxQtyPerOrder must be at least 11");
+  if (PAPER_ORDER_POLICY.maxQtyPerOrder < 5) {
+    throw new Error("PAPER operational maxQtyPerOrder must be at least 5");
+  }
+  if (PAPER_ORDER_POLICY.maxBrokerSubmitsPerDay != null) {
+    throw new Error("PAPER operational daily submit cap must be null (unlimited count)");
   }
   if (typeof checkHardLimits !== "function") {
     throw new Error("checkHardLimits missing");

@@ -55,7 +55,7 @@ export function checkHardLimits(
       if (!paper.ok) return paper.blocked;
     }
     const dailyCap = paperMaxBrokerSubmitsPerDay(env);
-    if (dailyBrokerSubmitCount(state) >= dailyCap) {
+    if (dailyCap != null && dailyBrokerSubmitCount(state) >= dailyCap) {
       return `ORDER TEST BLOCKED: PAPER daily order cap ${dailyCap}`;
     }
     return null;

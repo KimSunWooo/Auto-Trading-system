@@ -15,16 +15,20 @@ export const PAPER_TEST_POLICY = {
   enforceAmountCaps: false,
 } as const;
 
-/** Operational PAPER defaults. Overridable via env. Never shared with REAL. */
+/**
+ * Operational PAPER defaults (LIVE_TEST + KIS paper/demo).
+ * Daily broker-submit count has no cap — long soak must not stop on order COUNT.
+ * maxBrokerSubmitsPerDay is null (not 0 / Infinity).
+ */
 export const PAPER_OPERATION_DEFAULTS = {
   id: "PAPER_OPERATION_POLICY" as const,
-  maxQtyPerOrder: 11,
-  maxBrokerSubmitsPerDay: 20,
+  maxQtyPerOrder: 5,
+  maxBrokerSubmitsPerDay: null as null,
   maxPositionQtyPerSymbol: 50,
   maxSameIntentSubmit: 1,
   maxSameSymbolOpenBuy: 1,
-  enforceAmountCaps: false,
-} as const;
+  enforceAmountCaps: false as const,
+};
 
 /** REAL: keep amount + count + exposure. Never relaxed by PAPER policy. */
 export const REAL_ORDER_POLICY = {
@@ -35,7 +39,8 @@ export const REAL_ORDER_POLICY = {
 export type PaperOperationPolicy = {
   id: typeof PAPER_OPERATION_DEFAULTS.id;
   maxQtyPerOrder: number;
-  maxBrokerSubmitsPerDay: number;
+  /** null = no operational daily broker-submit count cap */
+  maxBrokerSubmitsPerDay: number | null;
   maxPositionQtyPerSymbol: number;
   maxSameIntentSubmit: number;
   maxSameSymbolOpenBuy: number;
@@ -56,8 +61,8 @@ export const PAPER_ORDER_POLICY = {
   enforceAmountCaps: false as const,
   /** @deprecated operational PAPER no longer uses testRun buy caps */
   maxNewBuyPerTestRun: Number.POSITIVE_INFINITY,
-  /** @deprecated use maxBrokerSubmitsPerDay */
-  maxPaperTestOrdersPerDay: PAPER_OPERATION_DEFAULTS.maxBrokerSubmitsPerDay,
+  /** @deprecated operational PAPER has no daily count cap */
+  maxPaperTestOrdersPerDay: null as null,
 };
 
 export type OrderPolicy = PaperOperationPolicy | typeof REAL_ORDER_POLICY | typeof PAPER_TEST_POLICY;
@@ -82,6 +87,7 @@ function realPolicyFlags(env: EnvMap): string[] {
 
 /**
  * Positive integer env. Empty → fallback. 0 / negative / NaN / Infinity → rejected (fallback).
+ * Never use 0 to mean "unlimited".
  */
 export function parsePositiveIntEnv(
   raw: string | undefined | null,
@@ -106,18 +112,16 @@ export function isPaperTestHarness(env: EnvMap = process.env): boolean {
 
 export function paperOperationPolicy(env: EnvMap = process.env): PaperOperationPolicy {
   const qty = parsePositiveIntEnv(env.PAPER_MAX_QTY_PER_ORDER, PAPER_OPERATION_DEFAULTS.maxQtyPerOrder);
-  const daily = parsePositiveIntEnv(
-    env.PAPER_MAX_BROKER_SUBMITS_PER_DAY,
-    PAPER_OPERATION_DEFAULTS.maxBrokerSubmitsPerDay,
-  );
   const pos = parsePositiveIntEnv(
     env.PAPER_MAX_POSITION_QTY_PER_SYMBOL,
     PAPER_OPERATION_DEFAULTS.maxPositionQtyPerSymbol,
   );
+  // Operational PAPER: daily submit count is not capped.
+  // PAPER_MAX_BROKER_SUBMITS_PER_DAY is ignored (deprecated) so 0 cannot mean unlimited.
   return {
     id: PAPER_OPERATION_DEFAULTS.id,
     maxQtyPerOrder: qty.value,
-    maxBrokerSubmitsPerDay: daily.value,
+    maxBrokerSubmitsPerDay: null,
     maxPositionQtyPerSymbol: pos.value,
     maxSameIntentSubmit: PAPER_OPERATION_DEFAULTS.maxSameIntentSubmit,
     maxSameSymbolOpenBuy: PAPER_OPERATION_DEFAULTS.maxSameSymbolOpenBuy,
@@ -151,10 +155,14 @@ export function activeOrderPolicy(env: EnvMap = process.env): OrderPolicy {
   return paperOperationPolicy(env);
 }
 
-/** Operational daily broker-submit cap (Seoul day). Test harness uses PAPER_TEST_POLICY. */
-export function paperMaxBrokerSubmitsPerDay(env: EnvMap = process.env): number {
+/**
+ * Daily broker-submit cap for Seoul calendar day.
+ * null = no count cap (operational PAPER / REAL amount path).
+ * Test harness keeps 5.
+ */
+export function paperMaxBrokerSubmitsPerDay(env: EnvMap = process.env): number | null {
   const policy = activeOrderPolicy(env);
-  if (policy.id === "REAL_ORDER_POLICY") return Number.POSITIVE_INFINITY;
+  if (policy.id === "REAL_ORDER_POLICY") return null;
   if (policy.id === "PAPER_TEST_POLICY") return PAPER_TEST_POLICY.maxBrokerSubmitsPerDay;
   return (policy as PaperOperationPolicy).maxBrokerSubmitsPerDay;
 }
@@ -173,18 +181,24 @@ export function paperMaxPositionQtyPerSymbol(env: EnvMap = process.env): number 
   return (policy as PaperOperationPolicy).maxPositionQtyPerSymbol;
 }
 
-/** @deprecated Prefer paperMaxBrokerSubmitsPerDay(env). Kept for soak report imports. */
-export const CONTROLLED_RUN_MAX_BROKER_SUBMITS = PAPER_OPERATION_DEFAULTS.maxBrokerSubmitsPerDay;
+/** @deprecated Operational PAPER has no daily count cap. Prefer paperMaxBrokerSubmitsPerDay(env). */
+export const CONTROLLED_RUN_MAX_BROKER_SUBMITS: number | null =
+  PAPER_OPERATION_DEFAULTS.maxBrokerSubmitsPerDay;
 
 function countsTowardPaperDay(order: Order): boolean {
   if (order.parentOrderId) return false;
   return order.status === "filled" || order.status === "pending" || order.status === "unknown";
 }
 
+function isHistoricalOrOrphaned(order: Order): boolean {
+  return order.activeClass === "ORPHANED_LOCAL" || order.activeClass === "HISTORICAL_MATCHED";
+}
+
 export function existingOpenBuy(state: AppState, ticker: string): Order | undefined {
   return state.orders.find(
     (order) =>
       !order.parentOrderId &&
+      !isHistoricalOrOrphaned(order) &&
       order.side === "buy" &&
       order.code === ticker &&
       (order.status === "pending" || order.status === "unknown"),
@@ -195,6 +209,7 @@ export function testRunBuyCount(state: AppState, sinceIso?: string): number {
   const startMs = sinceIso ? Date.parse(sinceIso) : NaN;
   return state.orders.filter((order) => {
     if (order.parentOrderId || order.side !== "buy" || !countsTowardPaperDay(order)) return false;
+    if (isHistoricalOrOrphaned(order)) return false;
     if (Number.isFinite(startMs) && Date.parse(order.createdAt) < startMs) return false;
     return true;
   }).length;
@@ -223,9 +238,7 @@ export function dailyBrokerSubmitCount(state: AppState, day = seoulDay()): numbe
 export function hasUnknownOrder(state: AppState): boolean {
   return state.orders.some((order) => {
     if (order.parentOrderId) return false;
-    if (order.activeClass === "ORPHANED_LOCAL" || order.activeClass === "HISTORICAL_MATCHED") {
-      return false;
-    }
+    if (isHistoricalOrOrphaned(order)) return false;
     if (order.activeClass === "UNKNOWN_ACTIVE") return true;
     return order.status === "unknown";
   });
@@ -244,8 +257,8 @@ export function heldQtyForSymbol(state: AppState, ticker: string): number {
 }
 
 /**
- * Operational PAPER constraints (qty ≤ max, daily submit, position qty).
- * Test harness additionally enforces maxNewBuyPerTestRun and exact 1-share history.
+ * Operational PAPER constraints (qty ≤ max, position qty). No daily COUNT cap.
+ * Test harness additionally enforces maxNewBuyPerTestRun and daily submit 5.
  */
 export function checkPaperOrderConstraints(
   input: {
@@ -320,12 +333,14 @@ export function checkPaperOrderConstraints(
   }
 
   const dailyCap = paperMaxBrokerSubmitsPerDay(env);
-  const todays = dailyBrokerSubmitCount(state);
-  if (todays >= dailyCap) {
-    return {
-      ok: false,
-      blocked: `ORDER TEST BLOCKED: PAPER daily order cap ${dailyCap}`,
-    };
+  if (dailyCap != null) {
+    const todays = dailyBrokerSubmitCount(state);
+    if (todays >= dailyCap) {
+      return {
+        ok: false,
+        blocked: `ORDER TEST BLOCKED: PAPER daily order cap ${dailyCap}`,
+      };
+    }
   }
   return { ok: true, blocked: null };
 }
