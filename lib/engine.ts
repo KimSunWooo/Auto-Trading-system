@@ -25,6 +25,7 @@ import { isLiveLike } from "@/src/runtime/trading-mode";
 import { recoverExternalOrders, markInquiryFailure, resetRecoverableHalt } from "@/src/runtime/recovery";
 import { makeSignalId } from "@/src/runtime/intents";
 import { nowMs } from "@/src/clock";
+import { engineReconciliationFlag } from "@/src/risk/kis-balance-semantics";
 
 const HISTORY_LEN = 40;
 
@@ -380,7 +381,7 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
       box.current = clearSafetyBlock(resetRecoverableHalt(box.current), {
         quoteOk: true,
         brokerConnected: true,
-        reconciliation: box.current.kisBalance?.matched === false ? "mismatch" : "synced",
+        reconciliation: engineReconciliationFlag(box.current),
         workerHealthy: true,
       });
     }

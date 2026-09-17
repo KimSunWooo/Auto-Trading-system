@@ -30,6 +30,8 @@ export const KIS_TR = {
   openOrders: { paper: "VTTC0081R", real: "TTTC0081R" },
   cancel: { paper: "VTTC0013U", real: "TTTC0013U" },
   balance: { paper: "VTTC8434R", real: "TTTC8434R" },
+  /** 매수가능조회. Read-only. Does not place an order. */
+  psblOrder: { paper: "VTTC8908R", real: "TTTC8908R" },
 } as const;
 
 /** Official EXCG_ID_DVSN_CD values. Default KRX; NXT/SOR remain valid later. */

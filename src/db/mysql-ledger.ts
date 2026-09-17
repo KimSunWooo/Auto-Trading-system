@@ -34,6 +34,7 @@ import type {
 import { moneyNumber } from "@/src/db/money";
 import { newId } from "@/src/db/ids";
 import type { EnvMap } from "@/src/runtime/trading-mode";
+import { sameOdno } from "@/src/brokers/kis-client";
 
 type Tx = AppDb;
 
@@ -364,6 +365,14 @@ export class MysqlSession implements LedgerSession {
       .where(and(eq(schema.executions.brokerAccountId, accountId), eq(schema.executions.executionKey, executionKey)))
       .limit(1);
     return rows[0] ? mapExecution(rows[0]) : undefined;
+  }
+
+  async findExecutionByBrokerOrderNo(accountId: string, brokerOrderNo: string): Promise<ExecutionRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(schema.executions)
+      .where(eq(schema.executions.brokerAccountId, accountId));
+    return rows.map(mapExecution).find((row) => sameOdno(row.brokerOrderNo, brokerOrderNo));
   }
 
   async listUnlinkedExecutions(accountId: string): Promise<ExecutionRow[]> {

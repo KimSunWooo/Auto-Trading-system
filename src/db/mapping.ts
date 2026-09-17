@@ -1,4 +1,5 @@
 import type { AppState, Order, OrderIntent, OrderStatus, Side } from "@/lib/types";
+import { intentStatusFromOrder } from "@/src/risk/kis-balance-semantics";
 import { brokerDriver, loadKisConfig, maskAccountNo, parseAccountNo, resolveKisEnvironment } from "@/src/brokers/kis-config";
 import { tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { UNIVERSE } from "@/lib/universe";
@@ -88,14 +89,9 @@ export function mapOrderStatus(order: Order): string {
   return "PENDING";
 }
 
-export function mapIntentStatus(intent: OrderIntent): string {
-  const status = intent.status.toUpperCase();
-  if (status === "SUBMITTED") return "SUBMITTED";
-  if (status === "FILLED") return "FILLED";
-  if (status === "REJECTED") return "REJECTED";
-  if (status === "UNKNOWN") return "UNKNOWN";
-  if (status === "CANCELLED") return "CANCELLED";
-  return "PENDING";
+/** DB intent status follows linked order lifecycle when an order exists. */
+export function mapIntentStatus(intent: OrderIntent, order?: Order): string {
+  return intentStatusFromOrder(order, intent.status);
 }
 
 export function mapSide(side: Side): "BUY" | "SELL" {

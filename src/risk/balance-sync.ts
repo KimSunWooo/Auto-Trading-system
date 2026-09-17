@@ -1,10 +1,17 @@
 import type { StateBox } from "@/src/accounts/StateBox";
-import type { KisAccountBalance, KisApi } from "@/src/brokers/kis-client";
+import type { KisAccountBalance, KisApi, KisPsblOrder } from "@/src/brokers/kis-client";
 import { openCircuit } from "@/src/risk/circuit";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { cashFromAllocations } from "@/src/accounts/defaults";
 import type { AppState, KisBalanceSnapshot, Position } from "@/lib/types";
 import { CASH_RULE_ID } from "@/src/rules/params";
+import { markInquiryFailure } from "@/src/runtime/recovery";
+import type { EnvMap } from "@/src/runtime/trading-mode";
+import {
+  isBrokerSnapshotStale,
+  snapshotFromBrokerBalance,
+  usesPaperBrokerBalanceSemantics,
+} from "@/src/risk/kis-balance-semantics";
 
 function padTicker(code: string): string {
   return code.replace(/\D/g, "").slice(-6).padStart(6, "0");
@@ -26,19 +33,31 @@ export function localHoldingsByTicker(
   return map;
 }
 
+export type BalanceDiff = {
+  matched: boolean;
+  cashDelta: number;
+  reasons: string[];
+  positionMatched: boolean;
+  cashCompared: boolean;
+};
+
 export function diffLocalVsKis(
   state: AppState,
   remote: KisAccountBalance,
   cashToleranceKrw = HARD_LIMITS.balanceCashToleranceKrw,
-): { matched: boolean; cashDelta: number; reasons: string[] } {
+  env: EnvMap = process.env,
+): BalanceDiff {
   const reasons: string[] = [];
   const cashDelta = state.cash - remote.cash;
-  if (Math.abs(cashDelta) > cashToleranceKrw) {
+  const paper = usesPaperBrokerBalanceSemantics(env);
+  const cashCompared = !paper;
+  if (cashCompared && Math.abs(cashDelta) > cashToleranceKrw) {
     reasons.push(
       `예수금 로컬 ${state.cash.toLocaleString("ko-KR")}원 / KIS ${remote.cash.toLocaleString("ko-KR")}원 (Δ${cashDelta.toLocaleString("ko-KR")}원)`,
     );
   }
 
+  const positionReasons: string[] = [];
   const local = localHoldingsByTicker(state);
   const remoteMap = new Map(
     remote.holdings.filter((row) => row.qty > 0).map((row) => [padTicker(row.ticker), row]),
@@ -49,10 +68,17 @@ export function diffLocalVsKis(
     const remoteQty = remoteMap.get(ticker)?.qty ?? 0;
     if (localQty === remoteQty) continue;
     const name = local.get(ticker)?.name || remoteMap.get(ticker)?.name || ticker;
-    reasons.push(`${name}(${ticker}) 수량 로컬 ${localQty}주 / KIS ${remoteQty}주`);
+    positionReasons.push(`${name}(${ticker}) 수량 로컬 ${localQty}주 / KIS ${remoteQty}주`);
   }
 
-  return { matched: reasons.length === 0, cashDelta, reasons };
+  reasons.push(...positionReasons);
+  return {
+    matched: reasons.length === 0,
+    cashDelta,
+    reasons,
+    positionMatched: positionReasons.length === 0,
+    cashCompared,
+  };
 }
 
 /** Replace local buckets/positions with KIS inquire-balance. Does not invent fills. */
@@ -95,13 +121,19 @@ export function applyKisSnapshot(
     };
   });
 
+  const iso = new Date(now).toISOString();
   const snapshot: KisBalanceSnapshot = {
-    syncedAt: new Date(now).toISOString(),
+    syncedAt: iso,
+    fetchedAt: iso,
     cash: remote.cash,
     d2Cash: remote.d2Cash,
+    thdtBuyAmt: remote.thdtBuyAmt,
+    thdtTlexAmt: remote.thdtTlexAmt,
+    nxdyExccAmt: remote.nxdyExccAmt,
     holdings: remote.holdings,
     cashDelta: 0,
     matched: true,
+    freshness: "fresh",
     message: "긴급 정지로 KIS 실잔고를 로컬 장부에 덮어썼습니다.",
   };
 
@@ -124,50 +156,112 @@ function hasOpenBrokerTicket(state: AppState): boolean {
   );
 }
 
+async function readPsblOrder(client: KisApi, state: AppState): Promise<KisPsblOrder | undefined> {
+  if (!client.inquirePsblOrder) return undefined;
+  const filled = [...state.orders]
+    .filter((row) => !row.parentOrderId && row.side === "buy")
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))[0];
+  const ticker = filled?.code ?? Object.keys(state.quotes)[0] ?? "005930";
+  const price = filled?.price || state.quotes[ticker]?.price || 0;
+  if (!(price > 0)) return undefined;
+  return client.inquirePsblOrder({ ticker, price });
+}
+
+function staleUnknownSnapshot(state: AppState, reason: string): KisBalanceSnapshot {
+  const prev = state.kisBalance;
+  return {
+    syncedAt: prev?.syncedAt ?? new Date(0).toISOString(),
+    fetchedAt: prev?.fetchedAt ?? prev?.syncedAt,
+    cash: prev?.cash ?? 0,
+    d2Cash: prev?.d2Cash ?? 0,
+    orderableCash: prev?.orderableCash,
+    nrcvbBuyAmt: prev?.nrcvbBuyAmt,
+    thdtBuyAmt: prev?.thdtBuyAmt,
+    thdtTlexAmt: prev?.thdtTlexAmt,
+    nxdyExccAmt: prev?.nxdyExccAmt,
+    holdings: prev?.holdings ?? [],
+    cashDelta: prev?.cashDelta ?? 0,
+    matched: false,
+    freshness: "unknown",
+    message: reason,
+  };
+}
+
 /**
- * Pull inquire-balance and halt if local buckets/positions disagree with KIS.
- * Local 0.015% fee estimates are not used as an allowed drift.
+ * Read-only broker refresh. Never submits BUY/SELL/CANCEL.
+ * Failure clears matched=true and marks the snapshot unknown.
  */
-export async function syncKisBalance(
+export async function refreshBrokerBalanceSnapshot(
   box: StateBox,
   client: KisApi,
   now = Date.now(),
-  opts: { force?: boolean } = {},
+  env: EnvMap = process.env,
 ): Promise<{ ok: boolean; error?: string }> {
   if (!client.configured) return { ok: true };
-  const last = box.current.lastBalanceSyncAt ?? 0;
-  if (!opts.force && now - last < HARD_LIMITS.balanceSyncMs) return { ok: true };
-
   let remote: KisAccountBalance;
   try {
     remote = await client.inquireBalance();
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : "잔고 조회에 실패했습니다.",
+    const error = err instanceof Error ? err.message : "잔고 조회에 실패했습니다.";
+    box.current = {
+      ...markInquiryFailure(box.current, "broker", error),
+      kisBalance: staleUnknownSnapshot(box.current, error),
+      lastBalanceSyncAt: now,
     };
+    return { ok: false, error };
   }
 
-  const diff = diffLocalVsKis(box.current, remote);
-  const snapshot: KisBalanceSnapshot = {
-    syncedAt: new Date(now).toISOString(),
-    cash: remote.cash,
-    d2Cash: remote.d2Cash,
-    holdings: remote.holdings,
-    cashDelta: diff.cashDelta,
-    matched: diff.matched,
-    message: diff.matched
-      ? "KIS 잔고와 로컬 버킷이 일치합니다."
-      : diff.reasons.join(" · "),
-  };
+  let psbl: KisPsblOrder | undefined;
+  try {
+    psbl = await readPsblOrder(client, box.current);
+  } catch {
+    psbl = undefined;
+  }
+
+  const diff = diffLocalVsKis(box.current, remote, HARD_LIMITS.balanceCashToleranceKrw, env);
+  const snapshot = snapshotFromBrokerBalance(
+    remote,
+    {
+      cashDelta: diff.cashDelta,
+      matched: diff.matched,
+      message: diff.matched
+        ? "KIS 잔고와 로컬 포지션이 일치합니다."
+        : diff.reasons.join(" · "),
+    },
+    now,
+    psbl,
+  );
 
   box.current = {
     ...box.current,
     lastBalanceSyncAt: now,
     kisBalance: snapshot,
   };
+  return { ok: true };
+}
 
-  if (diff.matched || hasOpenBrokerTicket(box.current) || box.current.circuit.halted) {
+/**
+ * Pull inquire-balance and halt if local buckets/positions disagree with KIS.
+ * PAPER does not treat localLedgerCash vs dnca_tot_amt as a mismatch.
+ */
+export async function syncKisBalance(
+  box: StateBox,
+  client: KisApi,
+  now = Date.now(),
+  opts: { force?: boolean } = {},
+  env: EnvMap = process.env,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!client.configured) return { ok: true };
+  const last = box.current.lastBalanceSyncAt ?? 0;
+  const stale = isBrokerSnapshotStale(box.current, box.current.kisBalance);
+  if (!opts.force && !stale && now - last < HARD_LIMITS.balanceSyncMs) return { ok: true };
+
+  const refreshed = await refreshBrokerBalanceSnapshot(box, client, now, env);
+  if (!refreshed.ok) return refreshed;
+
+  const snapshot = box.current.kisBalance;
+  if (!snapshot) return { ok: true };
+  if (snapshot.matched || hasOpenBrokerTicket(box.current) || box.current.circuit.halted) {
     return { ok: true };
   }
 

@@ -97,9 +97,30 @@ export type KisHolding = {
 };
 
 export type KisAccountBalance = {
+  /** 예수금총금액 `dnca_tot_amt`. Broker deposit cash, not local ledger cash. */
   cash: number;
+  /** 가수도정산금액 `prvs_rcdl_excc_amt`. Not orderable cash. */
   d2Cash: number;
   holdings: KisHolding[];
+  nxdyExccAmt?: number;
+  bfdyBuyAmt?: number;
+  thdtBuyAmt?: number;
+  bfdySllAmt?: number;
+  thdtSllAmt?: number;
+  bfdyTlexAmt?: number;
+  thdtTlexAmt?: number;
+};
+
+/** Read-only 매수가능조회 (`inquire-psbl-order`). */
+export type KisPsblOrder = {
+  ticker: string;
+  /** 주문가능현금 `ord_psbl_cash`. */
+  orderableCash: number;
+  /** 미수없는매수금액 `nrcvb_buy_amt`. */
+  nrcvbBuyAmt: number;
+  nrcvbBuyQty: number;
+  maxBuyAmt: number;
+  maxBuyQty: number;
 };
 
 export type KisOverseasOrder = {
@@ -141,6 +162,7 @@ export interface KisApi {
   inquireDailyCcld(): Promise<KisDayOrder[]>;
   inquireOpenOrders(): Promise<KisDayOrder[]>;
   inquireBalance(): Promise<KisAccountBalance>;
+  inquirePsblOrder?(input: { ticker: string; price: number }): Promise<KisPsblOrder>;
   orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }>;
   cancelOrder(order: KisCancelOrder): Promise<void>;
 }
@@ -469,6 +491,13 @@ export class KisClient implements KisApi {
     const holdings = new Map<string, KisHolding>();
     let cash = 0;
     let d2Cash = 0;
+    let nxdyExccAmt = 0;
+    let bfdyBuyAmt = 0;
+    let thdtBuyAmt = 0;
+    let bfdySllAmt = 0;
+    let thdtSllAmt = 0;
+    let bfdyTlexAmt = 0;
+    let thdtTlexAmt = 0;
     let fk = "";
     let nk = "";
 
@@ -513,13 +542,63 @@ export class KisClient implements KisApi {
       if (summary) {
         cash = asNumber(summary.dnca_tot_amt);
         d2Cash = asNumber(summary.prvs_rcdl_excc_amt);
+        nxdyExccAmt = asNumber(summary.nxdy_excc_amt);
+        bfdyBuyAmt = asNumber(summary.bfdy_buy_amt);
+        thdtBuyAmt = asNumber(summary.thdt_buy_amt);
+        bfdySllAmt = asNumber(summary.bfdy_sll_amt);
+        thdtSllAmt = asNumber(summary.thdt_sll_amt);
+        bfdyTlexAmt = asNumber(summary.bfdy_tlex_amt);
+        thdtTlexAmt = asNumber(summary.thdt_tlex_amt);
       }
       nk = String(json.ctx_area_nk100 ?? json.CTX_AREA_NK100 ?? "").trim();
       fk = String(json.ctx_area_fk100 ?? json.CTX_AREA_FK100 ?? "").trim();
       if (!nk) break;
     }
 
-    return { cash, d2Cash, holdings: [...holdings.values()] };
+    return {
+      cash,
+      d2Cash,
+      holdings: [...holdings.values()],
+      nxdyExccAmt,
+      bfdyBuyAmt,
+      thdtBuyAmt,
+      bfdySllAmt,
+      thdtSllAmt,
+      bfdyTlexAmt,
+      thdtTlexAmt,
+    };
+  }
+
+  /** Read-only 매수가능조회. Never places an order. */
+  async inquirePsblOrder(input: { ticker: string; price: number }): Promise<KisPsblOrder> {
+    this.assertConfigured();
+    const ticker = String(input.ticker ?? "").replace(/\D/g, "").slice(-6).padStart(6, "0");
+    const json = await this.uapi("GET", "/uapi/domestic-stock/v1/trading/inquire-psbl-order", {
+      trId: KIS_TR.psblOrder[this.config.mode],
+      timeoutMs: HARD_LIMITS.quoteTimeoutMs,
+      query: {
+        CANO: this.config.cano,
+        ACNT_PRDT_CD: this.config.productCode,
+        PDNO: ticker,
+        ORD_UNPR: String(Math.max(0, Math.round(input.price))),
+        ORD_DVSN: "01",
+        CMA_EVLU_AMT_ICLD_YN: "N",
+        OVRS_ICLD_YN: "N",
+      },
+    });
+    const out = (json.output ?? json.output1 ?? json.output2 ?? {}) as Record<string, unknown>;
+    const row = (Array.isArray(out) ? out[0] : out) as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error("매수가능조회 응답이 비어 있습니다.");
+    }
+    return {
+      ticker,
+      orderableCash: asNumber(row.ord_psbl_cash),
+      nrcvbBuyAmt: asNumber(row.nrcvb_buy_amt),
+      nrcvbBuyQty: asNumber(row.nrcvb_buy_qty),
+      maxBuyAmt: asNumber(row.max_buy_amt),
+      maxBuyQty: asNumber(row.max_buy_qty),
+    };
   }
 
   async inquireOverseasPrice(instrument: OverseasInstrument): Promise<OverseasQuote> {

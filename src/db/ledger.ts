@@ -1,5 +1,6 @@
 import { newId } from "@/src/db/ids";
 import { moneyNumber } from "@/src/db/money";
+import { sameOdno } from "@/src/brokers/kis-client";
 import type {
   AccountSnapshotRow,
   AuditLogRow,
@@ -44,6 +45,7 @@ export type LedgerSession = {
   appendOrderEvent(row: OrderEventRow): Promise<void>;
   insertExecution(row: ExecutionRow): Promise<{ row: ExecutionRow; inserted: boolean }>;
   getExecutionByKey(accountId: string, executionKey: string): Promise<ExecutionRow | undefined>;
+  findExecutionByBrokerOrderNo(accountId: string, brokerOrderNo: string): Promise<ExecutionRow | undefined>;
   listUnlinkedExecutions(accountId: string): Promise<ExecutionRow[]>;
   linkExecutionTrade(executionId: string, tradeId: string): Promise<void>;
   upsertPosition(row: PositionRow): Promise<PositionRow>;
@@ -334,6 +336,12 @@ export class MemorySession implements LedgerSession {
   async getExecutionByKey(accountId: string, executionKey: string): Promise<ExecutionRow | undefined> {
     return [...this.state.executions.values()].find(
       (item) => item.brokerAccountId === accountId && item.executionKey === executionKey,
+    );
+  }
+
+  async findExecutionByBrokerOrderNo(accountId: string, brokerOrderNo: string): Promise<ExecutionRow | undefined> {
+    return [...this.state.executions.values()].find(
+      (item) => item.brokerAccountId === accountId && sameOdno(item.brokerOrderNo, brokerOrderNo),
     );
   }
 

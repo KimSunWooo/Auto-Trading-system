@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyKisSnapshot, diffLocalVsKis, syncKisBalance } from "./balance-sync";
+import { applyKisSnapshot, diffLocalVsKis, refreshBrokerBalanceSnapshot, syncKisBalance } from "./balance-sync";
 import type { KisAccountBalance, KisApi, KisCashOrder, KisDayOrder, KisPrice } from "@/src/brokers/kis-client";
 import { createPaperState } from "@/lib/engine";
+import { tradingBlocked } from "@/src/risk/circuit";
 import { HARD_LIMITS } from "@/src/risk/limits";
 
 class FakeBalanceClient implements KisApi {
@@ -41,10 +42,13 @@ class FakeBalanceClient implements KisApi {
     return {
       cash: this.balance.cash,
       d2Cash: this.balance.d2Cash,
+      thdtBuyAmt: this.balance.thdtBuyAmt,
       holdings: this.balance.holdings.map((row) => ({ ...row })),
     };
   }
+  orderCashCalls = 0;
   async orderCash(_order: KisCashOrder) {
+    this.orderCashCalls += 1;
     return { orderNo: "1", krxOrgNo: "1" };
   }
   async cancelOrder() {}
@@ -174,4 +178,44 @@ test("syncKisBalance halts on holding qty mismatch", async () => {
   await syncKisBalance(box, client, Date.now(), { force: true });
   assert.equal(box.current.circuit.halted, true);
   assert.match(box.current.kisBalance?.message ?? "", /005930/);
+});
+
+test("PAPER cash inequality with matching position does not halt", async () => {
+  const box = { current: createPaperState() };
+  box.current.cash = 9_746_462;
+  box.current.positions = [{ code: "005930", name: "삼성전자", qty: 1, avgPrice: 253_500, ruleId: "cash" }];
+  const client = new FakeBalanceClient();
+  client.balance = {
+    cash: 10_000_000,
+    d2Cash: 10_000_000,
+    thdtBuyAmt: 253_500,
+    holdings: [{ ticker: "005930", name: "삼성전자", qty: 1, avgPrice: 253_500 }],
+  };
+  await syncKisBalance(box, client, Date.now(), { force: true }, { BROKER: "kis", KIS_MODE: "paper" });
+  assert.equal(box.current.circuit.halted, false);
+  assert.equal(box.current.kisBalance?.matched, true);
+  assert.equal(box.current.kisBalance?.cash, 10_000_000);
+});
+
+test("D. refresh failure marks UNKNOWN, blocks new orders, and does not retry broker orders", async () => {
+  const box = { current: createPaperState() };
+  box.current.kisBalance = {
+    syncedAt: "2026-09-17T03:00:00.000Z",
+    fetchedAt: "2026-09-17T03:00:00.000Z",
+    cash: 10_000_000,
+    d2Cash: 10_000_000,
+    holdings: [],
+    cashDelta: 0,
+    matched: true,
+    freshness: "fresh",
+    message: "pre-order",
+  };
+  const client = new FakeBalanceClient();
+  client.fail = true;
+  const result = await refreshBrokerBalanceSnapshot(box, client);
+  assert.equal(result.ok, false);
+  assert.equal(box.current.kisBalance?.matched, false);
+  assert.equal(box.current.kisBalance?.freshness, "unknown");
+  assert.ok(tradingBlocked(box.current));
+  assert.equal(client.orderCashCalls, 0);
 });

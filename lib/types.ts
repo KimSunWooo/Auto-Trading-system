@@ -198,11 +198,23 @@ export type KisHolding = {
 
 export type KisBalanceSnapshot = {
   syncedAt: string;
+  /** Same instant as `syncedAt`. Broker read time, not a new recon run. */
+  fetchedAt?: string;
+  /** Broker deposit cash (`dnca_tot_amt`). Not local ledger cash. */
   cash: number;
+  /** D+2 settle amount (`prvs_rcdl_excc_amt`). Not orderable cash. */
   d2Cash: number;
+  /** Broker orderable cash (`ord_psbl_cash`) when inquire-psbl-order was read. */
+  orderableCash?: number;
+  /** 미수없는매수금액 `nrcvb_buy_amt`. Diagnostics only. */
+  nrcvbBuyAmt?: number;
+  thdtBuyAmt?: number;
+  thdtTlexAmt?: number;
+  nxdyExccAmt?: number;
   holdings: KisHolding[];
   cashDelta: number;
   matched: boolean;
+  freshness?: "fresh" | "stale" | "unknown";
   message: string;
 };
 

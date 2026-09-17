@@ -45,14 +45,14 @@ Membership/JWT is not built. A deterministic **LOCAL_OWNER** bootstrap user is u
 
 | Table / view | Role |
 | --- | --- |
-| `order_intents` | Runtime intent mirror. UNIQUE `(broker_account_id, intent_key)` **plus** in-memory idempotency. |
+| `order_intents` | Runtime intent mirror. UNIQUE `(broker_account_id, intent_key)` **plus** in-memory idempotency. DB `status` maps linked order lifecycle (`FILLED`/`REJECTED`/…); runtime `PENDING` may remain a reservation. `orders.status` is authoritative for fills. |
 | `orders` | Parent local orders. `local_order_id` and exact KIS `broker_order_no` (ODNO). UNIQUE local + UNIQUE `(account, broker_order_date, broker_order_no)`. |
 | `order_events` | Append-only status trace. Does not drive runtime. |
 | `executions` | **Actual fill ledger**. UNIQUE `(broker_account_id, execution_key)`. Parent stays in `orders`; filled child orders project to executions. |
 | `v_buy_history` | VIEW over `executions WHERE side = 'BUY'`. There is no `buy_history` table. |
 | `positions` | **Current** holdings (`code` + `rule_scope`). Not a historical ledger. Position-only legacy rows use `provenance=LEGACY_STATE` and do not invent fills. |
 | `trades` | One cycle: flat → buys/sells → flat. Weighted average cost, same as runtime `fills.ts`. OPEN / PARTIALLY_CLOSED / CLOSED. |
-| `cash_balance_snapshots` | `cash_balance` and `orderable_amount` are different columns. Overseas PAPER `USD cash=0` / `orderable=100000` is valid. |
+| `cash_balance_snapshots` | `cash_balance` = broker deposit cash (`dnca_tot_amt`). `orderable_amount` = broker orderable cash (`ord_psbl_cash` / overseas `ord_psbl_frcr_amt`). Never D+2. Overseas PAPER `USD cash=0` / `orderable=100000` is valid. |
 | `account_snapshots` | total / cash / stock / PnL when known. Unknown values are omitted, not invented. |
 | `fx_rate_snapshots` | Observed FX from KIS. Not an FX conversion product. |
 | `reconciliation_runs` / `items` | Record current recon result. DB mirror failure is **not** a recon mismatch. Recon mismatch still blocks new orders in Trading Core. |
@@ -133,3 +133,50 @@ Not this stage. Keep JSON authority until:
 3. Recon gate still blocks on KIS mismatch, not on DB errors
 
 Then a later change can introduce `PERSISTENCE_MODE=database` behind tests. Do not delete JSON or enable VTS/REAL orders as part of adoption.
+
+## KIS Balance Semantics
+
+Domestic inquire-balance (`/uapi/domestic-stock/v1/trading/inquire-balance`, PAPER `VTTC8434R` / REAL `TTTC8434R`) `output2`:
+
+| Field | Official meaning | Application name |
+| --- | --- | --- |
+| `dnca_tot_amt` | 예수금총금액 | **broker deposit cash** |
+| `nxdy_excc_amt` | 익일정산금액 | next-day settle amount |
+| `prvs_rcdl_excc_amt` | 가수도정산금액 | D+2 settle amount (`d2Cash`). **Not** orderable cash |
+| `bfdy_buy_amt` / `thdt_buy_amt` | 전일/금일매수금액 | previous / today buy amount |
+| `bfdy_sll_amt` / `thdt_sll_amt` | 전일/금일매도금액 | previous / today sell amount |
+| `bfdy_tlex_amt` / `thdt_tlex_amt` | 전일/금일제비용금액 | previous / today fees |
+
+Domestic 매수가능조회 (`/uapi/domestic-stock/v1/trading/inquire-psbl-order`, PAPER `VTTC8908R` / REAL `TTTC8908R`) is a **GET**. It does not place an order.
+
+| Field | Official meaning | Application name |
+| --- | --- | --- |
+| `ord_psbl_cash` | 주문가능현금 | **broker orderable cash** |
+| `nrcvb_buy_amt` | 미수없는매수금액 | no-receivable buy amount (diagnostics) |
+| `nrcvb_buy_qty` | 미수없는매수수량 | no-receivable buy qty |
+| `max_buy_amt` / `max_buy_qty` | 최대매수금액/수량 | max buy amount / qty |
+
+Three cash concepts are not interchangeable:
+
+```text
+localLedgerCash
+  = AppState.cash after execution + runtime fee policy
+  = account_snapshots.cashValue
+
+brokerDepositCash
+  = inquire-balance dnca_tot_amt
+  = cash_balance_snapshots.cash_balance
+
+brokerOrderableCash
+  = inquire-psbl-order ord_psbl_cash
+  = cash_balance_snapshots.orderable_amount
+```
+
+PAPER/VTS may keep `dnca_tot_amt` unchanged after a fill while `thdt_buy_amt` and position update. That is settlement semantics, not a KIS error, and not a reason to overwrite the local ledger.
+
+Reconciliation:
+
+- **POSITION / ORDER / EXECUTION**: strict identity against broker evidence.
+- **BALANCE (PAPER)**: broker snapshot freshness + orderable cash. Do **not** require `localLedgerCash == dnca_tot_amt`.
+- **BALANCE (REAL)**: keep cash equality of local ledger vs `dnca_tot_amt` (unchanged).
+- Stale `kisBalance.matched=true` must not persist as a new `HEALTHY` run. Failed or post-order unrefreshed broker reads are `UNKNOWN` and block new orders. Broker inquiry failure never retries an order.

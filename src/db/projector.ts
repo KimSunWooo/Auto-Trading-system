@@ -27,6 +27,12 @@ import { money, moneyNumber } from "@/src/db/money";
 import { mysqlDateUtc, toMysqlUtc } from "@/src/db/time";
 import { applyExecutionToTrade, openTrade } from "@/src/db/trade-cycle";
 import type { ExecutionRow, OrderRow, PositionRow, ReconItemRow } from "@/src/db/rows";
+import { findOrderByIntent } from "@/src/runtime/intents";
+import {
+  domesticCashRowsFromState,
+  reconProjectionFromState,
+  shouldSkipReconPersist,
+} from "@/src/risk/kis-balance-semantics";
 
 export type MirrorContext = {
   env?: EnvMap;
@@ -302,9 +308,11 @@ export async function projectAppState(
     for (const intent of state.intents ?? []) {
       if (intent.qty <= 0) continue;
       const instrument = await ensureInstrument(tx, intent.ticker);
+      const linked = findOrderByIntent(state, intent.intentId);
+      const status = mapIntentStatus(intent, linked);
       const completed =
-        intent.status === "filled" || intent.status === "rejected" || intent.status === "cancelled"
-          ? toMysqlUtc(intent.createdAt)
+        status === "FILLED" || status === "REJECTED" || status === "CANCELLED"
+          ? toMysqlUtc(linked?.createdAt ?? intent.createdAt)
           : null;
       const result = await tx.upsertIntent({
         id: stableId("intent", `${brokerAccount.id}:${intent.intentId}`),
@@ -318,7 +326,7 @@ export async function projectAppState(
         referencePrice: money(intent.price),
         orderType: "MARKET",
         tradingMode: environment,
-        status: mapIntentStatus(intent),
+        status,
         reason: intent.reason ?? null,
         createdAt: toMysqlUtc(intent.createdAt),
         updatedAt: now,
@@ -523,6 +531,11 @@ async function insertExecution(
   const key = executionKeyFor(input.order, input.parent, input.cumulativeQty);
   const qty = input.order.qty;
   if (qty <= 0) return false;
+  const odno = input.order.brokerOrderNo ?? input.parent?.brokerOrderNo;
+  if (odno) {
+    const existingOdno = await tx.findExecutionByBrokerOrderNo(input.accountId, odno);
+    if (existingOdno && moneyNumber(existingOdno.quantity) === qty) return false;
+  }
   const price = input.order.price;
   const at = input.executedAt ?? toMysqlUtc(input.order.createdAt);
   const result = await tx.insertExecution({
@@ -579,16 +592,7 @@ async function snapshotCash(
   now: string,
 ) {
   const rows =
-    context.cash && context.cash.length > 0
-      ? context.cash
-      : [
-          {
-            currency: "KRW",
-            cashBalance: state.kisBalance?.cash ?? state.cash,
-            orderableAmount: state.kisBalance?.d2Cash ?? state.cash,
-            source: state.kisBalance ? "KIS_BALANCE" : "LOCAL_STATE",
-          },
-        ];
+    context.cash && context.cash.length > 0 ? context.cash : domesticCashRowsFromState(state);
   for (const row of rows) {
     const last = await tx.lastCashSnapshot(accountId, row.currency);
     if (
@@ -646,33 +650,10 @@ async function snapshotRecon(
   context: MirrorContext,
   now: string,
 ) {
-  const recon = context.recon
-    ? context.recon
-    : state.kisBalance
-      ? {
-          triggerType: "SCHEDULED" as const,
-          status: (state.kisBalance.matched ? "HEALTHY" : "MISMATCH") as "HEALTHY" | "MISMATCH",
-          items: state.kisBalance.matched
-            ? [
-                { itemType: "POSITION", status: "MATCH", message: "POSITION MATCH" },
-                { itemType: "ORDER", status: "MATCH", message: "ORDER MATCH" },
-                { itemType: "EXECUTION", status: "MATCH", message: "EXECUTION MATCH" },
-                { itemType: "BALANCE", status: "MATCH", message: "BALANCE MATCH" },
-              ]
-            : [
-                {
-                  itemType: "POSITION",
-                  status: "MISMATCH",
-                  message: state.kisBalance.message || "POSITION MISMATCH",
-                  localValueJson: { positions: state.positions },
-                  brokerValueJson: { holdings: state.kisBalance.holdings },
-                },
-              ],
-        }
-      : null;
+  const recon = context.recon ? context.recon : reconProjectionFromState(state, context.env);
   if (!recon) return;
   const last = await tx.lastReconRun(accountId);
-  if (last && last.status === recon.status) return;
+  if (shouldSkipReconPersist(last, recon, state.kisBalance?.fetchedAt ?? state.kisBalance?.syncedAt)) return;
   const runId = newId();
   await tx.insertReconRun({
     id: runId,

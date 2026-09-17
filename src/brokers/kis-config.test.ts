@@ -231,6 +231,11 @@ test("balance TR ids are the KIS inquire-balance codes", () => {
   assert.equal(KIS_TR.balance.real, "TTTC8434R");
 });
 
+test("매수가능조회 TR ids are the KIS inquire-psbl-order codes", () => {
+  assert.equal(KIS_TR.psblOrder.paper, "VTTC8908R");
+  assert.equal(KIS_TR.psblOrder.real, "TTTC8908R");
+});
+
 test("overseas TR ids do not overwrite domestic cash order TRs", () => {
   assert.equal(KIS_TR.buy.paper, "VTTC0012U");
   assert.equal(KIS_OVERSEAS_TR.usBuy.paper, "VTTT1002U");

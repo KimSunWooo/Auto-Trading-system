@@ -9,6 +9,7 @@ import type { OrderSource, Quote } from "@/lib/types";
 import { isIndeterminateError, BrokerRejectError } from "@/src/risk/errors";
 import { tradingBlocked } from "@/src/risk/circuit";
 import { settleOpenOrders } from "@/src/risk/reconcile";
+import { refreshBrokerBalanceSnapshot } from "@/src/risk/balance-sync";
 import { CASH_RULE_ID } from "@/src/rules/params";
 import { executionLocked } from "@/src/rules/disclaimer";
 import {
@@ -241,6 +242,7 @@ export class KisBroker implements IBroker {
         );
         await persistNow(this.box.current);
         await settleOpenOrders(this.box, this.client);
+        await refreshBrokerBalanceSnapshot(this.box, this.client);
         await persistNow(this.box.current);
         const latest = this.box.current.orders.find((row) => row.id === pending.id);
         return latest ? orders.toFill(latest) : working;
@@ -306,6 +308,7 @@ export class KisBroker implements IBroker {
         );
         await persistNow(this.box.current);
         await settleOpenOrders(this.box, this.client);
+        await refreshBrokerBalanceSnapshot(this.box, this.client);
         await persistNow(this.box.current);
         const latest = this.box.current.orders.find((row) => row.id === pending.id);
         return latest ? orders.toFill(latest) : working;

@@ -390,3 +390,141 @@ test("history pagination caps limit at 100", async () => {
   assert.equal(small.items.length, 1);
   assert.ok(small.nextCursor);
 });
+
+test("B. KRW orderable_amount maps from ord_psbl_cash not D+2", async () => {
+  const ledger = new MemoryLedger();
+  const state = createPaperState();
+  state.cash = 9_746_462;
+  state.kisBalance = {
+    syncedAt: "2026-09-17T04:00:00.000Z",
+    fetchedAt: "2026-09-17T04:00:00.000Z",
+    cash: 10_000_000,
+    d2Cash: 8_888_888,
+    orderableCash: 9_700_000,
+    nrcvbBuyAmt: 9_690_000,
+    holdings: [{ ticker: "005930", name: "삼성전자", qty: 1, avgPrice: 253500 }],
+    cashDelta: -253_538,
+    matched: true,
+    freshness: "fresh",
+    message: "PAPER deposit cash is not local ledger cash",
+  };
+  await projectAppState(ledger, state, { env: paperEnv() });
+  const snap = await ledger.transaction(async (tx) =>
+    tx.lastCashSnapshot((await tx.listBrokerAccounts())[0]!.id, "KRW"),
+  );
+  assert.equal(moneyNumber(snap!.cashBalance), 10_000_000);
+  assert.equal(moneyNumber(snap!.orderableAmount), 9_700_000);
+  assert.notEqual(moneyNumber(snap!.orderableAmount), 8_888_888);
+  const account = await ledger.transaction(async (tx) =>
+    tx.lastAccountSnapshot((await tx.listBrokerAccounts())[0]!.id),
+  );
+  assert.equal(moneyNumber(account!.cashValue), 9_746_462);
+});
+
+test("C. stale matched=true snapshot does not create a new HEALTHY recon run", async () => {
+  const ledger = new MemoryLedger();
+  const healthy = createPaperState();
+  healthy.kisBalance = {
+    syncedAt: "2026-09-17T03:00:00.000Z",
+    fetchedAt: "2026-09-17T03:00:00.000Z",
+    cash: 10_000_000,
+    d2Cash: 10_000_000,
+    orderableCash: 10_000_000,
+    holdings: [],
+    cashDelta: 0,
+    matched: true,
+    freshness: "fresh",
+    message: "pre-order",
+  };
+  await projectAppState(ledger, healthy, { env: paperEnv() });
+  const first = await ledger.transaction(async (tx) => tx.lastReconRun((await tx.listBrokerAccounts())[0]!.id));
+  assert.equal(first?.status, "HEALTHY");
+
+  const afterFill = createPaperState();
+  afterFill.cash = 9_746_462;
+  afterFill.orders = [
+    filledOrder({
+      id: "post-fill",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 253500,
+      createdAt: "2026-09-17T03:20:00.000Z",
+      brokerOrderNo: "0000022105",
+    }),
+  ];
+  afterFill.kisBalance = { ...healthy.kisBalance! };
+  await projectAppState(ledger, afterFill, { env: paperEnv() });
+  const runs = ledger.snapshot.reconRuns;
+  assert.ok(!runs.some((row) => row.status === "HEALTHY" && row.id !== first?.id));
+  const last = await ledger.transaction(async (tx) => tx.lastReconRun((await tx.listBrokerAccounts())[0]!.id));
+  assert.equal(last?.status, "UNKNOWN");
+});
+
+test("E. FILLED order maps PENDING runtime intent to FILLED in DB", async () => {
+  const ledger = new MemoryLedger();
+  const state = createPaperState();
+  state.intents = [
+    {
+      intentId: "sig:vts:b2",
+      signalId: "sig:vts:b2",
+      ruleId: CASH_RULE_ID,
+      ticker: "005930",
+      side: "buy",
+      qty: 1,
+      price: 253500,
+      createdAt: "2026-09-17T03:13:49.925Z",
+      reason: "order-intent",
+      status: "pending",
+    },
+  ];
+  state.orders = [
+    filledOrder({
+      id: "filled-1",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 253500,
+      intentId: "sig:vts:b2",
+      brokerOrderNo: "0000022105",
+    }),
+  ];
+  await projectAppState(ledger, state, { env: paperEnv() });
+  const intent = [...ledger.snapshot.intents.values()][0];
+  const order = [...ledger.snapshot.orders.values()][0];
+  assert.equal(order?.status, "FILLED");
+  assert.equal(intent?.status, "FILLED");
+});
+
+test("same ODNO fill is not inserted twice with a new execution_key", async () => {
+  const ledger = new MemoryLedger();
+  const first = createPaperState();
+  first.orders = [
+    filledOrder({
+      id: "orig",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 253500,
+      brokerOrderNo: "0000022105",
+    }),
+  ];
+  await projectAppState(ledger, first, { env: paperEnv() });
+  const recovered = createPaperState();
+  recovered.orders = [
+    filledOrder({
+      id: "recovered-parent",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 253500,
+      brokerOrderNo: "0000022105",
+    }),
+  ];
+  await projectAppState(ledger, recovered, { env: paperEnv() });
+  assert.equal(ledger.snapshot.executions.size, 1);
+});

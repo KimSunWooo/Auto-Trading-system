@@ -379,3 +379,73 @@ test("PAPER cancel uses VTTC0013U and the exact original ODNO", async () => {
   assert.equal(realHttp.count, 0);
 });
 
+test("PAPER inquire-balance maps deposit cash and does not treat D+2 as orderable cash", async () => {
+  resetKisTokenCacheForTest();
+  const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("tokenP")) {
+      return jsonResponse({ access_token: "paper-token-value", expires_in: 86_400 });
+    }
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    assert.equal(headers.tr_id, "VTTC8434R");
+    assert.ok(url.includes("/uapi/domestic-stock/v1/trading/inquire-balance"));
+    assert.equal(url.includes("order-cash"), false);
+    return jsonResponse({
+      rt_cd: "0",
+      output1: [{ pdno: "005930", hldg_qty: "1", pchs_avg_pric: "253500", prdt_name: "삼성전자" }],
+      output2: {
+        dnca_tot_amt: "10000000",
+        nxdy_excc_amt: "9746470",
+        prvs_rcdl_excc_amt: "9746470",
+        thdt_buy_amt: "253500",
+        thdt_tlex_amt: "38",
+        bfdy_buy_amt: "0",
+        bfdy_sll_amt: "0",
+        thdt_sll_amt: "0",
+        bfdy_tlex_amt: "0",
+      },
+    });
+  }) as typeof fetch;
+  const balance = await paperClient(fetchImpl).inquireBalance();
+  assert.equal(balance.cash, 10_000_000);
+  assert.equal(balance.d2Cash, 9_746_470);
+  assert.equal(balance.thdtBuyAmt, 253_500);
+  assert.equal(balance.thdtTlexAmt, 38);
+  assert.equal(balance.holdings[0]?.qty, 1);
+});
+
+test("PAPER inquire-psbl-order is GET VTTC8908R and maps ord_psbl_cash", async () => {
+  resetKisTokenCacheForTest();
+  const calls: Array<{ url: string; trId: string; method: string }> = [];
+  const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const method = String(init?.method ?? "GET");
+    if (url.includes("tokenP")) {
+      return jsonResponse({ access_token: "paper-token-value", expires_in: 86_400 });
+    }
+    calls.push({ url, trId: headers.tr_id, method });
+    return jsonResponse({
+      rt_cd: "0",
+      output: {
+        ord_psbl_cash: "9746462",
+        nrcvb_buy_amt: "9740000",
+        nrcvb_buy_qty: "38",
+        max_buy_amt: "9746462",
+        max_buy_qty: "38",
+      },
+    });
+  }) as typeof fetch;
+  const psbl = await paperClient(fetchImpl).inquirePsblOrder({ ticker: "005930", price: 253500 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.method, "GET");
+  assert.equal(calls[0]!.trId, "VTTC8908R");
+  assert.ok(calls[0]!.url.includes("/uapi/domestic-stock/v1/trading/inquire-psbl-order"));
+  assert.equal(calls[0]!.url.includes("order-cash"), false);
+  assert.equal(psbl.orderableCash, 9_746_462);
+  assert.equal(psbl.nrcvbBuyAmt, 9_740_000);
+  assert.equal(psbl.nrcvbBuyQty, 38);
+  assert.equal(psbl.maxBuyAmt, 9_746_462);
+  assert.equal(psbl.maxBuyQty, 38);
+});
+
