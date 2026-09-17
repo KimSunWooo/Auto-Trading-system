@@ -4,19 +4,57 @@ import { createPaperState } from "@/lib/engine";
 import { resetRecoverableHalt } from "@/src/runtime/recovery";
 import { safetyBlocksTrading } from "@/src/runtime/safety";
 import {
+  autoStopReason,
   duplicateExecutionDetected,
   emptyControlledRun,
   formatStartSummary,
   intervalIgnoresPosition,
   isRecoverableInquiryHalt,
+  isTransientInquirySoakStop,
+  noteInquiry,
   padTicker,
   preTradeGate,
+  resumeTransientUnknownStop,
   selectConservativeStrategy,
   sessionBrokerSubmitCount,
 } from "@/src/runtime/controlled-run";
 import { checkPaperOrderConstraints, testRunBuyCount } from "@/src/risk/order-policy";
 import { blankRule } from "@/src/rules/params";
 import { tryAcquireWorkerLock, releaseWorkerLock, resetWorkerLockForTest } from "@/src/runtime/worker-lock";
+import type { AppState } from "@/lib/types";
+
+function healthyPaper(): AppState {
+  const state = createPaperState();
+  state.positions = [{ code: "005930", name: "삼성전자", qty: 1, avgPrice: 253500, ruleId: "cash" }];
+  state.kisBalance = {
+    syncedAt: new Date().toISOString(),
+    fetchedAt: new Date().toISOString(),
+    cash: 10_000_000,
+    d2Cash: 10_000_000,
+    orderableCash: 9_697_737,
+    nrcvbBuyAmt: 9_745_090,
+    holdings: [{ ticker: "005930", name: "삼성전자", qty: 1, avgPrice: 253500 }],
+    cashDelta: -253538,
+    matched: true,
+    freshness: "fresh",
+    message: "KIS 잔고와 로컬 포지션이 일치합니다.",
+  };
+  state.controlledRun = emptyControlledRun({
+    startedAt: "2026-09-17T05:39:53.872Z",
+    strategyName: "none",
+    symbols: ["005930"],
+  });
+  state.controlledRun.lastInquiry = {
+    quoteOk: true,
+    balanceOk: true,
+    orderableOk: true,
+    positionOk: true,
+    openOrdersOk: true,
+    executionOk: true,
+    recon: "HEALTHY",
+  };
+  return state;
+}
 
 test("empty strategy-config selects none without inventing a rule", () => {
   const state = createPaperState();
@@ -104,6 +142,108 @@ test("timeout hard circuit is recoverable when no UNKNOWN order remains", () => 
   assert.equal(isRecoverableInquiryHalt(state), true);
   const reset = resetRecoverableHalt(state);
   assert.equal(reset.circuit.halted, false);
+});
+
+test("single unknown snapshot is NO ORDER, not AUTO STOP", () => {
+  const state = healthyPaper();
+  state.kisBalance = {
+    ...state.kisBalance!,
+    freshness: "unknown",
+    message: "The operation was aborted due to timeout",
+  };
+  assert.equal(autoStopReason(state), null);
+  const gated = noteInquiry(state, {
+    quoteOk: true,
+    balanceOk: false,
+    orderableOk: false,
+    positionOk: false,
+    openOrdersOk: true,
+    executionOk: true,
+    recon: "UNKNOWN",
+  });
+  assert.equal(gated.controlledRun?.consecutiveInquiryFailures, 1);
+  assert.equal(autoStopReason(gated), null);
+});
+
+test("three consecutive inquiry failures AUTO STOP; UNKNOWN order still stops immediately", () => {
+  let state = healthyPaper();
+  for (let i = 0; i < 3; i += 1) {
+    state = noteInquiry(state, {
+      quoteOk: false,
+      balanceOk: true,
+      orderableOk: true,
+      positionOk: true,
+      openOrdersOk: true,
+      executionOk: true,
+      recon: "UNKNOWN",
+    });
+  }
+  assert.equal(state.controlledRun?.consecutiveInquiryFailures, 3);
+  assert.equal(autoStopReason(state), "Quote repeated failure");
+
+  const unknownOrder = healthyPaper();
+  unknownOrder.orders = [
+    {
+      id: "ghost",
+      createdAt: "2026-09-17T05:00:00.000Z",
+      source: "rule",
+      code: "005930",
+      name: "삼성전자",
+      side: "buy",
+      qty: 1,
+      price: 70000,
+      amount: 70000,
+      commission: 0,
+      tax: 0,
+      net: 70000,
+      status: "unknown",
+    },
+  ];
+  assert.equal(autoStopReason(unknownOrder), "UNKNOWN unresolved");
+});
+
+test("transient Reconciliation UNKNOWN soak-stop resumes when HEALTHY", () => {
+  const state = healthyPaper();
+  state.controlledRun = {
+    ...state.controlledRun!,
+    status: "stopped",
+    autoStopReason: "Reconciliation UNKNOWN",
+    stoppedAt: "2026-09-17T05:50:29.601Z",
+  };
+  state.circuit = {
+    halted: true,
+    kind: "soak-stop",
+    reason: "Reconciliation UNKNOWN",
+    unknownCount: 1,
+  };
+  assert.equal(isTransientInquirySoakStop(state), true);
+  assert.equal(isRecoverableInquiryHalt(state), true);
+  const resumed = resumeTransientUnknownStop(state);
+  assert.notEqual(resumed.controlledRun?.status, "stopped");
+  assert.equal(resumed.controlledRun?.autoStopReason, undefined);
+  assert.equal(resumed.circuit.halted, false);
+  assert.equal(resumed.positions[0]?.qty, 1);
+  assert.equal(resumed.positions[0]?.code, "005930");
+  assert.equal(autoStopReason(resumed), null);
+});
+
+test("resume refuses MISMATCH and does not flatten the Samsung position", () => {
+  const state = healthyPaper();
+  state.controlledRun = {
+    ...state.controlledRun!,
+    status: "stopped",
+    autoStopReason: "Reconciliation UNKNOWN",
+  };
+  state.circuit = {
+    halted: true,
+    kind: "soak-stop",
+    reason: "Reconciliation UNKNOWN",
+    unknownCount: 0,
+  };
+  state.kisBalance = { ...state.kisBalance!, matched: false, message: "POSITION MISMATCH" };
+  const same = resumeTransientUnknownStop(state);
+  assert.equal(same.controlledRun?.status, "stopped");
+  assert.equal(same.positions[0]?.qty, 1);
 });
 
 test("kill and soak-stop circuits are not auto-recovered", () => {

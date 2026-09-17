@@ -48,6 +48,18 @@ export function holdsWorkerLock(workerId?: string): boolean {
   return true;
 }
 
+/**
+ * Dashboard / API isolates do not share in-memory `held`.
+ * Treat the lock file heartbeat as the source of truth for "worker healthy".
+ */
+export function workerLockHealthy(opts: { filePath?: string; ttlMs?: number } = {}): boolean {
+  if (holdsWorkerLock()) return true;
+  const filePath = opts.filePath ?? defaultLockPath();
+  const current = existsSync(filePath) ? readLock(filePath) : null;
+  if (!current) return false;
+  return !stale(current, opts.ttlMs ?? DEFAULT_TTL_MS, nowMs());
+}
+
 function processAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {

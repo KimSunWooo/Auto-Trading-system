@@ -33,6 +33,7 @@ import {
   noteInquiry,
   noteQuoteResult,
   reconStatusOf,
+  resumeTransientUnknownStop,
   syncHttpAudit,
 } from "@/src/runtime/controlled-run";
 
@@ -416,6 +417,7 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
         workerHealthy: true,
       });
     }
+    box.current = resumeTransientUnknownStop(box.current);
     const stop = box.current.controlledRun ? autoStopReason(box.current) : null;
     if (stop) {
       box.current = applyAutoStop(box.current, stop);

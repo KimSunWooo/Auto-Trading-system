@@ -9,6 +9,7 @@ import {
   heartbeatWorkerLock,
   releaseWorkerLock,
   holdsWorkerLock,
+  workerLockHealthy,
 } from "./worker-lock";
 
 afterEach(() => resetWorkerLockForTest());
@@ -20,6 +21,21 @@ test("second worker cannot steal a live lock", () => {
   resetWorkerLockForTest();
   assert.equal(tryAcquireWorkerLock("two", { filePath, ttlMs: 60_000 }), false);
   assert.equal(holdsWorkerLock("two"), false);
+});
+
+test("workerLockHealthy follows lock-file heartbeat without in-memory held", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "wl-"));
+  const filePath = path.join(dir, "trading-worker.lock");
+  assert.equal(tryAcquireWorkerLock("one", { filePath, ttlMs: 60_000 }), true);
+  resetWorkerLockForTest();
+  assert.equal(holdsWorkerLock("one"), false);
+  assert.equal(workerLockHealthy({ filePath, ttlMs: 60_000 }), true);
+  await writeFile(
+    filePath,
+    JSON.stringify({ workerId: "one", pid: 1, lockedAt: 0, heartbeatAt: 0 }),
+    "utf8",
+  );
+  assert.equal(workerLockHealthy({ filePath, ttlMs: 1 }), false);
 });
 
 test("heartbeat fails after another worker is recorded", async () => {

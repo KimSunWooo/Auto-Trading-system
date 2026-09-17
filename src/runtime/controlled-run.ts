@@ -20,7 +20,7 @@ import {
 } from "@/src/risk/order-policy";
 import type { UserRule } from "@/src/rules/params";
 import { kisHttpAudit } from "@/src/runtime/kis-http-audit";
-import { holdsWorkerLock } from "@/src/runtime/worker-lock";
+import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
 import {
   allowLiveTrading,
   isLiveLike,
@@ -33,6 +33,8 @@ export const CONTROLLED_RUN_GATE = "Domestic PAPER Live-Market Controlled Auto-T
 export { CONTROLLED_RUN_MAX_BROKER_SUBMITS, sessionBrokerSubmitCount, sessionOrders } from "@/src/risk/order-policy";
 export const CONTROLLED_RUN_QUOTE_FRESH_MS = 15_000;
 export const MAX_CONTROLLED_EVENTS = 240;
+export const CONSECUTIVE_INQUIRY_FAIL_LIMIT = 3;
+const TRANSIENT_UNKNOWN_STOP_RE = /^Reconciliation UNKNOWN$/i;
 
 export type ControlledRunEventKind =
   | "SIGNAL"
@@ -101,6 +103,7 @@ export type ControlledRunState = {
   overseasOrders: number;
   lastTickAt?: number;
   lastInquiry: ControlledInquiry;
+  consecutiveInquiryFailures: number;
   events: ControlledRunEvent[];
 };
 
@@ -165,6 +168,7 @@ export function emptyControlledRun(input: {
     realRequests: 0,
     overseasOrders: 0,
     lastInquiry: emptyInquiry(),
+    consecutiveInquiryFailures: 0,
     events: [],
   };
 }
@@ -322,6 +326,36 @@ export function reconStatusOf(state: AppState, env: EnvMap = process.env): Contr
   return projected.status;
 }
 
+export function isTransientUnknownStopReason(reason: string | undefined): boolean {
+  return TRANSIENT_UNKNOWN_STOP_RE.test((reason ?? "").trim());
+}
+
+export function inquiryTransientlyUnhealthy(inquiry: ControlledInquiry): boolean {
+  if (inquiry.recon === "MISMATCH") return false;
+  return (
+    !inquiry.quoteOk ||
+    !inquiry.balanceOk ||
+    !inquiry.orderableOk ||
+    !inquiry.positionOk ||
+    !inquiry.openOrdersOk ||
+    !inquiry.executionOk ||
+    inquiry.recon === "UNKNOWN" ||
+    inquiry.recon === "FAILED"
+  );
+}
+
+export function repeatedInquiryStopReason(run: ControlledRunState): string | null {
+  if ((run.consecutiveInquiryFailures ?? 0) < CONSECUTIVE_INQUIRY_FAIL_LIMIT) return null;
+  const inquiry = run.lastInquiry;
+  if (!inquiry.quoteOk) return "Quote repeated failure";
+  if (!inquiry.balanceOk || !inquiry.orderableOk) return "Balance query repeated failure";
+  if (inquiry.recon === "UNKNOWN" || inquiry.recon === "FAILED") return "Reconciliation UNKNOWN";
+  if (!inquiry.positionOk || !inquiry.openOrdersOk || !inquiry.executionOk) {
+    return "Inquiry repeated failure";
+  }
+  return null;
+}
+
 export function isRecoverableInquiryHalt(state: AppState): boolean {
   const circuit = state.circuit;
   if (!circuit?.halted) return false;
@@ -329,8 +363,11 @@ export function isRecoverableInquiryHalt(state: AppState): boolean {
     return false;
   }
   const kind: CircuitKind | undefined = circuit.kind;
-  if (kind === "kill" || kind === "daily-loss" || kind === "unknown" || kind === "soak-stop") {
+  if (kind === "kill" || kind === "daily-loss" || kind === "unknown") {
     return false;
+  }
+  if (kind === "soak-stop") {
+    return isTransientUnknownStopReason(circuit.reason ?? circuit.lastError);
   }
   if (kind === "recon" || kind === "data") return true;
   if (kind === "hard" || kind === "balance") {
@@ -471,14 +508,59 @@ export function autoStopReason(state: AppState, env: EnvMap = process.env): stri
   }
   if (engineReconciliationFlag(state) === "mismatch") return "Reconciliation MISMATCH";
   if (reconStatusOf(state, env) === "MISMATCH") return "Reconciliation MISMATCH";
-  if (state.kisBalance?.freshness === "unknown") return "Reconciliation UNKNOWN";
-  if (!holdsWorkerLock() && isLiveLike(tradingMode(env))) return "Worker lock lost";
+  const run = state.controlledRun;
+  const repeated = run ? repeatedInquiryStopReason(run) : null;
+  if (repeated) return repeated;
+  if (isLiveLike(tradingMode(env)) && !holdsWorkerLock() && !workerLockHealthy()) {
+    return "Worker lock lost";
+  }
   if (sessionBrokerSubmitCount(state) >= CONTROLLED_RUN_MAX_BROKER_SUBMITS) {
     return "Daily order limit reached";
   }
-  const run = state.controlledRun;
-  if (run && (run.jsonRdsDivergence > 0)) return "DB / JSON position divergence";
+  if (run && run.jsonRdsDivergence > 0) return "DB / JSON position divergence";
   return null;
+}
+
+export function isTransientInquirySoakStop(state: AppState): boolean {
+  const run = state.controlledRun;
+  if (run?.status !== "stopped") return false;
+  const reason = run.autoStopReason ?? state.circuit?.reason ?? state.circuit?.lastError;
+  return isTransientUnknownStopReason(reason);
+}
+
+export function resumeTransientUnknownStop(state: AppState, env: EnvMap = process.env): AppState {
+  if (!isTransientInquirySoakStop(state)) return state;
+  if (hasUnknownOrder(state)) return state;
+  if (duplicateExecutionDetected(state) || duplicateOdnoDetected(state)) return state;
+  if (kisHttpAudit().realRequests > 0 || kisHttpAudit().overseasOrders > 0) return state;
+  if (engineReconciliationFlag(state) === "mismatch") return state;
+  if (reconStatusOf(state, env) !== "HEALTHY") return state;
+  if (state.kisBalance?.freshness === "unknown") return state;
+  if (kisJsonPositionDiverged(state) && state.kisBalance?.freshness === "fresh") return state;
+  const run = state.controlledRun;
+  if (!run) return state;
+  const clock = getMarketClock(new Date(nowMs()));
+  const resumed = recordControlledEvent(
+    {
+      ...state,
+      settings: { ...state.settings, autoTrading: true },
+      circuit: {
+        halted: false,
+        kind: undefined,
+        unknownCount: state.circuit?.unknownCount ?? 0,
+      },
+      controlledRun: {
+        ...run,
+        status: clock.open ? "running" : "paused",
+        autoStopReason: undefined,
+        stoppedAt: undefined,
+        consecutiveInquiryFailures: 0,
+      },
+    },
+    "RECONCILIATION",
+    "Resumed after transient Reconciliation UNKNOWN. Single inquiry timeout is NO ORDER, not AUTO STOP.",
+  );
+  return resumed;
 }
 
 export function applyAutoStop(state: AppState, reason: string): AppState {
@@ -535,6 +617,9 @@ export function noteInquiry(state: AppState, patch: Partial<ControlledInquiry>):
   if (patch.recon === "UNKNOWN" || patch.recon === "FAILED") {
     bump.reconUnknown = run.reconUnknown + 1;
   }
+  bump.consecutiveInquiryFailures = inquiryTransientlyUnhealthy(lastInquiry)
+    ? (run.consecutiveInquiryFailures ?? 0) + 1
+    : 0;
   return {
     ...state,
     controlledRun: { ...run, ...bump, lastInquiry },

@@ -14,7 +14,7 @@ import {
   isLiveLike,
   tradingMode,
 } from "@/src/runtime/trading-mode";
-import { holdsWorkerLock } from "@/src/runtime/worker-lock";
+import { workerLockHealthy } from "@/src/runtime/worker-lock";
 import type { AppState, RuntimePublic } from "@/lib/types";
 
 export function ordersCurrentlyAllowed(state: AppState): boolean {
@@ -70,7 +70,7 @@ export function buildRuntimePublic(state: AppState): RuntimePublic {
     allowLiveTrading: allowLiveTrading(),
     httpTickAllowed: httpTickAllowed(mode),
     tradingStatus,
-    worker: !isLiveLike(mode) || holdsWorkerLock() ? "healthy" : "unhealthy",
+    worker: !isLiveLike(mode) || workerLockHealthy() ? "healthy" : "unhealthy",
     brokerLink:
       broker.driver === "mock" || (broker.configured && safety.brokerConnected)
         ? "connected"
@@ -91,6 +91,13 @@ export function buildRuntimePublic(state: AppState): RuntimePublic {
     todayExecutions,
     realizedPnl: realizedFromOrders(state, run?.startedAt),
     unrealizedPnl: unrealizedFromState(state),
-    rdsMirror: db.mode !== "mirror" ? "off" : db.lastError ? "degraded" : db.connected ? "connected" : "off",
+    rdsMirror:
+      db.mode !== "mirror"
+        ? "off"
+        : db.lastError
+          ? "degraded"
+          : db.enabled || db.connected
+            ? "connected"
+            : "off",
   };
 }

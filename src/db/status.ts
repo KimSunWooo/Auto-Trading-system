@@ -30,9 +30,12 @@ export function snapshotDatabaseStatus(input: {
   mode: "json" | "mirror";
   connected?: boolean;
 }): DatabasePublicStatus {
+  const inferred =
+    input.connected ??
+    (input.enabled && input.mode === "mirror" && lastError == null ? true : lastConnected);
   return {
     enabled: input.enabled,
-    connected: input.connected ?? lastConnected,
+    connected: inferred,
     mode: input.mode,
     lastMirrorAt,
     lastError,

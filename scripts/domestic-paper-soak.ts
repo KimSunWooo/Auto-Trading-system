@@ -24,7 +24,9 @@ import {
   existingPositionLines,
   formatSoakReport,
   formatStartSummary,
+  isTransientInquirySoakStop,
   reconStatusOf,
+  resumeTransientUnknownStop,
   selectConservativeStrategy,
 } from "@/src/runtime/controlled-run";
 import {
@@ -64,6 +66,13 @@ async function main() {
   const strategy = selectConservativeStrategy(getRuleConfig().rules, state.positions);
   if (strategy.enabledCount > 1) {
     readyReason = readyReason ?? "multiple strategies enabled; selection must be applied before start";
+  }
+  if (
+    state.controlledRun?.status === "stopped" &&
+    !isTransientInquirySoakStop(state)
+  ) {
+    readyReason =
+      readyReason ?? state.controlledRun.autoStopReason ?? "AUTO TRADING STOP";
   }
 
   if (!readyReason && client.configured) {
@@ -129,19 +138,37 @@ async function main() {
     return;
   }
 
-  const armed = await mutateStore((current) => ({
-    ...current,
-    settings: { ...current.settings, autoTrading: true },
-    controlledRun:
-      current.controlledRun?.status === "running" || current.controlledRun?.status === "paused"
-        ? current.controlledRun
-        : emptyControlledRun({
-            strategyName: strategy.strategy,
-            symbols: strategy.symbols.length ? strategy.symbols : [TICKER],
-          }),
-  }));
-  console.log("\nControlled run armed. Existing worker/engine ticks will evaluate live KIS quotes.");
+  const armed = await mutateStore((current) => {
+    const resumed = resumeTransientUnknownStop(current);
+    const run = resumed.controlledRun;
+    if (run?.status === "running" || run?.status === "paused") {
+      return {
+        ...resumed,
+        settings: { ...resumed.settings, autoTrading: true },
+      };
+    }
+    if (run?.status === "stopped") {
+      return resumed;
+    }
+    return {
+      ...resumed,
+      settings: { ...resumed.settings, autoTrading: true },
+      controlledRun: emptyControlledRun({
+        strategyName: strategy.strategy,
+        symbols: strategy.symbols.length ? strategy.symbols : [TICKER],
+      }),
+    };
+  });
+  const resumedTransient =
+    isTransientInquirySoakStop(state) &&
+    (armed.controlledRun?.status === "running" || armed.controlledRun?.status === "paused");
+  if (resumedTransient) {
+    console.log("\nResumed transient Reconciliation UNKNOWN soak-stop. Positions unchanged.");
+  } else {
+    console.log("\nControlled run armed. Existing worker/engine ticks will evaluate live KIS quotes.");
+  }
   console.log(`startedAt=${armed.controlledRun?.startedAt}`);
+  console.log(`status=${armed.controlledRun?.status}`);
   console.log("No forced signals. 0 trades is a valid result.");
   await closeDb();
 }

@@ -143,6 +143,14 @@ test("mirror failure does not retry broker or corrupt JSON", async () => {
   }
 });
 
+test("mirror mode reports connected without this process calling recordMirrorSuccess", () => {
+  resetDatabaseStatusForTest();
+  const mirror = snapshotDatabaseStatus({ enabled: true, mode: "mirror" });
+  assert.equal(mirror.connected, true);
+  const json = snapshotDatabaseStatus({ enabled: false, mode: "json" });
+  assert.equal(json.connected, false);
+});
+
 test("duplicate intent projects to one DB row", async () => {
   const ledger = new MemoryLedger();
   const state = createPaperState();
