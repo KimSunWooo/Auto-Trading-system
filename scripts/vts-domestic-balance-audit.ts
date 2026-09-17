@@ -9,10 +9,12 @@ import { KisClient, sameOdno } from "@/src/brokers/kis-client";
 import { loadKisConfig, resolveKisEnvironment } from "@/src/brokers/kis-config";
 import { dbConfigured, persistenceMode } from "@/src/db/config";
 import { loadLocalEnv } from "@/src/db/load-env";
-import { getMysqlLedger } from "@/src/db/mysql-ledger";
+import { resetDbClientForTest } from "@/src/db/client";
+import { getMysqlLedger, resetMysqlLedgerForTest } from "@/src/db/mysql-ledger";
 import { projectAppState } from "@/src/db/projector";
 import { moneyNumber } from "@/src/db/money";
 import { refreshBrokerBalanceSnapshot } from "@/src/risk/balance-sync";
+import type { EnvMap } from "@/src/runtime/trading-mode";
 
 const TICKER = "005930";
 const ODNO = "0000022105";
@@ -96,9 +98,20 @@ async function main() {
   process.env.BROKER = "kis";
   if (!process.env.KIS_MODE) process.env.KIS_MODE = "paper";
   process.env.ALLOW_LIVE_TRADING = "false";
+  if (String(process.env.TRADING_MODE ?? "").toLowerCase() === "live") {
+    process.env.TRADING_MODE = "live_test";
+  }
   delete process.env.KIS_LIVE_CONFIRM;
   delete process.env.RUN_KIS_VTS_ORDER_TESTS;
   delete process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS;
+
+  const paperEnv: EnvMap = {
+    ...process.env,
+    BROKER: "kis",
+    KIS_MODE: String(process.env.KIS_MODE ?? "paper"),
+    ALLOW_LIVE_TRADING: "false",
+    TRADING_MODE: String(process.env.TRADING_MODE ?? "live_test") === "live" ? "live_test" : String(process.env.TRADING_MODE ?? "live_test"),
+  };
 
   const mode = resolveKisEnvironment();
   if (mode !== "paper") {
@@ -130,7 +143,7 @@ async function main() {
     }
     const state = JSON.parse(readFileSync(DEFAULT_STORE_PATH, "utf8")) as AppState;
     const box = { current: state };
-    const refreshed = await refreshBrokerBalanceSnapshot(box, client);
+    const refreshed = await refreshBrokerBalanceSnapshot(box, client, Date.now(), paperEnv);
     if (!refreshed.ok) {
       console.error("broker refresh failed:", refreshed.error);
     }
@@ -143,12 +156,18 @@ async function main() {
     let rds: Record<string, unknown> | null = null;
     if (dbConfigured()) {
       process.env.PERSISTENCE_MODE = "mirror";
+      resetDbClientForTest();
+      resetMysqlLedgerForTest();
       const ledger = getMysqlLedger();
       const mirrorState: AppState = {
         ...box.current,
         orders: keepExistingTradeOrders(box.current.orders),
       };
-      await projectAppState(ledger, mirrorState, { env: process.env, provenance: "RUNTIME" });
+      try {
+        await projectAppState(ledger, mirrorState, { env: paperEnv, provenance: "RUNTIME" });
+      } catch (err) {
+        console.error("RDS remirror failed:", err instanceof Error ? err.message : err);
+      }
       const accounts = await ledger.transaction((tx) => tx.listBrokerAccounts());
       const paper = accounts.find((row) => row.environment === "PAPER") ?? accounts[0];
       if (paper) {

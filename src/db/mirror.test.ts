@@ -527,4 +527,5 @@ test("same ODNO fill is not inserted twice with a new execution_key", async () =
   ];
   await projectAppState(ledger, recovered, { env: paperEnv() });
   assert.equal(ledger.snapshot.executions.size, 1);
+  assert.equal(ledger.snapshot.orders.size, 1);
 });

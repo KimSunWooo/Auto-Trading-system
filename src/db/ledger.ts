@@ -41,6 +41,11 @@ export type LedgerSession = {
   upsertOrder(row: OrderRow): Promise<{ row: OrderRow; inserted: boolean }>;
   getOrder(id: string): Promise<OrderRow | undefined>;
   getOrderByLocalId(accountId: string, localOrderId: string): Promise<OrderRow | undefined>;
+  getOrderByBrokerOrderNo(
+    accountId: string,
+    brokerOrderNo: string,
+    brokerOrderDate?: string | null,
+  ): Promise<OrderRow | undefined>;
   lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined>;
   appendOrderEvent(row: OrderEventRow): Promise<void>;
   insertExecution(row: ExecutionRow): Promise<{ row: ExecutionRow; inserted: boolean }>;
@@ -313,6 +318,19 @@ export class MemorySession implements LedgerSession {
   async getOrderByLocalId(accountId: string, localOrderId: string): Promise<OrderRow | undefined> {
     return [...this.state.orders.values()].find(
       (item) => item.brokerAccountId === accountId && item.localOrderId === localOrderId,
+    );
+  }
+
+  async getOrderByBrokerOrderNo(
+    accountId: string,
+    brokerOrderNo: string,
+    brokerOrderDate?: string | null,
+  ): Promise<OrderRow | undefined> {
+    return [...this.state.orders.values()].find(
+      (item) =>
+        item.brokerAccountId === accountId &&
+        sameOdno(item.brokerOrderNo, brokerOrderNo) &&
+        (!brokerOrderDate || item.brokerOrderDate === brokerOrderDate),
     );
   }
 

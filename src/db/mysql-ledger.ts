@@ -238,7 +238,11 @@ export class MysqlSession implements LedgerSession {
   }
 
   async upsertOrder(row: OrderRow): Promise<{ row: OrderRow; inserted: boolean }> {
-    const existing = await this.getOrderByLocalId(row.brokerAccountId, row.localOrderId);
+    const existing =
+      (await this.getOrderByLocalId(row.brokerAccountId, row.localOrderId)) ??
+      (row.brokerOrderNo
+        ? await this.getOrderByBrokerOrderNo(row.brokerAccountId, row.brokerOrderNo, row.brokerOrderDate)
+        : undefined);
     await this.db
       .insert(schema.orders)
       .values({
@@ -299,6 +303,24 @@ export class MysqlSession implements LedgerSession {
       .where(and(eq(schema.orders.brokerAccountId, accountId), eq(schema.orders.localOrderId, localOrderId)))
       .limit(1);
     return rows[0] ? mapOrder(rows[0]) : undefined;
+  }
+
+  async getOrderByBrokerOrderNo(
+    accountId: string,
+    brokerOrderNo: string,
+    brokerOrderDate?: string | null,
+  ): Promise<OrderRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.brokerAccountId, accountId));
+    return rows
+      .map(mapOrder)
+      .find(
+        (row) =>
+          sameOdno(row.brokerOrderNo, brokerOrderNo) &&
+          (!brokerOrderDate || row.brokerOrderDate === brokerOrderDate),
+      );
   }
 
   async lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined> {
