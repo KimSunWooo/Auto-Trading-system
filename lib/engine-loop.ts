@@ -20,6 +20,7 @@ const g = globalThis as typeof globalThis & {
   __mirimaesuSignalsBound?: boolean;
   __mirimaesuStartupSyncDone?: boolean;
   __mirimaesuStartupSyncPromise?: Promise<void>;
+  __mirimaesuStartupSyncNextAttemptAt?: number;
 };
 
 function workerId(): string {
@@ -37,9 +38,17 @@ async function ensureStartupSync(): Promise<void> {
     await g.__mirimaesuStartupSyncPromise;
     return;
   }
+  const now = Date.now();
+  if ((g.__mirimaesuStartupSyncNextAttemptAt ?? 0) > now) return;
+
   g.__mirimaesuStartupSyncPromise = (async () => {
     let healthy = false;
+    let rateLimited = false;
     await mutateStore(async (state) => {
+      if (state.startupSync?.status === "HEALTHY") {
+        healthy = true;
+        return state;
+      }
       const marked = {
         ...state,
         startupSync: {
@@ -51,6 +60,8 @@ async function ensureStartupSync(): Promise<void> {
       const client = getSharedKisClient();
       const result = await runPaperStartupSync(marked, client);
       healthy = result.ok && result.state.startupSync?.status === "HEALTHY";
+      const err = result.error ?? result.state.startupSync?.message ?? "";
+      rateLimited = /초당|EGW00201|rate/i.test(err);
       if (!result.ok) {
         console.error("[engine-loop] startup sync FAILED:", result.error);
       } else {
@@ -60,8 +71,16 @@ async function ensureStartupSync(): Promise<void> {
       }
       return result.state;
     });
-    // Only latch on success — FAILED/rate-limit retries on later ticks.
-    if (healthy) g.__mirimaesuStartupSyncDone = true;
+    if (healthy) {
+      g.__mirimaesuStartupSyncDone = true;
+      g.__mirimaesuStartupSyncNextAttemptAt = undefined;
+    } else if (rateLimited) {
+      // Avoid hammering KIS; retry after cooldown while keeping NEW ORDER blocked.
+      g.__mirimaesuStartupSyncNextAttemptAt = Date.now() + 30_000;
+      console.info("[engine-loop] startup sync rate-limited — retry in 30s");
+    } else {
+      g.__mirimaesuStartupSyncNextAttemptAt = Date.now() + 10_000;
+    }
   })();
   try {
     await g.__mirimaesuStartupSyncPromise;
