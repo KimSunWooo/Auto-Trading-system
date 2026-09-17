@@ -334,7 +334,7 @@ export function isRecoverableInquiryHalt(state: AppState): boolean {
   }
   if (kind === "recon" || kind === "data") return true;
   if (kind === "hard" || kind === "balance") {
-    return /timeout|aborted|조회|잔고|시세|체결/i.test(circuit.reason ?? circuit.lastError ?? "");
+    return /timeout|aborted|조회|잔고|시세|체결|거래건수|초당/i.test(circuit.reason ?? circuit.lastError ?? "");
   }
   return false;
 }

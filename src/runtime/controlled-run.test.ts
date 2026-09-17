@@ -81,6 +81,17 @@ test("soak session buy count ignores the existing VTS-B2 BUY", () => {
   assert.equal(sessionBrokerSubmitCount(state), 0);
 });
 
+test("KIS rate-limit hard circuit is recoverable after a later healthy read", () => {
+  const state = createPaperState();
+  state.circuit = {
+    halted: true,
+    kind: "hard",
+    reason: "원장에서 허용 가능한 초당 거래건수를 초과하였습니다.",
+    unknownCount: 1,
+  };
+  assert.equal(isRecoverableInquiryHalt(state), true);
+});
+
 test("timeout hard circuit is recoverable when no UNKNOWN order remains", () => {
   const state = createPaperState();
   state.circuit = {
