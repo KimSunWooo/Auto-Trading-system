@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { createInitialState, ensureUniverseQuotes, accountValue, tickState } from "./engine";
 import { getMarketClock } from "./market-hours";
 import { cashFromAllocations, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
@@ -166,9 +167,22 @@ async function loadState(): Promise<AppState> {
   return hydratePersistedState(await repository.load());
 }
 
+function mergePersistedControlledRun(incoming: AppState): AppState {
+  try {
+    const prev = JSON.parse(readFileSync(activeStorePath, "utf8")) as AppState;
+    if (prev.controlledRun && !incoming.controlledRun) {
+      return { ...incoming, controlledRun: prev.controlledRun };
+    }
+    return incoming;
+  } catch {
+    return incoming;
+  }
+}
+
 async function saveState(state: AppState) {
-  await repository.save(state);
-  await mirrorAfterJsonSave(state);
+  const next = mergePersistedControlledRun(state);
+  await repository.save(next);
+  await mirrorAfterJsonSave(next);
 }
 
 export function withStore<T>(fn: (state: AppState) => T | Promise<T>): Promise<T> {
