@@ -118,6 +118,13 @@ export type Order = {
   orderedQty?: number;
   filledQty?: number;
   parentOrderId?: string;
+  /** Startup sync classification. Orphaned/historical do not block trading. */
+  activeClass?:
+    | "ACTIVE_MATCHED"
+    | "HISTORICAL_MATCHED"
+    | "ORPHANED_LOCAL"
+    | "UNKNOWN_ACTIVE";
+  provenance?: string;
 };
 
 export type CircuitKind =
@@ -241,6 +248,16 @@ export type Settings = {
   risk: ProductRisk;
 };
 
+export type StartupSyncPublic = {
+  status: "IDLE" | "SYNCING" | "HEALTHY" | "FAILED";
+  lastSyncedAt?: string;
+  recoveredOrders: number;
+  orphanedOrders: number;
+  positionChanges: number;
+  executionChanges: number;
+  message?: string;
+};
+
 export type AppState = {
   updatedAt: string;
   tickCount: number;
@@ -263,6 +280,7 @@ export type AppState = {
   intents?: OrderIntent[];
   safety?: SafetyState;
   controlledRun?: ControlledRunState;
+  startupSync?: StartupSyncPublic;
 };
 
 export type BrokerPublicStatus = {

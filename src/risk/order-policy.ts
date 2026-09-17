@@ -221,7 +221,14 @@ export function dailyBrokerSubmitCount(state: AppState, day = seoulDay()): numbe
 }
 
 export function hasUnknownOrder(state: AppState): boolean {
-  return state.orders.some((order) => !order.parentOrderId && order.status === "unknown");
+  return state.orders.some((order) => {
+    if (order.parentOrderId) return false;
+    if (order.activeClass === "ORPHANED_LOCAL" || order.activeClass === "HISTORICAL_MATCHED") {
+      return false;
+    }
+    if (order.activeClass === "UNKNOWN_ACTIVE") return true;
+    return order.status === "unknown";
+  });
 }
 
 export function heldQtyForSymbol(state: AppState, ticker: string): number {

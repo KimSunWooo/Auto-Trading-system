@@ -151,8 +151,11 @@ function hasOpenBrokerTicket(state: AppState): boolean {
   return state.orders.some(
     (order) =>
       !order.parentOrderId &&
+      order.activeClass !== "ORPHANED_LOCAL" &&
+      order.activeClass !== "HISTORICAL_MATCHED" &&
       ((order.status === "pending" && Boolean(order.brokerOrderNo)) ||
-        order.status === "unknown"),
+        order.status === "unknown" ||
+        order.activeClass === "UNKNOWN_ACTIVE"),
   );
 }
 

@@ -36,6 +36,7 @@ import {
   resumeTransientUnknownStop,
   syncHttpAudit,
 } from "@/src/runtime/controlled-run";
+import { startupSyncBlocksTrading, usesPaperStartupSync } from "@/src/runtime/startup-sync";
 
 const HISTORY_LEN = 40;
 
@@ -106,6 +107,16 @@ export function createPaperState(): AppState {
     "005930": seedQuote("005930", 74_800),
     "035720": seedQuote("035720", 42_150),
     "247540": seedQuote("247540", 142_700),
+  };
+  // Unit fixtures skip the live Startup Sync gate; production JSON load stays IDLE until sync.
+  state.startupSync = {
+    status: "HEALTHY",
+    lastSyncedAt: new Date().toISOString(),
+    recoveredOrders: 0,
+    orphanedOrders: 0,
+    positionChanges: 0,
+    executionChanges: 0,
+    message: "test fixture",
   };
   return state;
 }
@@ -434,6 +445,9 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
   box.current = RiskManager.rollDay(box.current, now);
 
   const tradingOn = autoRunAllowed(box.current);
+  if (usesPaperStartupSync() && startupSyncBlocksTrading(box.current)) {
+    liveReady = false;
+  }
   if (sessionOk && tradingOn) {
     await new RiskManager(box).enforceStops();
     box.current = RiskManager.checkDailyLoss(box.current);

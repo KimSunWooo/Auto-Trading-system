@@ -124,12 +124,30 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
         </p>
       </div>
 
-      {state.circuit?.halted || state.orders.some((order) => order.status === "unknown") ? (
+      {state.startupSync &&
+      state.startupSync.status !== "HEALTHY" &&
+      state.startupSync.status !== "IDLE" ? (
+        <div className="border-b border-amber-500/40 bg-amber-500/10">
+          <div className="mx-auto w-full max-w-7xl px-4 py-2 text-sm">
+            Startup Sync {state.startupSync.status}
+            {state.startupSync.message ? ` — ${state.startupSync.message}` : ""}
+          </div>
+        </div>
+      ) : null}
+
+      {state.circuit?.halted ||
+      state.orders.some(
+        (order) =>
+          !order.parentOrderId &&
+          order.activeClass !== "ORPHANED_LOCAL" &&
+          order.activeClass !== "HISTORICAL_MATCHED" &&
+          (order.status === "unknown" || order.activeClass === "UNKNOWN_ACTIVE"),
+      ) ? (
         <div className="border-b border-destructive/40 bg-destructive/10">
           <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-2 text-sm">
             <p>
               {state.circuit?.reason ??
-                "미확인 주문이 있어 신규 매매를 차단했습니다. 증권사 체결내역을 확인하세요."}
+                "현재 PAPER 미확인 주문이 있어 신규 매매를 차단했습니다. 자동 재주문하지 않습니다."}
               {state.killReport?.notes?.length ? (
                 <span className="block text-xs opacity-80">
                   {state.killReport.notes.join(" · ")}

@@ -208,10 +208,13 @@ export async function mutateStore(
   });
 }
 
-/** Production paper book is not written during `npm test`. Isolated VTS paths still persist. */
+/** Production paper book is not written during unit/integration tests. Isolated VTS paths still persist. */
 export async function persistStateNow(state: AppState) {
-  const testingDefaultBook =
-    process.env.npm_lifecycle_event === "test" && activeStorePath === DEFAULT_STORE_PATH;
+  const underTest =
+    process.env.npm_lifecycle_event === "test" ||
+    process.env.NODE_ENV === "test" ||
+    process.argv.some((arg) => arg === "--test" || arg.includes("node:test"));
+  const testingDefaultBook = underTest && activeStorePath === DEFAULT_STORE_PATH;
   if (testingDefaultBook) return;
   await saveState(state);
 }

@@ -21,6 +21,7 @@
 | Overseas VTS-B2 actual BUY | READY / NOT EXECUTED (시장 CLOSED 또는 opt-in 없음) |
 | EC2 PAPER deployment artifacts | Dockerfile / compose / health / docs 준비. 실제 EC2 provisioning 없음 |
 | RDS MySQL mirror | JSON authority. `PERSISTENCE_MODE=mirror`. database SOT 없음 |
+| PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
 | Gate 3 / REAL | LOCKED |
 
 로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
@@ -32,6 +33,8 @@
 - 주문 opt-in(`RUN_KIS_VTS_ORDER_TESTS`, `RUN_KIS_VTS_FLATTEN_TEST`, `RUN_KIS_VTS_OVERSEAS_ORDER_TESTS`)은 기본 꺼짐.
 - timeout → UNKNOWN, 맹목 재시도 없음, ODNO exact mapping, recon 실패 시 신규 주문 차단.
 - RDS 실패 → Broker retry 없음. Worker lock 없으면 주문 금지.
+- Local/RDS는 historical records authority. 현재 broker state는 KIS PAPER.
+- Startup Sync HEALTHY 전에는 신규 주문 차단. ORPHANED_LOCAL 과거 테스트 주문은 blocker에서 분리.
 
 ## 아키텍처
 
@@ -229,6 +232,23 @@ npm run soak:report
 ```
 
 Ready=NO 이면 자동매매를 시작하지 않습니다. 시세 실패 시 주문하지 않으며, 강제 시그널은 만들지 않습니다.
+
+### PAPER Startup Sync
+
+`LIVE_TEST` + KIS PAPER에서 Worker가 매매 tick을 돌리기 전에 KIS 현재 open/execution/position/balance를 조회합니다.
+
+```text
+JSON load → KIS auth → open/exec/pos/balance → classify → HEALTHY → trading
+```
+
+- Local/RDS keeps historical records (orders/executions/trades/intents 삭제 금지).
+- KIS PAPER is authoritative for current broker state (active positions / open orders).
+- Server startup reconciles current KIS PAPER state before enabling trading.
+- Historical test orders are preserved but do not automatically block operational PAPER trading (`ORPHANED_LOCAL` / `HISTORICAL_MATCHED`).
+- Only `UNKNOWN_ACTIVE` (today’s unresolved tickets) blocks new orders. No blind retry.
+- REAL (`KIS_MODE=real` / `TRADING_MODE=live`) is unchanged and stays locked.
+
+Startup Sync가 `HEALTHY`가 아니면 신규 BUY/SELL는 차단됩니다. Emergency Stop / Recovery 조회는 허용됩니다.
 
 ## EC2 PAPER 배포 준비
 

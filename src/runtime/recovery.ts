@@ -8,6 +8,14 @@ import { openCircuit } from "@/src/risk/circuit";
 import { blockSafety, safetyOf } from "@/src/runtime/safety";
 import { upsertIntent, patchIntent } from "@/src/runtime/intents";
 import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
+import {
+  classifyLocalActiveOrder,
+  findActiveUnknownOrder,
+  inferOrderProvenance,
+  isActiveUnknownBlocker,
+  mergeRemoteOrders,
+  usesPaperStartupSync,
+} from "@/src/runtime/startup-sync";
 import type { AppState, Order } from "@/lib/types";
 
 export type InquiryResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -24,23 +32,13 @@ function alreadyTracked(state: AppState, orderNo: string): Order | undefined {
   return state.orders.find((row) => sameOdno(row.brokerOrderNo, orderNo));
 }
 
-function mergeRemote(open: KisDayOrder[], daily: KisDayOrder[]): KisDayOrder[] {
-  const byNo = new Map<string, KisDayOrder>();
-  for (const row of [...open, ...daily]) {
-    if (!row.orderNo) continue;
-    const key = padOdno(row.orderNo);
-    const prev = byNo.get(key);
-    if (!prev || row.filledQty > prev.filledQty) byNo.set(key, row);
-  }
-  return [...byNo.values()];
-}
-
 function attachIdentity(box: StateBox, remote: KisDayOrder): boolean {
   const ghosts = box.current.orders.filter(
     (order) =>
       !order.parentOrderId &&
       !order.brokerOrderNo &&
-      (order.status === "pending" || order.status === "unknown"),
+      (order.status === "pending" || order.status === "unknown") &&
+      order.activeClass !== "ORPHANED_LOCAL",
   );
   const unmatched = remote;
   const ghost = ghosts.length === 1 ? ghosts[0] : undefined;
@@ -50,6 +48,8 @@ function attachIdentity(box: StateBox, remote: KisDayOrder): boolean {
   const patched = patchOrder(box.current, ghost.id, {
     brokerOrderNo: unmatched.orderNo,
     status: ghost.status === "unknown" ? "pending" : ghost.status,
+    activeClass: unmatched.unfilledQty > 0 ? "ACTIVE_MATCHED" : "HISTORICAL_MATCHED",
+    provenance: "RECOVERED_ORDER",
     reason: "RECOVERED_ORDER · 로컬 미확인 주문에 증권사 ODNO를 연결했습니다.",
   });
   if (!patched.order) return false;
@@ -95,6 +95,8 @@ function adoptRemote(box: StateBox, row: KisDayOrder): void {
     reason: "RECOVERED_ORDER · 증권사 주문을 로컬에 편입했습니다.",
     orderedQty: row.qty,
     filledQty: 0,
+    activeClass: row.unfilledQty > 0 ? "ACTIVE_MATCHED" : "HISTORICAL_MATCHED",
+    provenance: "RECOVERED_ORDER",
   });
   box.current = patchIntent(withNo.state, intentId, {
     status: "submitted",
@@ -111,13 +113,17 @@ function adoptRemote(box: StateBox, row: KisDayOrder): void {
   }
 }
 
+/**
+ * Reconcile local active tickets with KIS open + daily inquiries.
+ * Historical / orphaned local-only tickets are classified and do not open the circuit.
+ */
 export async function recoverExternalOrders(box: StateBox, client: KisApi): Promise<InquiryResult<number>> {
   const open = await inquireOrFail(() => client.inquireOpenOrders());
   if (!open.ok) return open;
   const daily = await inquireOrFail(() => client.inquireDailyCcld());
   if (!daily.ok) return daily;
 
-  const remote = mergeRemote(open.value, daily.value);
+  const remote = mergeRemoteOrders(open.value, daily.value);
   const unmatched = remote.filter((row) => !alreadyTracked(box.current, row.orderNo));
   if (unmatched.length === 1) {
     attachIdentity(box, unmatched[0]!);
@@ -131,18 +137,53 @@ export async function recoverExternalOrders(box: StateBox, client: KisApi): Prom
     adopted += 1;
   }
 
+  const paperAware = usesPaperStartupSync();
   const stillLocal = box.current.orders.filter(
     (order) =>
       !order.parentOrderId &&
-      order.brokerOrderNo &&
-      (order.status === "pending" || order.status === "unknown"),
+      (order.status === "pending" || order.status === "unknown") &&
+      order.activeClass !== "ORPHANED_LOCAL" &&
+      order.activeClass !== "HISTORICAL_MATCHED",
   );
+
   for (const local of stillLocal) {
-    const match = remote.find((row) => sameOdno(row.orderNo, local.brokerOrderNo));
+    const match = local.brokerOrderNo
+      ? remote.find((row) => sameOdno(row.orderNo, local.brokerOrderNo))
+      : undefined;
     if (match) continue;
+
+    if (paperAware) {
+      const classified = classifyLocalActiveOrder(local, remote);
+      const provenance = inferOrderProvenance(local);
+      if (classified.classification === "ORPHANED_LOCAL") {
+        const patched = patchOrder(box.current, local.id, {
+          activeClass: "ORPHANED_LOCAL",
+          provenance,
+          reason: classified.reason,
+        });
+        if (patched.order) box.current = patched.state;
+        continue;
+      }
+      if (classified.classification === "UNKNOWN_ACTIVE") {
+        const patched = patchOrder(box.current, local.id, {
+          status: "unknown",
+          activeClass: "UNKNOWN_ACTIVE",
+          provenance,
+          reason: classified.reason,
+        });
+        if (patched.order) {
+          box.current = openCircuit(patched.state, classified.reason, patched.order);
+        }
+        continue;
+      }
+    }
+
+    // Non-PAPER / legacy path: only escalate today's active unknowns.
     const patched = patchOrder(box.current, local.id, {
       status: "unknown",
-      reason: "증권사 당일 주문에 ODNO가 없어 미확인으로 전환했습니다. 자동 재주문하지 않습니다.",
+      activeClass: "UNKNOWN_ACTIVE",
+      reason:
+        "현재 KIS PAPER 계좌에서 이 주문의 활성 상태를 확인할 수 없습니다. 자동 재주문하지 않습니다.",
     });
     if (patched.order) {
       box.current = openCircuit(
@@ -157,11 +198,25 @@ export async function recoverExternalOrders(box: StateBox, client: KisApi): Prom
     (order) =>
       !order.parentOrderId &&
       !order.brokerOrderNo &&
-      (order.status === "pending" || order.status === "unknown"),
+      (order.status === "pending" || order.status === "unknown") &&
+      order.activeClass !== "ORPHANED_LOCAL",
   );
   for (const ghost of ghosts) {
+    if (paperAware) {
+      const classified = classifyLocalActiveOrder(ghost, remote);
+      if (classified.classification === "ORPHANED_LOCAL") {
+        const patched = patchOrder(box.current, ghost.id, {
+          activeClass: "ORPHANED_LOCAL",
+          provenance: inferOrderProvenance(ghost),
+          reason: classified.reason,
+        });
+        if (patched.order) box.current = patched.state;
+        continue;
+      }
+    }
     const patched = patchOrder(box.current, ghost.id, {
       status: "unknown",
+      activeClass: "UNKNOWN_ACTIVE",
       reason: "증권사 주문번호가 없어 미확인으로 유지합니다. 자동 재주문하지 않습니다.",
     });
     if (patched.order) {
@@ -201,7 +256,7 @@ export function markInquiryFailure(state: AppState, kind: "recon" | "data" | "br
 
 export function resetRecoverableHalt(state: AppState): AppState {
   if (!isRecoverableInquiryHalt(state)) return state;
-  if (state.orders.some((order) => order.status === "unknown")) return state;
+  if (findActiveUnknownOrder(state)) return state;
   return {
     ...state,
     circuit: {
@@ -211,3 +266,5 @@ export function resetRecoverableHalt(state: AppState): AppState {
     },
   };
 }
+
+export { isActiveUnknownBlocker };

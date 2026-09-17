@@ -47,6 +47,19 @@ export function RuntimeStatusStrip({ state }: { state: PublicState }) {
           <Badge variant={runtime.rdsMirror === "connected" ? "secondary" : "destructive"}>
             RDS {runtime.rdsMirror ?? "off"}
           </Badge>
+          {state.startupSync ? (
+            <Badge
+              variant={
+                state.startupSync.status === "HEALTHY"
+                  ? "secondary"
+                  : state.startupSync.status === "FAILED"
+                    ? "destructive"
+                    : "outline"
+              }
+            >
+              Startup {state.startupSync.status}
+            </Badge>
+          ) : null}
         </div>
         <div className="text-[11px] text-muted-foreground">
           {runtime.lastError ? (
