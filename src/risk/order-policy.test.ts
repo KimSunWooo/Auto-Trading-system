@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { after, afterEach, before, test } from "node:test";
 import { createPaperState } from "@/lib/engine";
 import type { AppState, Order } from "@/lib/types";
@@ -25,6 +28,7 @@ import { DEFAULT_LIVE_TEST_CAPS, liveTestCaps } from "@/src/runtime/trading-mode
 import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
 import { setNowMs } from "@/src/clock";
 import {
+  configureWorkerLockPath,
   releaseWorkerLock,
   resetWorkerLockForTest,
   tryAcquireWorkerLock,
@@ -212,24 +216,31 @@ test("Test C: PAPER qty=2 is blocked", () => {
 
 test("Test D: same intent submits one broker order", async () => {
   applyEnv(PAPER_ENV);
-  tryAcquireWorkerLock("paper-dup-intent");
-  const box = { current: createPaperState() };
-  const client = new FakeKis();
-  const broker = new KisBroker(box, client, "cash").withIntent({
-    intentId: "sig:paper:dup",
-    signalId: "sig:paper:dup",
-  });
-  const first = await broker.buyMarket("005930", 70_000);
-  const second = await broker.buyMarket("005930", 70_000);
-  assert.equal(first.status === "rejected", false);
-  assert.equal(client.orders.length, 1);
-  assert.equal(second.orderId, first.orderId);
-  const local = new OrderManager({ current: createPaperState() });
-  const a = local.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
-  const b = local.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
-  assert.equal(a.ok, true);
-  assert.equal(b.orderId, a.orderId);
-  releaseWorkerLock("paper-dup-intent");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "paper-dup-"));
+  configureWorkerLockPath(path.join(dir, "trading-worker.lock"));
+  try {
+    tryAcquireWorkerLock("paper-dup-intent");
+    const box = { current: createPaperState() };
+    const client = new FakeKis();
+    const broker = new KisBroker(box, client, "cash").withIntent({
+      intentId: "sig:paper:dup",
+      signalId: "sig:paper:dup",
+    });
+    const first = await broker.buyMarket("005930", 70_000);
+    const second = await broker.buyMarket("005930", 70_000);
+    assert.equal(first.status === "rejected", false);
+    assert.equal(client.orders.length, 1);
+    assert.equal(second.orderId, first.orderId);
+    const local = new OrderManager({ current: createPaperState() });
+    const a = local.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
+    const b = local.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
+    assert.equal(a.ok, true);
+    assert.equal(b.orderId, a.orderId);
+  } finally {
+    releaseWorkerLock("paper-dup-intent");
+    resetWorkerLockForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Test E: existing open BUY blocks a new order", () => {
