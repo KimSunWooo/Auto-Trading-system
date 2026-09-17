@@ -21,7 +21,7 @@
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 | Domestic PAPER soak | 기존 Worker. 시세만 KIS. 전략 파라미터 변경 없음. 신규 주문 ≤5 · 1주 |
 
-로컬 검증: TypeScript PASS, `npm test` (soak 게이트 추가 후 재실행), build PASS, `npm run db:check` PASS.
+로컬 검증: TypeScript PASS, `npm test` 268 pass / 12 skip / 0 fail, build PASS, `npm run db:check` PASS.
 
 유지 중인 안전장치:
 
