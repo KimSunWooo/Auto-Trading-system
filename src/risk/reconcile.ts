@@ -14,7 +14,9 @@ function openParents(box: StateBox): Order[] {
     (order) =>
       !order.parentOrderId &&
       Boolean(order.brokerOrderNo) &&
-      (order.status === "unknown" || order.status === "pending"),
+      (order.status === "unknown" || order.status === "pending") &&
+      order.activeClass !== "ORPHANED_LOCAL" &&
+      order.activeClass !== "HISTORICAL_MATCHED",
   );
 }
 
@@ -32,8 +34,16 @@ function remainingOf(order: Order, match: KisDayOrder | undefined): number {
 }
 
 function haltUnknown(box: StateBox, orderId: string, reason: string) {
+  const current = box.current.orders.find((row) => row.id === orderId);
+  if (
+    current?.activeClass === "ORPHANED_LOCAL" ||
+    current?.activeClass === "HISTORICAL_MATCHED"
+  ) {
+    return;
+  }
   const patched = patchOrder(box.current, orderId, {
     status: "unknown",
+    activeClass: "UNKNOWN_ACTIVE",
     reason,
   });
   if (patched.order) {
@@ -225,9 +235,13 @@ export function expireStaleInFlight(box: StateBox, maxAgeMs = 15_000) {
   const now = nowMs();
   for (const order of box.current.orders) {
     if (order.status !== "pending" || order.brokerOrderNo) continue;
+    if (order.activeClass === "ORPHANED_LOCAL" || order.activeClass === "HISTORICAL_MATCHED") {
+      continue;
+    }
     if (now - new Date(order.createdAt).getTime() < maxAgeMs) continue;
     const patched = patchOrder(box.current, order.id, {
       status: "unknown",
+      activeClass: "UNKNOWN_ACTIVE",
       reason: "응답 대기 시간이 지나 미확인으로 전환했습니다.",
     });
     if (patched.order) {
