@@ -20,7 +20,7 @@
 | VTS-B2 국내/해외 주문 | 미실행. 별도 `Domestic/Overseas VTS-B2 진행` 요청 전까지 opt-in 없음 |
 | Gate 3 / REAL | 잠금. 진행하지 않음 |
 
-로컬 검증: TypeScript PASS, `npm test` 211 pass / 12 skip / 0 fail, build PASS.
+로컬 검증: TypeScript PASS, `npm test` 259 pass / 12 skip / 0 fail, build PASS, `npm run db:check` PASS.
 
 유지 중인 안전장치:
 

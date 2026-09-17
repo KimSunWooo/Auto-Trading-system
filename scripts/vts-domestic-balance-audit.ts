@@ -289,6 +289,8 @@ ${psbl?.maxBuyQty ?? ""}
     );
   } finally {
     http.restore();
+    resetMysqlLedgerForTest();
+    resetDbClientForTest();
   }
 }
 
