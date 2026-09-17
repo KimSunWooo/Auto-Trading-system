@@ -3,7 +3,7 @@ import { accountValue } from "@/src/accounts/portfolio";
 import { UNIVERSE } from "@/lib/universe";
 import { US_SEED_UNIVERSE } from "@/src/markets/overseas/instruments";
 import { HARD_LIMITS } from "@/src/risk/limits";
-import { PAPER_ORDER_POLICY } from "@/src/risk/order-policy";
+import { paperOperationPolicy } from "@/src/risk/order-policy";
 import { getRuleConfig } from "@/src/rules/config";
 import { CASH_RULE_ID } from "@/src/rules/params";
 import type { EnvMap } from "@/src/runtime/trading-mode";
@@ -277,14 +277,15 @@ export async function projectAppState(
     await writeAudits(tx, prevState, state, user.id, brokerAccount.id);
 
     if (environment === "PAPER" || environment === "MOCK") {
+      const paper = paperOperationPolicy(context.env ?? process.env);
       await tx.upsertRiskLimits({
         id: stableId("risk-limits", `${brokerAccount.id}:${environment}`),
         brokerAccountId: brokerAccount.id,
         environment,
         maxOrderAmount: null,
-        maxOrderQty: money(PAPER_ORDER_POLICY.maxQtyPerOrder),
+        maxOrderQty: money(paper.maxQtyPerOrder),
         maxDailyOrderAmount: null,
-        maxDailyOrders: PAPER_ORDER_POLICY.maxPaperTestOrdersPerDay,
+        maxDailyOrders: paper.maxBrokerSubmitsPerDay,
         maxPositionAmount: null,
         maxDailyLoss: null,
         allowTrading: false,

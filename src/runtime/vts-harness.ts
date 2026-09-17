@@ -15,7 +15,7 @@ import type { AppState } from "@/lib/types";
 import type { KisApi } from "@/src/brokers/kis-client";
 import { loadKisConfig, resolveKisEnvironment, type EnvMap as KisEnv } from "@/src/brokers/kis-config";
 import { sessionBlockReason } from "@/src/accounts/execution-policy";
-import { checkPaperOrderConstraints, PAPER_ORDER_POLICY } from "@/src/risk/order-policy";
+import { checkPaperOrderConstraints, paperMaxQtyPerOrder } from "@/src/risk/order-policy";
 import { liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { safetyOf } from "@/src/runtime/safety";
 import { tradingBlocked } from "@/src/risk/circuit";
@@ -198,7 +198,7 @@ export function vtsPreflight(state: AppState, env: EnvMap = process.env): {
   if (hours) return { ok: false, blocked: hours, caps };
   const ticker = String(env.VTS_TEST_SYMBOL ?? "005930").trim() || "005930";
   const paper = checkPaperOrderConstraints({
-    qty: PAPER_ORDER_POLICY.maxQtyPerOrder,
+    qty: Math.min(1, paperMaxQtyPerOrder()),
     ticker,
     state,
   });

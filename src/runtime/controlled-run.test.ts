@@ -21,7 +21,14 @@ import {
 import { checkPaperOrderConstraints, testRunBuyCount } from "@/src/risk/order-policy";
 import { blankRule } from "@/src/rules/params";
 import { tryAcquireWorkerLock, releaseWorkerLock, resetWorkerLockForTest } from "@/src/runtime/worker-lock";
+import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
+import { setNowMs } from "@/src/clock";
 import type { AppState } from "@/lib/types";
+import { after, before, afterEach } from "node:test";
+
+before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
+after(() => setNowMs(null));
+afterEach(() => resetWorkerLockForTest());
 
 function healthyPaper(): AppState {
   const state = createPaperState();

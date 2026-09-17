@@ -2,7 +2,7 @@ import { loadKisConfig, resolveKisEnvironment, type EnvMap as KisEnv } from "@/s
 import { overseasPaperOrdersLocked, vtsOverseasOrderTestsEnabled } from "@/src/markets/overseas/env";
 import { krwEquivalent } from "@/src/markets/overseas/fx";
 import type { OverseasMarketStatus } from "@/src/markets/overseas/types";
-import { PAPER_ORDER_POLICY, usesPaperOrderPolicy } from "@/src/risk/order-policy";
+import { paperMaxQtyPerOrder, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { DEFAULT_LIVE_TEST_CAPS, liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 
 export const OVERSEAS_ORDER_TEST_BLOCKED = "ORDER TEST BLOCKED";
@@ -96,10 +96,10 @@ export function overseasOneShareEligibility(input: {
       riskLimitKrw: caps.maxOrderKrw,
     };
   }
-  if (usesPaperOrderPolicy(input.env) && qty !== PAPER_ORDER_POLICY.maxQtyPerOrder) {
+  if (usesPaperOrderPolicy(input.env) && qty > paperMaxQtyPerOrder(input.env)) {
     return {
       eligible: false,
-      reason: `${OVERSEAS_ORDER_TEST_BLOCKED}: PAPER qty must be ${PAPER_ORDER_POLICY.maxQtyPerOrder}`,
+      reason: `${OVERSEAS_ORDER_TEST_BLOCKED}: PAPER qty must be <= ${paperMaxQtyPerOrder(input.env)}`,
       krwNotional,
       riskLimitKrw: caps.maxOrderKrw,
     };

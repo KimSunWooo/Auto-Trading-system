@@ -1,5 +1,11 @@
 import type { AppState, Order, Side } from "@/lib/types";
-import { checkPaperOrderConstraints, CONTROLLED_RUN_MAX_BROKER_SUBMITS, PAPER_ORDER_POLICY, sessionBrokerSubmitCount, usesPaperOrderPolicy } from "@/src/risk/order-policy";
+import {
+  checkPaperOrderConstraints,
+  paperMaxBrokerSubmitsPerDay,
+  paperMaxQtyPerOrder,
+  dailyBrokerSubmitCount,
+  usesPaperOrderPolicy,
+} from "@/src/risk/order-policy";
 import { liveTestCaps, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 
 /** Caps that still apply if the local book is wrong. */
@@ -32,20 +38,25 @@ export function checkHardLimits(
   env: EnvMap = process.env,
 ): string | null {
   if (usesPaperOrderPolicy(env)) {
-    if (input.qty > PAPER_ORDER_POLICY.maxQtyPerOrder) {
-      return `ORDER TEST BLOCKED: PAPER qty must be ${PAPER_ORDER_POLICY.maxQtyPerOrder}`;
+    const maxQty = paperMaxQtyPerOrder(env);
+    if (input.qty > maxQty) {
+      return `ORDER TEST BLOCKED: PAPER qty must be <= ${maxQty}`;
     }
     if (input.side === "buy") {
-      const paper = checkPaperOrderConstraints({
-        qty: input.qty,
-        ticker: input.ticker,
-        state,
-      });
+      const paper = checkPaperOrderConstraints(
+        {
+          qty: input.qty,
+          ticker: input.ticker,
+          state,
+          side: "buy",
+        },
+        env,
+      );
       if (!paper.ok) return paper.blocked;
     }
-    const startedAt = state.controlledRun?.startedAt;
-    if (startedAt && sessionBrokerSubmitCount(state) >= CONTROLLED_RUN_MAX_BROKER_SUBMITS) {
-      return `ORDER TEST BLOCKED: PAPER session/daily submit cap ${CONTROLLED_RUN_MAX_BROKER_SUBMITS}`;
+    const dailyCap = paperMaxBrokerSubmitsPerDay(env);
+    if (dailyBrokerSubmitCount(state) >= dailyCap) {
+      return `ORDER TEST BLOCKED: PAPER daily order cap ${dailyCap}`;
     }
     return null;
   }

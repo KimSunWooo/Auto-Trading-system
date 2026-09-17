@@ -11,9 +11,13 @@ import {
 } from "@/src/risk/kis-balance-semantics";
 import {
   CONTROLLED_RUN_MAX_BROKER_SUBMITS,
-  PAPER_ORDER_POLICY,
+  dailyBrokerSubmitCount,
   existingOpenBuy,
   hasUnknownOrder,
+  isPaperTestHarness,
+  paperMaxBrokerSubmitsPerDay,
+  paperMaxQtyPerOrder,
+  PAPER_TEST_POLICY,
   sessionBrokerSubmitCount,
   sessionOrders,
   testRunBuyCount,
@@ -449,24 +453,31 @@ export function preTradeGate(
   if (http.realRequests > 0) return { ok: false, blocked: "REAL endpoint request detected" };
   if (http.overseasOrders > 0) return { ok: false, blocked: "Overseas order HTTP detected" };
 
+  const maxQty = paperMaxQtyPerOrder(env);
+  if (input.qty > maxQty) {
+    return { ok: false, blocked: `ORDER TEST BLOCKED: PAPER qty must be <= ${maxQty}` };
+  }
+
   if (input.side === "buy") {
     if (existingOpenBuy(state, input.ticker)) {
       return { ok: false, blocked: "ORDER TEST BLOCKED: Existing open BUY order detected" };
     }
-    const buys = testRunBuyCount(state, state.controlledRun?.startedAt);
-    if (buys >= PAPER_ORDER_POLICY.maxNewBuyPerTestRun) {
-      return {
-        ok: false,
-        blocked: `ORDER TEST BLOCKED: maxNewBuyPerTestRun ${PAPER_ORDER_POLICY.maxNewBuyPerTestRun}`,
-      };
+    if (isPaperTestHarness(env)) {
+      const buys = testRunBuyCount(state, state.controlledRun?.startedAt);
+      if (buys >= PAPER_TEST_POLICY.maxNewBuyPerTestRun) {
+        return {
+          ok: false,
+          blocked: `ORDER TEST BLOCKED: maxNewBuyPerTestRun ${PAPER_TEST_POLICY.maxNewBuyPerTestRun}`,
+        };
+      }
     }
     const orderable = state.kisBalance?.orderableCash;
     if (orderable == null || !(orderable > 0)) {
       return { ok: false, blocked: "ord_psbl_cash missing or 0 — not using dnca_tot_amt" };
     }
     const last = quote?.price ?? 0;
-    if (last > 0 && orderable < last) {
-      return { ok: false, blocked: "Orderable cash cannot buy 1 share" };
+    if (last > 0 && orderable < last * input.qty) {
+      return { ok: false, blocked: "Orderable cash cannot cover order qty" };
     }
   } else {
     const jsonQty = state.positions
@@ -481,9 +492,9 @@ export function preTradeGate(
     }
   }
 
-  const submits = sessionBrokerSubmitCount(state);
-  if (submits >= CONTROLLED_RUN_MAX_BROKER_SUBMITS) {
-    return { ok: false, blocked: `Daily/session PAPER broker submit cap ${CONTROLLED_RUN_MAX_BROKER_SUBMITS}` };
+  const dailyCap = paperMaxBrokerSubmitsPerDay(env);
+  if (dailyBrokerSubmitCount(state) >= dailyCap) {
+    return { ok: false, blocked: `Daily PAPER broker submit cap ${dailyCap}` };
   }
 
   const db = publicDatabaseStatus(env);
@@ -514,7 +525,7 @@ export function autoStopReason(state: AppState, env: EnvMap = process.env): stri
   if (isLiveLike(tradingMode(env)) && !holdsWorkerLock() && !workerLockHealthy()) {
     return "Worker lock lost";
   }
-  if (sessionBrokerSubmitCount(state) >= CONTROLLED_RUN_MAX_BROKER_SUBMITS) {
+  if (dailyBrokerSubmitCount(state) >= paperMaxBrokerSubmitsPerDay(env)) {
     return "Daily order limit reached";
   }
   if (run && run.jsonRdsDivergence > 0) return "DB / JSON position divergence";
@@ -677,10 +688,10 @@ export function formatStartSummary(input: {
     ...input.positions,
     "",
     "Order Qty Limit:",
-    "1",
+    String(paperMaxQtyPerOrder()),
     "",
     "Daily Limit:",
-    "5",
+    String(paperMaxBrokerSubmitsPerDay()),
     "",
     "Reconciliation:",
     input.recon,
@@ -898,7 +909,7 @@ export function formatSoakReport(state: AppState): string {
     "0",
     "",
     "Daily Limit Violation:",
-    sessionBrokerSubmitCount(state) > CONTROLLED_RUN_MAX_BROKER_SUBMITS ? "1" : "0",
+    dailyBrokerSubmitCount(state) > paperMaxBrokerSubmitsPerDay() ? "1" : "0",
     "",
     "Blind Retry:",
     "0",

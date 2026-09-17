@@ -19,7 +19,14 @@ import { checkHardLimits, HARD_LIMITS } from "@/src/risk/limits";
 import {
   activeOrderPolicy,
   checkPaperOrderConstraints,
+  dailyBrokerSubmitCount,
   PAPER_ORDER_POLICY,
+  PAPER_OPERATION_DEFAULTS,
+  PAPER_TEST_POLICY,
+  paperMaxBrokerSubmitsPerDay,
+  paperMaxQtyPerOrder,
+  paperOperationPolicy,
+  parsePositiveIntEnv,
   REAL_ORDER_POLICY,
   usesPaperOrderPolicy,
 } from "@/src/risk/order-policy";
@@ -136,6 +143,12 @@ function clearPolicyEnv() {
     "KIS_REAL_APP_KEY",
     "KIS_REAL_APP_SECRET",
     "KIS_REAL_ACCOUNT_NO",
+    "PAPER_MAX_QTY_PER_ORDER",
+    "PAPER_MAX_BROKER_SUBMITS_PER_DAY",
+    "PAPER_MAX_POSITION_QTY_PER_SYMBOL",
+    "PAPER_POLICY_MODE",
+    "RUN_KIS_VTS_ORDER_TESTS",
+    "RUN_KIS_VTS_OVERSEAS_ORDER_TESTS",
   ]) {
     delete process.env[key];
   }
@@ -193,28 +206,46 @@ test("Test B: overseas PAPER AAPL 1 share above 10,000 KRW is not amount-blocked
   assert.equal(funded.instrumentEligible, true);
 });
 
-test("Test C: PAPER qty=2 is blocked", () => {
-  const domestic = checkHardLimits(
+test("Test C: operational PAPER qty 1/10/11 pass, qty 12 blocked", () => {
+  for (const qty of [1, 10, 11]) {
+    const domestic = checkHardLimits(
+      createPaperState(),
+      { side: "buy", ticker: "005930", qty, price: 70_000 },
+      PAPER_ENV,
+    );
+    assert.equal(domestic, null, `qty=${qty}`);
+    assert.equal(checkPaperOrderConstraints({ qty, ticker: "005930", state: createPaperState() }, PAPER_ENV).ok, true);
+  }
+  const blocked = checkHardLimits(
     createPaperState(),
-    { side: "buy", ticker: "005930", qty: 2, price: 70_000 },
+    { side: "buy", ticker: "005930", qty: 12, price: 70_000 },
     PAPER_ENV,
   );
-  assert.match(domestic ?? "", /qty must be 1/);
-  const qty = checkPaperOrderConstraints({ qty: 2, ticker: "005930", state: createPaperState() });
+  assert.match(blocked ?? "", /qty must be <= 11/);
+  const qty = checkPaperOrderConstraints({ qty: 12, ticker: "005930", state: createPaperState() }, PAPER_ENV);
   assert.equal(qty.ok, false);
-  const overseas = overseasOneShareEligibility({
+  const overseas11 = overseasOneShareEligibility({
     symbol: "AAPL",
     nativePrice: 10,
     usdOrderable: 100_000,
     fxRate: 1353.3,
-    qty: 2,
+    qty: 11,
     env: PAPER_ENV,
   });
-  assert.equal(overseas.eligible, false);
-  assert.match(overseas.reason, /qty must be 1/);
+  assert.equal(overseas11.eligible, true);
+  const overseas12 = overseasOneShareEligibility({
+    symbol: "AAPL",
+    nativePrice: 10,
+    usdOrderable: 100_000,
+    fxRate: 1353.3,
+    qty: 12,
+    env: PAPER_ENV,
+  });
+  assert.equal(overseas12.eligible, false);
+  assert.match(overseas12.reason, /qty must be <= 11/);
 });
 
-test("Test D: same intent submits one broker order", async () => {
+test("Test D: same intent qty=11 submits one broker order", async () => {
   applyEnv(PAPER_ENV);
   const dir = mkdtempSync(path.join(os.tmpdir(), "paper-dup-"));
   configureWorkerLockPath(path.join(dir, "trading-worker.lock"));
@@ -226,14 +257,14 @@ test("Test D: same intent submits one broker order", async () => {
       intentId: "sig:paper:dup",
       signalId: "sig:paper:dup",
     });
-    const first = await broker.buyMarket("005930", 70_000);
-    const second = await broker.buyMarket("005930", 70_000);
+    const first = await broker.buyMarket("005930", 70_000 * 11);
+    const second = await broker.buyMarket("005930", 70_000 * 11);
     assert.equal(first.status === "rejected", false);
     assert.equal(client.orders.length, 1);
     assert.equal(second.orderId, first.orderId);
     const local = new OrderManager({ current: createPaperState() });
-    const a = local.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
-    const b = local.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
+    const a = local.buy("cash", "005930", 11, 70_000, { intentId: "intent-dup" });
+    const b = local.buy("cash", "005930", 11, 70_000, { intentId: "intent-dup" });
     assert.equal(a.ok, true);
     assert.equal(b.orderId, a.orderId);
   } finally {
@@ -246,7 +277,7 @@ test("Test D: same intent submits one broker order", async () => {
 test("Test E: existing open BUY blocks a new order", () => {
   const state: AppState = createPaperState();
   state.orders = [pendingBuy("005930")];
-  const paper = checkPaperOrderConstraints({ qty: 1, ticker: "005930", state });
+  const paper = checkPaperOrderConstraints({ qty: 1, ticker: "005930", state }, PAPER_ENV);
   assert.equal(paper.ok, false);
   assert.match(paper.blocked ?? "", /Existing open BUY order detected/);
   const hard = checkHardLimits(
@@ -282,12 +313,50 @@ test("Test E: existing open BUY blocks a new order", () => {
   releaseWorkerLock("paper-open-buy");
 });
 
-test("Test F: REAL / non-PAPER LIVE_TEST keep amount limits", () => {
+test("Test F: PAPER operational daily broker submit limit", () => {
+  assert.equal(paperMaxBrokerSubmitsPerDay(PAPER_ENV), 20);
+  const state = createPaperState();
+  const today = new Date().toISOString();
+  state.orders = Array.from({ length: 19 }, (_, i) =>
+    pendingBuy("005930", {
+      id: `d-${i}`,
+      status: "filled",
+      createdAt: today,
+      code: `00${1000 + i}`.slice(-6),
+    }),
+  );
+  assert.equal(dailyBrokerSubmitCount(state), 19);
+  assert.equal(
+    checkPaperOrderConstraints({ qty: 1, ticker: "069500", state }, PAPER_ENV).ok,
+    true,
+  );
+  state.orders.push(pendingBuy("069500", { id: "d-19", status: "filled", createdAt: today }));
+  assert.equal(dailyBrokerSubmitCount(state), 20);
+  const atCap = checkPaperOrderConstraints({ qty: 1, ticker: "035720", state }, PAPER_ENV);
+  assert.equal(atCap.ok, false);
+  assert.match(atCap.blocked ?? "", /daily order cap 20/);
+});
+
+test("Test G: PAPER position qty limit", () => {
+  const state = createPaperState();
+  state.positions = [{ code: "005930", name: "삼성전자", qty: 45, avgPrice: 70_000, ruleId: "cash" }];
+  assert.equal(
+    checkPaperOrderConstraints({ qty: 5, ticker: "005930", state, side: "buy" }, PAPER_ENV).ok,
+    true,
+  );
+  const over = checkPaperOrderConstraints({ qty: 6, ticker: "005930", state, side: "buy" }, PAPER_ENV);
+  assert.equal(over.ok, false);
+  assert.match(over.blocked ?? "", /position qty cap 50/);
+});
+
+test("Test H: REAL policy unchanged by PAPER env", () => {
   assert.equal(usesPaperOrderPolicy(REAL_ENV), false);
   assert.equal(activeOrderPolicy(REAL_ENV).id, REAL_ORDER_POLICY.id);
   assert.equal(REAL_ORDER_POLICY.enforceAmountCaps, true);
   assert.equal(DEFAULT_LIVE_TEST_CAPS.maxOrderKrw, 10_000);
   assert.equal(HARD_LIMITS.maxOrderKrw, 2_000_000);
+  assert.equal(paperOperationPolicy({ ...REAL_ENV, PAPER_MAX_QTY_PER_ORDER: "11" }).maxQtyPerOrder, 11);
+  assert.equal(usesPaperOrderPolicy({ ...REAL_ENV, PAPER_MAX_QTY_PER_ORDER: "11" }), false);
 
   const liveTestOnly = checkHardLimits(
     createPaperState(),
@@ -336,4 +405,83 @@ test("Test F: REAL / non-PAPER LIVE_TEST keep amount limits", () => {
   });
   assert.equal(aaplReal.eligible, false);
   assert.match(aaplReal.reason, /risk limit/);
+});
+
+test("PAPER env qty defaults and rejects non-positive", () => {
+  assert.equal(paperMaxQtyPerOrder(PAPER_ENV), 11);
+  assert.equal(PAPER_OPERATION_DEFAULTS.maxQtyPerOrder, 11);
+  assert.equal(parsePositiveIntEnv(undefined, 11).value, 11);
+  assert.equal(parsePositiveIntEnv("0", 11).rejected, true);
+  assert.equal(parsePositiveIntEnv("-1", 11).rejected, true);
+  assert.equal(parsePositiveIntEnv("NaN", 11).rejected, true);
+  assert.equal(parsePositiveIntEnv("Infinity", 11).rejected, true);
+  const bad = checkPaperOrderConstraints(
+    { qty: 1, ticker: "005930", state: createPaperState() },
+    { ...PAPER_ENV, PAPER_MAX_QTY_PER_ORDER: "0" },
+  );
+  assert.equal(bad.ok, false);
+  assert.match(bad.blocked ?? "", /invalid PAPER_MAX_QTY_PER_ORDER/);
+  assert.equal(activeOrderPolicy({ ...PAPER_ENV, PAPER_POLICY_MODE: "test" }).id, PAPER_TEST_POLICY.id);
+  assert.equal(paperMaxQtyPerOrder({ ...PAPER_ENV, PAPER_POLICY_MODE: "test" }), 1);
+});
+
+test("operational PAPER removes maxNewBuyPerTestRun; harness keeps it", () => {
+  const state = createPaperState();
+  state.controlledRun = {
+    gate: "Domestic PAPER Live-Market Controlled Auto-Trading",
+    startedAt: "2026-09-17T00:00:00.000Z",
+    status: "running",
+    strategyName: "none",
+    symbols: ["005930"],
+    ticks: 0,
+    quoteSuccess: 0,
+    quoteFail: 0,
+    signals: 0,
+    riskAllowed: 0,
+    riskBlocked: 0,
+    brokerSubmits: 0,
+    buyCount: 0,
+    sellCount: 0,
+    executions: 0,
+    partialFills: 0,
+    duplicateExecutions: 0,
+    duplicateSubmit: 0,
+    unknownCount: 0,
+    reconHealthy: 0,
+    reconMismatch: 0,
+    reconUnknown: 0,
+    mirrorErrors: 0,
+    jsonRdsDivergence: 0,
+    kisJsonDivergence: 0,
+    realRequests: 0,
+    overseasOrders: 0,
+    lastInquiry: {
+      quoteOk: true,
+      balanceOk: true,
+      orderableOk: true,
+      positionOk: true,
+      openOrdersOk: true,
+      executionOk: true,
+      recon: "HEALTHY",
+    },
+    consecutiveInquiryFailures: 0,
+    events: [],
+  };
+  state.orders = [
+    pendingBuy("005930", {
+      id: "session-buy",
+      status: "filled",
+      createdAt: "2026-09-17T01:00:00.000Z",
+    }),
+  ];
+  assert.equal(
+    checkPaperOrderConstraints({ qty: 1, ticker: "069500", state }, PAPER_ENV).ok,
+    true,
+  );
+  const harness = checkPaperOrderConstraints(
+    { qty: 1, ticker: "069500", state },
+    { ...PAPER_ENV, PAPER_POLICY_MODE: "test" },
+  );
+  assert.equal(harness.ok, false);
+  assert.match(harness.blocked ?? "", /maxNewBuyPerTestRun/);
 });

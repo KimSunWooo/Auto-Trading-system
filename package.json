@@ -19,7 +19,8 @@
     "db:import-legacy": "tsx scripts/db-import-legacy.ts",
     "db:test": "tsx --test --test-concurrency=1 src/db/*.test.ts",
     "soak:preflight": "tsx scripts/domestic-paper-soak.ts",
-    "soak:report": "tsx scripts/domestic-paper-soak.ts --report"
+    "soak:report": "tsx scripts/domestic-paper-soak.ts --report",
+    "ec2:health": "tsx scripts/ec2-health-check.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

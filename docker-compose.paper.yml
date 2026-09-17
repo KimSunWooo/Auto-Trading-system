@@ -1,0 +1,48 @@
+# PAPER-only single-replica stack for EC2.
+# Do not scale replicas. Do not enable REAL trading.
+# RDS is an external AWS service — no MySQL container here.
+
+services:
+  mirae-paper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mirae-autobuy-paper:local
+    container_name: mirae-paper
+    restart: unless-stopped
+    ports:
+      - "43147:43147"
+    env_file:
+      - .env.ec2
+    environment:
+      BROKER: kis
+      TRADING_MODE: live_test
+      KIS_MODE: paper
+      ALLOW_LIVE_TRADING: "false"
+      PERSISTENCE_MODE: mirror
+      PORT: "43147"
+      HOSTNAME: 0.0.0.0
+    volumes:
+      # Persistent JSON authority + worker lock (EBS bind mount on EC2)
+      - ${MIRA_DATA_DIR:-./data}:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:43147/api/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      replicas: 1
+    # Explicitly single-process. Do not use swarm mode scaling.
+    stop_grace_period: 30s

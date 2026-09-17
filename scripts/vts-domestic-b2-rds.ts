@@ -22,7 +22,7 @@ import { CASH_RULE_ID } from "@/src/rules/params";
 import { cashFromAllocations } from "@/src/accounts/defaults";
 import { diffLocalVsKis } from "@/src/risk/balance-sync";
 import { checkHardLimits } from "@/src/risk/limits";
-import { PAPER_ORDER_POLICY, REAL_ORDER_POLICY, usesPaperOrderPolicy } from "@/src/risk/order-policy";
+import { PAPER_ORDER_POLICY, PAPER_TEST_POLICY, REAL_ORDER_POLICY, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { emptySafety } from "@/src/runtime/safety";
 import {
@@ -209,8 +209,11 @@ async function main() {
   if (!REAL_ORDER_POLICY.enforceAmountCaps) {
     throw new Error("REAL_ORDER_POLICY amount caps missing");
   }
-  if (PAPER_ORDER_POLICY.maxQtyPerOrder !== 1) {
-    throw new Error("PAPER_ORDER_POLICY maxQtyPerOrder is not 1");
+  if (PAPER_TEST_POLICY.maxQtyPerOrder !== 1) {
+    throw new Error("PAPER_TEST_POLICY maxQtyPerOrder is not 1");
+  }
+  if (PAPER_ORDER_POLICY.maxQtyPerOrder < 11) {
+    throw new Error("PAPER operational maxQtyPerOrder must be at least 11");
   }
   if (typeof checkHardLimits !== "function") {
     throw new Error("checkHardLimits missing");

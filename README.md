@@ -11,24 +11,27 @@
 | Gate 1 (거래 코어 정적 분석) | PASS |
 | Gate 2 (VTS 장부 격리 · 테스트 하네스) | CONDITIONAL PASS |
 | Gate 2.5 (변경 범위 감사) | PASS |
-| VTS-A (국내 PAPER 읽기 전용) | PASS (이전 검증) |
-| 해외주식 UI / 시세 / 외화잔고 | 추가됨. 주문 버튼 DISABLED |
-| Overseas VTS-A | `npm run vts:overseas-a` 로 실행. 기본 npm test 는 skip |
-| Overseas VTS-B1 | 주문 없음. PAPER는 1주 금액으로 저가주를 고르지 않음. `npm run vts:overseas-b1` |
-| PAPER order policy | 수량/횟수/중복/미체결 게이트. 10,000원 금액 상한은 PAPER 자격에서 제외 |
-| RDS MySQL mirror | JSON authority 유지. `PERSISTENCE_MODE=mirror` 일 때만 원장 projection. database SOT 없음 |
-| VTS-B2 국내/해외 주문 | 미실행. 별도 `Domestic/Overseas VTS-B2 진행` 요청 전까지 opt-in 없음 |
-| Gate 3 / REAL | 잠금. 진행하지 않음 |
-| Domestic PAPER soak | 기존 Worker. 시세만 KIS. 전략 파라미터 변경 없음. 신규 주문 ≤5 · 1주 |
+| VTS-A (국내 PAPER 읽기 전용) | PASS |
+| Domestic VTS-B2 (BUY → ODNO → Fill → JSON → RDS → Recon) | PASS (이전 검증, ODNO `0000022105` / 005930×1 보존) |
+| Domestic PAPER Live Soak | 구현 완료. Worker+lock. 단발 timeout ≠ AUTO STOP |
+| PAPER operational policy | max qty 11 / day 20 / position 50. Test harness는 1주·1 BUY 유지 |
+| 해외주식 UI / 시세 / 외화잔고 / Adapter | 구현. 실제 PAPER 주문은 opt-in |
+| Overseas VTS-A | `npm run vts:overseas-a` (기본 npm test skip) |
+| Overseas VTS-B preflight | Quote/Balance/Orderable PASS 가능. 실제 BUY는 미국 정규장+opt-in |
+| Overseas VTS-B2 actual BUY | READY / NOT EXECUTED (시장 CLOSED 또는 opt-in 없음) |
+| EC2 PAPER deployment artifacts | Dockerfile / compose / health / docs 준비. 실제 EC2 provisioning 없음 |
+| RDS MySQL mirror | JSON authority. `PERSISTENCE_MODE=mirror`. database SOT 없음 |
+| Gate 3 / REAL | LOCKED |
 
-로컬 검증: TypeScript PASS, `npm test` 269 pass / 12 skip / 0 fail, build PASS, `npm run db:check` PASS.
+로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
 
 유지 중인 안전장치:
 
 - `npm test`는 실제 KIS 주문을 내지 않습니다.
 - REAL(`KIS_MODE=real`, `ALLOW_LIVE_TRADING=true`, `KIS_LIVE_CONFIRM`)은 꺼 둡니다.
-- 주문 opt-in(`RUN_KIS_VTS_ORDER_TESTS`, `RUN_KIS_VTS_FLATTEN_TEST`)은 꺼 둡니다.
+- 주문 opt-in(`RUN_KIS_VTS_ORDER_TESTS`, `RUN_KIS_VTS_FLATTEN_TEST`, `RUN_KIS_VTS_OVERSEAS_ORDER_TESTS`)은 기본 꺼짐.
 - timeout → UNKNOWN, 맹목 재시도 없음, ODNO exact mapping, recon 실패 시 신규 주문 차단.
+- RDS 실패 → Broker retry 없음. Worker lock 없으면 주문 금지.
 
 ## 아키텍처
 
@@ -154,7 +157,13 @@ npm run dev
 
 화면 상단 배지가 **KIS 모의** / `LIVE_TEST` 인지 확인합니다. `TRADING_MODE=live_test`에서는 실전 호스트 주문을 거절합니다.
 
-PAPER(`TRADING_MODE=live_test` + `KIS_MODE=paper|demo` + `BROKER=kis`, REAL 플래그 없음) 주문 한도는 금액이 아니라 수량/횟수입니다. 1회 1주, 동일 testRun 신규 BUY 1건, 동일 intent 1회, 동일 종목 미체결 BUY 금지, 하루 PAPER 테스트 주문 최대 5건. 삼성전자/AAPL 1주가 예전 10,000원을 넘어도 PAPER 자격만으로 막지 않습니다.
+PAPER(`TRADING_MODE=live_test` + `KIS_MODE=paper|demo` + `BROKER=kis`, REAL 플래그 없음) operational 한도:
+
+- 1회 최대 `PAPER_MAX_QTY_PER_ORDER` (기본 11주)
+- 일일 브로커 submit `PAPER_MAX_BROKER_SUBMITS_PER_DAY` (기본 20)
+- 종목별 포지션 `PAPER_MAX_POSITION_QTY_PER_SYMBOL` (기본 50)
+- 동일 intent 1회, 동일 종목 미체결 BUY 금지, UNKNOWN/recon 게이트 유지
+- VTS 단발 하네스(`PAPER_POLICY_MODE=test` 또는 `RUN_KIS_VTS_ORDER_TESTS`)만 예전 1주/1 BUY 제한
 
 REAL 및 PAPER가 아닌 LIVE_TEST 한도(`OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다. PAPER 정책은 REAL에 적용되지 않습니다.
 
@@ -220,6 +229,19 @@ npm run soak:report
 ```
 
 Ready=NO 이면 자동매매를 시작하지 않습니다. 시세 실패 시 주문하지 않으며, 강제 시그널은 만들지 않습니다.
+
+## EC2 PAPER 배포 준비
+
+실제 EC2 provisioning은 별도 단계입니다. 아티팩트만 포함합니다.
+
+```bash
+docker build -t mirae-autobuy-paper:local .
+docker compose -f docker-compose.paper.yml config
+# 문서: docs/EC2_PAPER_DEPLOYMENT.md
+# 헬스: GET /api/health/live · /api/health/ready · npm run ec2:health
+```
+
+단일 레플리카만. `data/` 는 EBS bind mount. REAL 플래그 금지.
 
 ## 주의
 
