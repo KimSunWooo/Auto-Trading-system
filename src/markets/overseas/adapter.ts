@@ -1,4 +1,4 @@
-import type { KisClient, KisOverseasCancel } from "@/src/brokers/kis-client";
+import type { KisOverseasApi, KisOverseasCancel } from "@/src/brokers/kis-client";
 import { BrokerRejectError, isIndeterminateError } from "@/src/risk/errors";
 import { overseasPaperOrdersLocked } from "@/src/markets/overseas/env";
 import { overseasBuyCashGate, overseasOneShareEligibility } from "@/src/markets/overseas/preflight";
@@ -35,7 +35,7 @@ async function persistNow(state: import("@/lib/types").AppState) {
 }
 
 export class OverseasTradingAdapter {
-  constructor(private readonly client: KisClient) {}
+  constructor(private readonly client: KisOverseasApi) {}
 
   getQuote(instrument: OverseasInstrument): Promise<OverseasQuote> {
     return this.client.inquireOverseasPrice(instrument);

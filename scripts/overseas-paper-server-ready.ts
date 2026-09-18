@@ -93,27 +93,50 @@ async function main() {
   console.log("[x] RUN_KIS_VTS_OVERSEAS_ORDER_TESTS unset");
   console.log("[x] REAL flags none");
 
-  const present = await adapter.getPresentBalance();
-  await sleep(400);
+  let present;
+  try {
+    present = await adapter.getPresentBalance();
+  } catch (err) {
+    console.error("Present Balance FAIL", err instanceof Error ? err.message : err);
+    present = {
+      syncedAt: new Date().toISOString(),
+      cash: [],
+      fx: null,
+      buyingPower: null,
+      positions: [],
+      krwCash: null,
+      estimatedKrwValue: null,
+      message: "present-balance failed",
+    };
+  }
+  await sleep(800);
   const usd = pickUsdCash(present.cash);
   const fxRate = present.fx?.rate ?? usd?.exchangeRate ?? 0;
   let buyingPower = present.buyingPower;
   const probe = probeInstrument("NYSE", "F", "Ford");
   try {
     const q = await adapter.getQuote(probe);
-    await sleep(350);
+    await sleep(800);
     buyingPower = await adapter.getBuyingPower(probe, q.price);
-  } catch {
-    // keep present
+  } catch (err) {
+    console.error("Quote/Psamount partial FAIL", err instanceof Error ? err.message : err);
   }
 
-  const openOrders = await adapter.getOpenOrders("NASDAQ");
-  await sleep(350);
-  const nyseOpen = await adapter.getOpenOrders("NYSE").catch(() => []);
-  await sleep(350);
-  const executions = await adapter.getExecutions();
-  await sleep(350);
-  const { positions } = await adapter.getBalance("NASDAQ");
+  let openOrders: Awaited<ReturnType<typeof adapter.getOpenOrders>> = [];
+  let nyseOpen: Awaited<ReturnType<typeof adapter.getOpenOrders>> = [];
+  let executions: Awaited<ReturnType<typeof adapter.getExecutions>> = [];
+  let positions: Awaited<ReturnType<typeof adapter.getBalance>>["positions"] = [];
+  try {
+    openOrders = await adapter.getOpenOrders("NASDAQ");
+    await sleep(800);
+    nyseOpen = await adapter.getOpenOrders("NYSE").catch(() => []);
+    await sleep(800);
+    executions = await adapter.getExecutions();
+    await sleep(800);
+    positions = (await adapter.getBalance("NASDAQ")).positions;
+  } catch (err) {
+    console.error("Open/Exec/Balance partial FAIL", err instanceof Error ? err.message : err);
+  }
 
   const recovery = classifyOverseasRestart({
     localOrders: [],
@@ -123,8 +146,8 @@ async function main() {
   });
 
   const rows = [];
-  for (const item of US_VTS_B1_PROBE_UNIVERSE.slice(0, 8)) {
-    await sleep(400);
+  for (const item of US_VTS_B1_PROBE_UNIVERSE.slice(0, 5)) {
+    await sleep(900);
     try {
       const quote = await adapter.getQuote(probeInstrument(item.exchange, item.symbol, item.displayName));
       rows.push(

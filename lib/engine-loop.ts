@@ -1,7 +1,7 @@
 import { tickAndGet, mutateStore } from "@/lib/store";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { closeDb } from "@/src/db/client";
-import { getSharedKisClient } from "@/src/brokers/kis-client";
+import { getSharedKisClient, type KisClient } from "@/src/brokers/kis-client";
 import {
   heartbeatWorkerLock,
   releaseWorkerLock,
@@ -84,7 +84,7 @@ async function ensureStartupSync(): Promise<void> {
       if (usesOverseasPaperSync() && overseasServerStartupAutoOrderSafe() && !g.__mirimaesuOverseasSyncDone) {
         try {
           await mutateStore(async (state) => {
-            const client = getSharedKisClient();
+            const client = getSharedKisClient() as KisClient;
             const overseas = await runOverseasPaperSync(state, client);
             if (overseas.ok) {
               g.__mirimaesuOverseasSyncDone = true;

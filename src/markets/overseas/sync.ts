@@ -3,7 +3,7 @@
  * Never places orders. Never enables opt-in. Scoped separately from domestic Startup Sync.
  */
 import type { AppState } from "@/lib/types";
-import type { KisClient } from "@/src/brokers/kis-client";
+import type { KisOverseasApi } from "@/src/brokers/kis-client";
 import { OverseasTradingAdapter } from "@/src/markets/overseas/adapter";
 import {
   classifyOverseasRestart,
@@ -51,7 +51,7 @@ export function usesOverseasPaperSync(env: EnvMap = process.env): boolean {
  */
 export async function runOverseasPaperSync(
   state: AppState,
-  client: KisClient,
+  client: KisOverseasApi,
   env: EnvMap = process.env,
 ): Promise<{ ok: boolean; state: AppState; sync: OverseasSyncState; error?: string }> {
   if (!overseasServerStartupAutoOrderSafe(env) || vtsOverseasOrderTestsEnabled(env)) {

@@ -228,7 +228,9 @@ export function classifyOverseasRestart(input: {
   return { status: "HEALTHY", blocksNewBuy: false, message: "Overseas restart classification clear" };
 }
 
-export function overseasServerStartupAutoOrderSafe(env: NodeJS.ProcessEnv = process.env): boolean {
+export function overseasServerStartupAutoOrderSafe(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
   return env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS !== "true";
 }
 
