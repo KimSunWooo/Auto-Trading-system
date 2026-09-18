@@ -809,13 +809,15 @@ export class KisClient implements KisApi {
     this.assertOverseasPaperOrdersAllowed();
     if (order.qty < 1) throw new Error("주문 수량이 1주 미만입니다.");
     if (order.price <= 0) throw new Error("해외 PAPER 주문은 지정가만 지원합니다.");
+    const { normalizeOverseasLimitPrice } = await import("@/src/markets/overseas/price");
+    const priceText = normalizeOverseasLimitPrice(order.price);
     const body = {
       CANO: this.config.cano,
       ACNT_PRDT_CD: this.config.productCode,
       OVRS_EXCG_CD: order.instrument.tradingExcg,
       PDNO: order.instrument.symbol,
       ORD_QTY: String(order.qty),
-      OVRS_ORD_UNPR: String(order.price),
+      OVRS_ORD_UNPR: priceText,
       CTAC_TLNO: "",
       MGCO_APTM_ODNO: "",
       SLL_TYPE: order.side === "sell" ? "00" : "",

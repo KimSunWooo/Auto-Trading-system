@@ -19,7 +19,7 @@
 | 해외주식 UI / 시세 / 외화잔고 / Adapter | 구현. 실제 PAPER 주문은 opt-in |
 | Overseas VTS-A | `npm run vts:overseas-a` (기본 npm test skip) |
 | Overseas VTS-B preflight | Quote/Balance/Orderable PASS 가능. 실제 BUY는 미국 정규장+opt-in |
-| Overseas VTS-B2 actual BUY | READY / NOT EXECUTED (시장 CLOSED 또는 opt-in 없음) |
+| Overseas VTS-B2 actual BUY | PREPARED / NOT EXECUTED (opt-in OFF · 1-share first lifecycle) |
 | EC2 PAPER deployment artifacts | Dockerfile / compose / health / docs 준비. 실제 EC2 provisioning 없음 |
 | RDS MySQL mirror | JSON authority. `PERSISTENCE_MODE=mirror`. database SOT 없음 |
 | PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
@@ -193,6 +193,25 @@ npx tsx scripts/paper-long-soak-activation-gate.ts
 ```
 
 Do not set `enabled=true` until a later activation step passes the gate. REAL stays locked.
+
+## Overseas PAPER lifecycle (server-ready)
+
+Overseas PAPER lifecycle is prepared but not yet executed.
+
+- PAPER FX execution is **not implemented**.
+- USD **orderable** amount (inquire-psamount / present-balance orderable) is the BUY funding authority — not USD cash alone.
+- The first live PAPER lifecycle uses **one share only** (`OVERSEAS_FIRST_LIFECYCLE_QTY=1`).
+- The overseas order opt-in (`RUN_KIS_VTS_OVERSEAS_ORDER_TESTS`) is **separate** from domestic PAPER.
+- Server startup does **not** enable overseas orders (opt-in must stay unset).
+- Deterministic broker reject → `REJECTED`. Timeout/indeterminate → `UNKNOWN`.
+- UNKNOWN is **never** blindly retried.
+- Intent is persisted **before** broker POST. ODNO means submitted/pending, not filled.
+- REAL remains locked.
+
+```bash
+npm run overseas:server-ready   # read-only checklist; order POST = 0
+npm run vts:overseas-b-preflight
+```
 
 `npm test`는 실제 KIS 주문을 내지 않습니다. 읽기 전용 VTS는 `RUN_KIS_VTS_TESTS=true`, 주문은 `RUN_KIS_VTS_ORDER_TESTS=true`가 추가로 있을 때만 실행됩니다. REAL 관련 플래그가 보이면 테스트를 ABORT 합니다. VTS 장부는 `data/vts-test/<testRunId>/`에만 쌓이며 운영 `paper-account.json`과 섞이지 않습니다.
 

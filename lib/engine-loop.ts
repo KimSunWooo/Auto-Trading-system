@@ -12,6 +12,11 @@ import {
   usesPaperStartupSync,
   emptyStartupSync,
 } from "@/src/runtime/startup-sync";
+import {
+  runOverseasPaperSync,
+  usesOverseasPaperSync,
+} from "@/src/markets/overseas/sync";
+import { overseasServerStartupAutoOrderSafe } from "@/src/markets/overseas/lifecycle";
 
 const g = globalThis as typeof globalThis & {
   __mirimaesuEngine?: NodeJS.Timeout;
@@ -21,6 +26,7 @@ const g = globalThis as typeof globalThis & {
   __mirimaesuStartupSyncDone?: boolean;
   __mirimaesuStartupSyncPromise?: Promise<void>;
   __mirimaesuStartupSyncNextAttemptAt?: number;
+  __mirimaesuOverseasSyncDone?: boolean;
 };
 
 function workerId(): string {
@@ -74,6 +80,33 @@ async function ensureStartupSync(): Promise<void> {
     if (healthy) {
       g.__mirimaesuStartupSyncDone = true;
       g.__mirimaesuStartupSyncNextAttemptAt = undefined;
+      // Additive overseas read-only sync. Never enables order opt-in. Never auto-orders.
+      if (usesOverseasPaperSync() && overseasServerStartupAutoOrderSafe() && !g.__mirimaesuOverseasSyncDone) {
+        try {
+          await mutateStore(async (state) => {
+            const client = getSharedKisClient();
+            const overseas = await runOverseasPaperSync(state, client);
+            if (overseas.ok) {
+              g.__mirimaesuOverseasSyncDone = true;
+              console.info(
+                `[engine-loop] overseas sync HEALTHY open=${overseas.sync.openOrderCount} recovery=${overseas.sync.recoveryStatus}`,
+              );
+            } else {
+              console.error("[engine-loop] overseas sync FAILED:", overseas.error ?? overseas.sync.message);
+            }
+            // Preserve domestic HEALTHY even when overseas fails.
+            return {
+              ...overseas.state,
+              startupSync: state.startupSync,
+            };
+          });
+        } catch (err) {
+          console.error(
+            "[engine-loop] overseas sync error (domestic untouched):",
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
     } else if (rateLimited) {
       // Avoid hammering KIS; retry after cooldown while keeping NEW ORDER blocked.
       g.__mirimaesuStartupSyncNextAttemptAt = Date.now() + 30_000;
@@ -151,9 +184,11 @@ export function stopEngineLoopForTest() {
   g.__mirimaesuShuttingDown = false;
   g.__mirimaesuStartupSyncDone = false;
   g.__mirimaesuStartupSyncPromise = undefined;
+  g.__mirimaesuOverseasSyncDone = false;
 }
 
 export function resetStartupSyncFlagForTest() {
   g.__mirimaesuStartupSyncDone = false;
   g.__mirimaesuStartupSyncPromise = undefined;
+  g.__mirimaesuOverseasSyncDone = false;
 }

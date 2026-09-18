@@ -1,4 +1,5 @@
 import type { KisClient, KisOverseasCancel } from "@/src/brokers/kis-client";
+import { BrokerRejectError, isIndeterminateError } from "@/src/risk/errors";
 import { overseasPaperOrdersLocked } from "@/src/markets/overseas/env";
 import { overseasBuyCashGate, overseasOneShareEligibility } from "@/src/markets/overseas/preflight";
 import { KIS_CURRENCY_EXCHANGE_AUDIT } from "@/src/markets/overseas/exchange-audit";
@@ -10,6 +11,12 @@ import {
   type OverseasInstrument,
   type UsExchange,
 } from "@/src/markets/overseas/instruments";
+import {
+  overseasCancelAllowed,
+  overseasFirstLifecycleQtyOk,
+  overseasSellQtyAllowed,
+} from "@/src/markets/overseas/lifecycle";
+import { parseOverseasLimitPrice } from "@/src/markets/overseas/price";
 import type {
   OverseasAccountSnapshot,
   OverseasBuyingPower,
@@ -21,6 +28,11 @@ import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/
 import type { StateBox } from "@/src/accounts/StateBox";
 import { checkPaperOrderConstraints, existingOpenBuy, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { RiskManager } from "@/src/risk/RiskManager";
+
+async function persistNow(state: import("@/lib/types").AppState) {
+  const { persistStateNow } = await import("@/lib/store");
+  await persistStateNow(state);
+}
 
 export class OverseasTradingAdapter {
   constructor(private readonly client: KisClient) {}
@@ -57,6 +69,31 @@ export class OverseasTradingAdapter {
     return overseasPaperOrdersLocked(env);
   }
 
+  /**
+   * Fresh buying-power authority: prefer inquire-psamount; fall back to present-balance orderable.
+   * Stale cached values alone must not authorize a BUY.
+   */
+  async resolveFreshBuyingPower(
+    instrument: OverseasInstrument,
+    price: number,
+  ): Promise<OverseasBuyingPower> {
+    try {
+      return await this.getBuyingPower(instrument, price);
+    } catch {
+      const present = await this.getPresentBalance();
+      const usd = pickUsdCash(present.cash);
+      return (
+        present.buyingPower ?? {
+          currency: "USD",
+          orderableCash: usd?.orderableCash ?? 0,
+          orderableQty: 0,
+          exchange: instrument.exchange,
+          symbol: instrument.symbol,
+        }
+      );
+    }
+  }
+
   async assembleAccount(symbol = "AAPL", exchange: UsExchange = "NASDAQ"): Promise<OverseasAccountSnapshot> {
     const instrument = makeUsInstrument(exchange, symbol);
     const present = await this.getPresentBalance();
@@ -83,8 +120,9 @@ export class OverseasTradingAdapter {
   }
 
   /**
-   * Same intent submits once. Timeout/UNKNOWN is left on the order; this method never blind-retries.
-   * UI keeps BUY/SELL disabled until overseas PAPER opt-in is set.
+   * Same intent submits once. Deterministic broker reject → REJECTED.
+   * Timeout / indeterminate → UNKNOWN (never blind-retried).
+   * Intent is persisted before broker POST.
    */
   async submitLimitOnce(
     box: StateBox,
@@ -97,6 +135,8 @@ export class OverseasTradingAdapter {
       price: number;
       orderableUsd?: number | null;
       fxRate?: number | null;
+      kisPositions?: import("@/src/markets/overseas/types").OverseasPosition[];
+      refreshBuyingPower?: boolean;
     },
   ) {
     const locked = this.ordersLocked();
@@ -128,6 +168,37 @@ export class OverseasTradingAdapter {
         orderNo: priorIntent.brokerOrderNo,
       };
     }
+
+    let limitPrice: number;
+    try {
+      limitPrice = parseOverseasLimitPrice(input.price);
+    } catch (err) {
+      return {
+        ok: false as const,
+        status: "rejected" as const,
+        reason: err instanceof Error ? err.message : "invalid limit price",
+        orderNo: undefined,
+      };
+    }
+
+    const firstQty = overseasFirstLifecycleQtyOk(input.qty);
+    if (!firstQty.ok) {
+      return { ok: false as const, status: "rejected" as const, reason: firstQty.blocked!, orderNo: undefined };
+    }
+
+    let orderableUsd = input.orderableUsd;
+    if (
+      input.side === "buy" &&
+      (input.refreshBuyingPower === true || (input.refreshBuyingPower !== false && input.orderableUsd == null))
+    ) {
+      try {
+        const power = await this.resolveFreshBuyingPower(input.instrument, limitPrice);
+        orderableUsd = power.orderableCash;
+      } catch {
+        // keep provided orderableUsd; gate below still requires > 0
+      }
+    }
+
     if (input.side === "buy") {
       if (
         existingOpenBuy(box.current, identity) ||
@@ -155,24 +226,24 @@ export class OverseasTradingAdapter {
           };
         }
       }
-      const cashGate = overseasBuyCashGate(input.orderableUsd);
+      const cashGate = overseasBuyCashGate(orderableUsd);
       if (!cashGate.ok) {
         return { ok: false as const, status: "rejected" as const, reason: cashGate.blocked, orderNo: undefined };
       }
       const risk = RiskManager.checkOverseasBuy({
         qty: input.qty,
-        nativePrice: input.price,
+        nativePrice: limitPrice,
         nativeCurrency: "USD",
         fxRate: input.fxRate,
-        orderableNative: input.orderableUsd,
+        orderableNative: orderableUsd,
       });
       if (!risk.ok) {
         return { ok: false as const, status: "rejected" as const, reason: risk.reason, orderNo: undefined };
       }
       const instrument = overseasOneShareEligibility({
         symbol: input.instrument.symbol,
-        nativePrice: input.price,
-        usdOrderable: input.orderableUsd,
+        nativePrice: limitPrice,
+        usdOrderable: orderableUsd,
         fxRate: input.fxRate,
         qty: input.qty,
         env: process.env,
@@ -180,7 +251,18 @@ export class OverseasTradingAdapter {
       if (!instrument.eligible) {
         return { ok: false as const, status: "rejected" as const, reason: instrument.reason, orderNo: undefined };
       }
+    } else {
+      const sellGate = overseasSellQtyAllowed({
+        qty: input.qty,
+        identity,
+        kisPositions: input.kisPositions ?? [],
+        localPositions: box.current.positions.map((p) => ({ code: p.code, qty: p.qty })),
+      });
+      if (!sellGate.ok) {
+        return { ok: false as const, status: "rejected" as const, reason: sellGate.blocked, orderNo: undefined };
+      }
     }
+
     const upserted = upsertIntent(box.current, {
       intentId: input.intentId,
       signalId: input.signalId,
@@ -188,35 +270,67 @@ export class OverseasTradingAdapter {
       ticker: identity,
       side: input.side,
       qty: input.qty,
-      price: input.price,
+      price: limitPrice,
       reason: "overseas-limit",
     });
     box.current = upserted.state;
     if (upserted.duplicate) {
-      return { ok: false as const, status: "rejected" as const, reason: "same intent already submitted", orderNo: upserted.intent.brokerOrderNo };
+      return {
+        ok: false as const,
+        status: "rejected" as const,
+        reason: "same intent already submitted",
+        orderNo: upserted.intent.brokerOrderNo,
+      };
     }
+    // Persist BEFORE broker POST (crash window: restart must see intent, POST count 0).
+    await persistNow(box.current);
+
     try {
       const placed = await this.client.orderOverseasUs({
         instrument: input.instrument,
         side: input.side,
         qty: input.qty,
-        price: input.price,
+        price: limitPrice,
       });
       box.current = patchIntent(box.current, input.intentId, {
         status: "submitted",
         brokerOrderNo: placed.orderNo,
       });
+      await persistNow(box.current);
+      // ODNO received ≠ FILLED. Position changes only via execution/balance evidence.
       return { ok: true as const, status: "pending" as const, reason: undefined, orderNo: placed.orderNo };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "해외 주문 실패";
+      if (err instanceof BrokerRejectError && !isIndeterminateError(err)) {
+        box.current = patchIntent(box.current, input.intentId, { status: "rejected", reason });
+        await persistNow(box.current);
+        return { ok: false as const, status: "rejected" as const, reason, orderNo: undefined };
+      }
       box.current = patchIntent(box.current, input.intentId, { status: "unknown", reason });
+      await persistNow(box.current);
       return { ok: false as const, status: "unknown" as const, reason, orderNo: undefined };
     }
   }
 
-  async cancelExact(order: KisOverseasCancel) {
+  async cancelExact(
+    order: KisOverseasCancel,
+    opts: {
+      openOrders?: OverseasOpenOrder[];
+      localOrder?: import("@/lib/types").Order | null;
+    } = {},
+  ) {
     const locked = this.ordersLocked();
     if (locked) throw new Error(locked);
+    if (opts.openOrders) {
+      const allowed = overseasCancelAllowed({
+        orderNo: order.orderNo,
+        instrument: order.instrument,
+        qty: order.qty,
+        openOrders: opts.openOrders,
+        localOrder: opts.localOrder,
+      });
+      if (!allowed.ok) throw new Error(allowed.blocked ?? "Cancel blocked");
+    }
     await this.client.cancelOverseasOrder(order);
   }
 }
