@@ -88,6 +88,7 @@ export function RulesPanel({
         <CardContent className="space-y-3">
           {rules.map((rule) => {
             const alloc = state.allocations.find((row) => row.ruleId === rule.id);
+            const isLongSoak = rule.id === "paper-long-soak-ma";
             return (
               <div key={rule.id} className="space-y-2 rounded-xl border px-3 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -99,17 +100,26 @@ export function RulesPanel({
                       {rule.kind === "interval"
                         ? `실행 주기 ${Math.round(rule.intervalMs / 1000)}초`
                         : `이평 ${rule.fastMa}/${rule.slowMa}`}
+                      {rule.kind === "ma-cross" ? " · MA source = Daily" : null}
                       {" · "}1회 {Math.round(rule.buyPct * 100)}% / {formatWon(rule.sliceKrw)}
+                      {" · "}예산 {formatWon(rule.budget)}
                       {" · "}손절 {Math.round(rule.stopLossPct * 100)}% · 익절{" "}
                       {Math.round(rule.takeProfitPct * 100)}%
+                      {isLongSoak ? " · Max Qty = 5" : null}
                     </p>
+                    {isLongSoak ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        PAPER Long Soak baseline — Enabled OFF. Lifecycle validation only; not an
+                        optimized strategy.
+                      </p>
+                    ) : null}
                     {alloc?.lastMessage ? (
                       <p className="mt-1 text-xs text-muted-foreground">{alloc.lastMessage}</p>
                     ) : null}
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge variant={rule.enabled ? "default" : "secondary"}>
-                      {rule.enabled ? "사용" : "중지"}
+                      {rule.enabled ? "사용" : "Enabled OFF"}
                     </Badge>
                     <Switch
                       checked={rule.enabled}

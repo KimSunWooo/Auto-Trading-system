@@ -55,10 +55,14 @@ async function runMaCross(
     return { ...bucket, lastMessage: "이동평균 워밍업 중" };
   }
   const regime = String(bucket.meta.regime ?? "flat");
+  const prevRel = String(bucket.meta.maRel ?? "");
+  const currRel = fast > slow ? "above" : fast < slow ? "below" : "flat";
+  // True crossover: require prior opposite side. Missing maRel (restart / first bar) → no entry.
+  const crossedUp = prevRel === "below" && currRel === "above";
   const held = bucket.positions.find((p) => p.code === rule.ticker);
   const name = findStock(rule.ticker)?.name ?? rule.ticker;
 
-  if (fast > slow && regime !== "long") {
+  if (crossedUp && regime !== "long") {
     const amount = Math.min(rule.sliceKrw, Math.floor(bucket.balance * rule.buyPct));
     const signalId = makeSignalId(["sig", "ma", rule.id, rule.ticker, "long", seoulDay()]);
     const fill = await broker.withIntent({ intentId: signalId, signalId, reason: "ma-buy" }).buyMarket(rule.ticker, amount);
@@ -72,6 +76,7 @@ async function runMaCross(
           : fill.reason ?? "매수 실패",
       meta: {
         ...bucket.meta,
+        maRel: currRel,
         regime: fill.ok ? "long" : fill.status === "unknown" ? "halt" : regime,
       },
     };
@@ -84,12 +89,17 @@ async function runMaCross(
       ...bucket,
       lastRunAt: nowIso(),
       lastMessage: fill.ok ? `이평 하향 이탈 매도 ${fill.qty}주` : fill.reason ?? "매도 실패",
-      meta: { ...bucket.meta, regime: fill.ok ? "flat" : regime },
+      meta: {
+        ...bucket.meta,
+        maRel: currRel,
+        regime: fill.ok ? "flat" : regime,
+      },
     };
   }
 
   return {
     ...bucket,
+    meta: { ...bucket.meta, maRel: currRel || prevRel },
     lastMessage: `대기 (${name} MA${rule.fastMa} ${Math.round(fast)} / MA${rule.slowMa} ${Math.round(slow)})`,
   };
 }

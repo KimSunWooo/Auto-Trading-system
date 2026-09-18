@@ -290,7 +290,7 @@ test("Test R: VTS harness remains 1-share / 1-buy / 5-submit", () => {
 });
 
 test("MA true-crossover restart audit: same-day intent + regime gate are SAFE", () => {
-  // Current RuleRunner enters on fast>slow && regime!==long (not edge-detect).
+  // RuleRunner enters only on true crossover (prev maRel below → above).
   // Same Seoul-day signalId collapses re-submit; regime=long suppresses re-entry.
   applyEnv(PAPER_ENV);
   setNowMs(SEOUL_REGULAR_SESSION_MS);

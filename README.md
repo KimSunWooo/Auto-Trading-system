@@ -14,7 +14,8 @@
 | VTS-A (국내 PAPER 읽기 전용) | PASS |
 | Domestic VTS-B2 (BUY → ODNO → Fill → JSON → RDS → Recon) | PASS (이전 검증, ODNO `0000022105` / 005930×1 보존) |
 | Domestic PAPER Live Soak | 구현 완료. Worker+lock. 단발 timeout ≠ AUTO STOP |
-| PAPER operational policy | max qty 11 / day 20 / position 50. Test harness는 1주·1 BUY 유지 |
+| PAPER operational policy | daily order-count cap REMOVED · max qty/order 5 · position cap 50. VTS harness 1주·1 BUY·daily 5 submit 유지 |
+| PAPER Long Soak MA | `paper-long-soak-ma` (035720, MA 5/20 daily) · **enabled=false** · dry validation only |
 | 해외주식 UI / 시세 / 외화잔고 / Adapter | 구현. 실제 PAPER 주문은 opt-in |
 | Overseas VTS-A | `npm run vts:overseas-a` (기본 npm test skip) |
 | Overseas VTS-B preflight | Quote/Balance/Orderable PASS 가능. 실제 BUY는 미국 정규장+opt-in |
@@ -170,6 +171,28 @@ PAPER(`TRADING_MODE=live_test` + `KIS_MODE=paper|demo` + `BROKER=kis`, REAL 플�
 
 `PAPER_MAX_BROKER_SUBMITS_PER_DAY`는 operational PAPER에서 deprecated·무시됩니다. `0`으로 무제한을 표현하지 마세요.
 REAL 및 PAPER가 아닌 LIVE_TEST 한도(`OrderManager.canBuy` → `checkHardLimits`): 1건 10,000원, 하루 매수 30,000원, 하루 3건. 환경변수로 이 값을 올릴 수 없습니다. PAPER 정책은 REAL에 적용되지 않습니다.
+
+## PAPER Long Soak (ma-cross baseline)
+
+PAPER Long Soak baseline uses a daily MA crossover rule.
+
+- Rule id: `paper-long-soak-ma` (default ticker selected via KIS read-only candidate audit).
+- The rule is **disabled by default** (`enabled=false`).
+- MA5/MA20 uses **daily-close history + current price**, not intraday candles.
+- Operational PAPER has **no daily order-count cap**.
+- Each order is limited to **max 5 shares** (`qty > 5` → **BLOCK**, not truncate).
+- Exposure / max position / daily loss / UNKNOWN / reconciliation / worker-lock gates remain active.
+- Entry requires a **true crossover** (`maRel` below → above). Restart with missing `maRel` does not false-enter.
+- The baseline is for **lifecycle validation**, not an investment recommendation or optimized strategy.
+
+Dry validation / gate (no orders):
+
+```bash
+npx tsx scripts/paper-long-soak-preflight.ts
+npx tsx scripts/paper-long-soak-activation-gate.ts
+```
+
+Do not set `enabled=true` until a later activation step passes the gate. REAL stays locked.
 
 `npm test`는 실제 KIS 주문을 내지 않습니다. 읽기 전용 VTS는 `RUN_KIS_VTS_TESTS=true`, 주문은 `RUN_KIS_VTS_ORDER_TESTS=true`가 추가로 있을 때만 실행됩니다. REAL 관련 플래그가 보이면 테스트를 ABORT 합니다. VTS 장부는 `data/vts-test/<testRunId>/`에만 쌓이며 운영 `paper-account.json`과 섞이지 않습니다.
 

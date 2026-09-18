@@ -20,6 +20,8 @@
     "db:test": "tsx --test --test-concurrency=1 src/db/*.test.ts",
     "soak:preflight": "tsx scripts/domestic-paper-soak.ts",
     "soak:report": "tsx scripts/domestic-paper-soak.ts --report",
+    "long-soak:preflight": "tsx scripts/paper-long-soak-preflight.ts",
+    "long-soak:gate": "tsx scripts/paper-long-soak-activation-gate.ts",
     "ec2:health": "tsx scripts/ec2-health-check.ts"
   },
   "dependencies": {

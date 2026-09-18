@@ -1,3 +1,20 @@
 {
-  "rules": []
+  "rules": [
+    {
+      "id": "paper-long-soak-ma",
+      "name": "PAPER Long Soak MA",
+      "ticker": "035720",
+      "kind": "ma-cross",
+      "intervalMs": 60000,
+      "fastMa": 5,
+      "slowMa": 20,
+      "buyPct": 0.05,
+      "sliceKrw": 300000,
+      "minAmountKrw": 10000,
+      "stopLossPct": 0.03,
+      "takeProfitPct": 0.03,
+      "enabled": false,
+      "budget": 800000
+    }
+  ]
 }
