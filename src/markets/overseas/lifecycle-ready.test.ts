@@ -651,12 +651,21 @@ test("persist-before-submit: intent exists after reject path before second POST"
   applyPaper();
   process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS = "true";
   let posts = 0;
-  const adapter = new OverseasTradingAdapter({
-    orderOverseasUs: async () => {
-      posts += 1;
-      throw new BrokerRejectError("reject-after-intent");
+  const persistCalls: string[] = [];
+  const adapter = new OverseasTradingAdapter(
+    {
+      orderOverseasUs: async () => {
+        posts += 1;
+        throw new BrokerRejectError("reject-after-intent");
+      },
+    } as unknown as KisClient,
+    {
+      // In-memory persister — never touches production paper-account.json.
+      persistState: async (state) => {
+        persistCalls.push(state.intents?.find((i) => i.intentId === "sig:ov:persist")?.status ?? "none");
+      },
     },
-  } as unknown as KisClient);
+  );
   const box = { current: createPaperState() };
   await adapter.submitLimitOnce(box, {
     intentId: "sig:ov:persist",
@@ -669,6 +678,9 @@ test("persist-before-submit: intent exists after reject path before second POST"
     refreshBuyingPower: false,
   });
   assert.ok(findIntent(box.current, "sig:ov:persist"));
+  // Persist-before-POST: first persist is pending/submitted intent, then reject persist.
+  assert.ok(persistCalls.length >= 1);
+  assert.equal(persistCalls[0], "pending");
   // Crash-window simulation: intent already present → no second POST
   const again = await adapter.submitLimitOnce(box, {
     intentId: "sig:ov:persist",

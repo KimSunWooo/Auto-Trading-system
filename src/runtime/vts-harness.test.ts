@@ -10,6 +10,8 @@ import {
   resetStateStoreForTest,
 } from "@/lib/store";
 import { holdsWorkerLock, resetWorkerLockForTest } from "@/src/runtime/worker-lock";
+import { closeDb } from "@/src/db/client";
+import { resetDatabaseStatusForTest } from "@/src/db/status";
 import {
   assertVtsSafeEnv,
   beginVtsTestRun,
@@ -23,9 +25,11 @@ import {
   vtsPreflight,
 } from "@/src/runtime/vts-harness";
 
-afterEach(() => {
+afterEach(async () => {
   resetWorkerLockForTest();
   resetStateStoreForTest();
+  resetDatabaseStatusForTest();
+  await closeDb();
 });
 
 test("makeTestRunId follows VTS-YYYYMMDD-HHmmss-short", () => {

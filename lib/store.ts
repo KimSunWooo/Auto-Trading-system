@@ -17,6 +17,7 @@ import { holdsWorkerLock } from "@/src/runtime/worker-lock";
 import { buildRuntimePublic } from "@/src/runtime/status";
 import { mirrorAfterJsonSave } from "@/src/db/mirror";
 import { invalidateNonKisQuotes, usesLiveKisQuotes } from "@/src/runtime/quote-policy";
+import { isNodeTestProcess } from "@/src/runtime/test-process";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 export const DEFAULT_STORE_PATH = path.join(DATA_DIR, "paper-account.json");
@@ -214,10 +215,7 @@ export async function mutateStore(
 
 /** Production paper book is not written during unit/integration tests. Isolated VTS paths still persist. */
 export async function persistStateNow(state: AppState) {
-  const underTest =
-    process.env.npm_lifecycle_event === "test" ||
-    process.env.NODE_ENV === "test" ||
-    process.argv.some((arg) => arg === "--test" || arg.includes("node:test"));
+  const underTest = isNodeTestProcess();
   const testingDefaultBook = underTest && activeStorePath === DEFAULT_STORE_PATH;
   if (testingDefaultBook) return;
   await saveState(state);

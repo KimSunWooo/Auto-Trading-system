@@ -9,10 +9,18 @@ export type AppDb = MySql2Database<typeof schema>;
 let pool: mysql.Pool | null = null;
 let db: AppDb | null = null;
 
+function clearMysqlLedgerSingleton(): void {
+  // Avoid static cycle with mysql-ledger → getDb.
+  void import("@/src/db/mysql-ledger")
+    .then((mod) => mod.resetMysqlLedgerForTest())
+    .catch(() => undefined);
+}
+
 export function resetDbClientForTest(): void {
   const closing = pool;
   pool = null;
   db = null;
+  clearMysqlLedgerSingleton();
   void closing?.end().catch(() => undefined);
 }
 
@@ -20,6 +28,12 @@ export async function closeDb(): Promise<void> {
   const closing = pool;
   pool = null;
   db = null;
+  try {
+    const { resetMysqlLedgerForTest } = await import("@/src/db/mysql-ledger");
+    resetMysqlLedgerForTest();
+  } catch {
+    // ignore
+  }
   if (closing) await closing.end().catch(() => undefined);
 }
 

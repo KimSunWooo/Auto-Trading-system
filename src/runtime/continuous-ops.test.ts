@@ -102,21 +102,30 @@ function filledBuy(extra: Partial<Order> = {}): Order {
 
 test("Test A: operational PAPER 100+ same-day orders do not COUNT-block", () => {
   applyEnv(PAPER_ENV);
-  const state = createPaperState();
-  const today = new Date().toISOString();
-  state.orders = Array.from({ length: 120 }, (_, i) =>
-    filledBuy({
-      id: `n-${i}`,
-      createdAt: today,
-      code: "069500",
-      brokerOrderNo: `000000${String(i).padStart(4, "0")}`,
-    }),
-  );
-  assert.equal(dailyBrokerSubmitCount(state), 120);
-  assert.equal(paperMaxBrokerSubmitsPerDay(PAPER_ENV), null);
-  assert.equal(checkPaperOrderConstraints({ qty: 1, ticker: "005930", state }, PAPER_ENV).ok, true);
-  assert.equal(checkHardLimits(state, { side: "buy", ticker: "005930", qty: 1, price: 70_000 }, PAPER_ENV), null);
-  assert.equal(autoStopReason(state, PAPER_ENV), null);
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ops-count-"));
+  configureWorkerLockPath(path.join(dir, "trading-worker.lock"));
+  try {
+    assert.equal(tryAcquireWorkerLock("ops-count-a"), true);
+    const state = createPaperState();
+    const today = new Date().toISOString();
+    state.orders = Array.from({ length: 120 }, (_, i) =>
+      filledBuy({
+        id: `n-${i}`,
+        createdAt: today,
+        code: "069500",
+        brokerOrderNo: `000000${String(i).padStart(4, "0")}`,
+      }),
+    );
+    assert.equal(dailyBrokerSubmitCount(state), 120);
+    assert.equal(paperMaxBrokerSubmitsPerDay(PAPER_ENV), null);
+    assert.equal(checkPaperOrderConstraints({ qty: 1, ticker: "005930", state }, PAPER_ENV).ok, true);
+    assert.equal(checkHardLimits(state, { side: "buy", ticker: "005930", qty: 1, price: 70_000 }, PAPER_ENV), null);
+    assert.equal(autoStopReason(state, PAPER_ENV), null);
+  } finally {
+    releaseWorkerLock();
+    resetWorkerLockForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Test B: VTS harness daily submit 5 retained", () => {

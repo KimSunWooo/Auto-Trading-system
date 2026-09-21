@@ -26,14 +26,24 @@ import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/
 import type { StateBox } from "@/src/accounts/StateBox";
 import { checkPaperOrderConstraints, existingOpenBuy, usesPaperOrderPolicy } from "@/src/risk/order-policy";
 import { RiskManager } from "@/src/risk/RiskManager";
+import type { AppState } from "@/lib/types";
 
-async function persistNow(state: import("@/lib/types").AppState) {
+export type StatePersister = (state: AppState) => Promise<void>;
+
+async function defaultPersistNow(state: AppState): Promise<void> {
   const { persistStateNow } = await import("@/lib/store");
   await persistStateNow(state);
 }
 
 export class OverseasTradingAdapter {
-  constructor(private readonly client: KisOverseasApi) {}
+  private readonly persistState: StatePersister;
+
+  constructor(
+    private readonly client: KisOverseasApi,
+    opts: { persistState?: StatePersister } = {},
+  ) {
+    this.persistState = opts.persistState ?? defaultPersistNow;
+  }
 
   getQuote(instrument: OverseasInstrument): Promise<OverseasQuote> {
     return this.client.inquireOverseasPrice(instrument);
@@ -300,7 +310,7 @@ export class OverseasTradingAdapter {
       };
     }
     // Persist BEFORE broker POST (crash window: restart must see intent, POST count 0).
-    await persistNow(box.current);
+    await this.persistState(box.current);
 
     try {
       const placed = await this.client.orderOverseasUs({
@@ -313,18 +323,18 @@ export class OverseasTradingAdapter {
         status: "submitted",
         brokerOrderNo: placed.orderNo,
       });
-      await persistNow(box.current);
+      await this.persistState(box.current);
       // ODNO received ≠ FILLED. Position changes only via execution/balance evidence.
       return { ok: true as const, status: "pending" as const, reason: undefined, orderNo: placed.orderNo };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "해외 주문 실패";
       if (err instanceof BrokerRejectError && !isIndeterminateError(err)) {
         box.current = patchIntent(box.current, input.intentId, { status: "rejected", reason });
-        await persistNow(box.current);
+        await this.persistState(box.current);
         return { ok: false as const, status: "rejected" as const, reason, orderNo: undefined };
       }
       box.current = patchIntent(box.current, input.intentId, { status: "unknown", reason });
-      await persistNow(box.current);
+      await this.persistState(box.current);
       return { ok: false as const, status: "unknown" as const, reason, orderNo: undefined };
     }
   }

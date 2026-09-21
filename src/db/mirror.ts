@@ -10,6 +10,7 @@ import {
 } from "@/src/db/status";
 import type { Ledger } from "@/src/db/ledger";
 import type { EnvMap } from "@/src/runtime/trading-mode";
+import { isNodeTestProcess } from "@/src/runtime/test-process";
 
 let testLedger: Ledger | null = null;
 
@@ -20,6 +21,9 @@ export function setMirrorLedgerForTest(ledger: Ledger | null): void {
 
 export async function resolveMirrorLedger(env: EnvMap = process.env): Promise<Ledger | null> {
   if (testLedger) return testLedger;
+  // Unit/integration tests must never open the real RDS pool (keep-alive hang).
+  // Explicit MemoryLedger via setMirrorLedgerForTest still works.
+  if (isNodeTestProcess()) return null;
   if (!dbConfigured(env)) return null;
   return getMysqlLedger(env);
 }
