@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +24,7 @@ import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
 import type { PublicState, Quote } from "@/lib/types";
 import {
   filterDashboardQuotes,
+  isFreshKisQuote,
   quoteDisplayKind,
   quoteFreshnessLabel,
 } from "@/src/runtime/quote-policy";
@@ -360,6 +361,14 @@ function Watchlist({
   pendingKis?: boolean;
 }) {
   const [query, setQuery] = useState("");
+  // null until mount — SSR and first client paint share the same markup.
+  const [now, setNow] = useState<number | null>(null);
+  useEffect(() => {
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
   const filtered = quotes.filter(
     (q) => q.name.includes(query) || q.code.includes(query) || q.market.includes(query.toUpperCase()),
   );
@@ -408,9 +417,18 @@ function Watchlist({
               </TableRow>
             ) : (
               filtered.map((quote) => {
-                const kind = quoteDisplayKind(quote, { liveKis: liveQuotes });
-                const freshness = quoteFreshnessLabel(quote, { liveKis: liveQuotes });
-                const orderable = kind === "KIS_LIVE";
+                const kind = quoteDisplayKind(quote, {
+                  liveKis: liveQuotes,
+                  now: now ?? undefined,
+                });
+                const freshness = quoteFreshnessLabel(quote, {
+                  liveKis: liveQuotes,
+                  now: now ?? undefined,
+                });
+                // Fail-closed until mount clock is ready; then require fresh KIS.
+                const orderable = liveQuotes
+                  ? now != null && isFreshKisQuote(quote, now)
+                  : kind !== "UNAVAILABLE";
                 const sourceTag =
                   kind === "KIS_LIVE" || kind === "STALE"
                     ? "KIS"

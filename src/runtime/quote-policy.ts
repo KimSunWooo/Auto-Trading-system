@@ -2,6 +2,7 @@ import type { Quote } from "@/lib/types";
 import { brokerDriver } from "@/src/brokers/kis-config";
 import { isLiveLike, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { nowMs } from "@/src/clock";
+import { formatSeoulTime } from "@/lib/format";
 
 /** Keep in sync with CONTROLLED_RUN_QUOTE_FRESH_MS — do not import controlled-run (client-safe). */
 export const LIVE_KIS_QUOTE_FRESH_MS = 15_000;
@@ -39,6 +40,11 @@ export function isOrderableQuote(
 
 export type QuoteDisplayKind = "KIS_LIVE" | "STALE" | "MOCK" | "SEED" | "UNAVAILABLE";
 
+/**
+ * UI display classification.
+ * When `now` is omitted, KIS quotes are not age-classified (hydration-safe).
+ * Pass an explicit `now` only after client mount for STALE / orderable UI.
+ */
 export function quoteDisplayKind(
   quote: Quote | null | undefined,
   opts: { liveKis?: boolean; now?: number } = {},
@@ -46,7 +52,8 @@ export function quoteDisplayKind(
   if (!quote) return "UNAVAILABLE";
   const liveKis = opts.liveKis ?? usesLiveKisQuotes();
   if (quote.source === "kis") {
-    if (isFreshKisQuote(quote, opts.now ?? nowMs())) return "KIS_LIVE";
+    if (opts.now == null) return "KIS_LIVE";
+    if (isFreshKisQuote(quote, opts.now)) return "KIS_LIVE";
     return "STALE";
   }
   if (liveKis) {
@@ -89,18 +96,30 @@ export function filterDashboardQuotes(
   });
 }
 
+/**
+ * Hydration-safe freshness text (pair with a separate source tag in the UI).
+ * Uses Asia/Seoul absolute clock from `freshAt` (same SSR/client string).
+ * “시세 지연” only when an explicit `now` is provided (post-mount).
+ */
 export function quoteFreshnessLabel(
   quote: Quote | null | undefined,
   opts: { liveKis?: boolean; now?: number } = {},
 ): string {
-  const now = opts.now ?? nowMs();
-  const kind = quoteDisplayKind(quote, { liveKis: opts.liveKis, now });
-  if (kind === "KIS_LIVE" && quote?.freshAt) {
-    const ageSec = Math.max(0, Math.round((now - quote.freshAt) / 1000));
-    return `KIS · ${ageSec}초 전`;
+  if (!quote) return "시세 없음";
+  const liveKis = opts.liveKis ?? usesLiveKisQuotes();
+
+  if (quote.source === "kis") {
+    if (!quote.freshAt) return "—";
+    const clock = formatSeoulTime(quote.freshAt);
+    if (!clock) return "—";
+    if (opts.now != null && !isFreshKisQuote(quote, opts.now)) {
+      return `시세 지연 · ${clock}`;
+    }
+    return clock;
   }
-  if (kind === "STALE") return "KIS · 시세 지연";
-  if (kind === "MOCK") return "MOCK";
-  if (kind === "SEED") return "SEED";
+
+  if (liveKis) return "시세 없음";
+  if (quote.source === "mock") return "MOCK";
+  if (quote.source === "seed") return "SEED";
   return "시세 없음";
 }

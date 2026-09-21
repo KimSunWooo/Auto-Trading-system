@@ -14,9 +14,11 @@ import {
   isMockOrSeedQuote,
   isOrderableQuote,
   quoteDisplayKind,
+  quoteFreshnessLabel,
   usesLiveKisQuotes,
   LIVE_KIS_QUOTE_FRESH_MS,
 } from "@/src/runtime/quote-policy";
+import { formatSeoulTime } from "@/lib/format";
 
 before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
 after(() => setNowMs(null));
@@ -201,7 +203,12 @@ test("F. getCurrentPrice with stale source=kis >15s → reject", async () => {
   box.current.quotes = { "035720": kisQuote("035720", 33_400, staleAt) };
   assert.equal(isFreshKisQuote(box.current.quotes["035720"]), false);
   assert.equal(isOrderableQuote(box.current.quotes["035720"], { liveKis: true }), false);
-  assert.equal(quoteDisplayKind(box.current.quotes["035720"], { liveKis: true }), "STALE");
+  assert.equal(
+    quoteDisplayKind(box.current.quotes["035720"], { liveKis: true, now: nowMs() }),
+    "STALE",
+  );
+  // Without explicit now, age is not classified (hydration-safe first paint).
+  assert.equal(quoteDisplayKind(box.current.quotes["035720"], { liveKis: true }), "KIS_LIVE");
 
   const client = new FakeKis();
   client.failPrice = new Error("stale refresh failed");
@@ -276,4 +283,69 @@ test("advanceQuotes does not synthesize mock prices under live kis", () => {
   assert.equal(next["035720"], undefined);
   assert.equal(next["005930"]?.source, "kis");
   assert.equal(next["005930"]?.price, 70_000);
+});
+
+test("Hydration A. SSR freshness markup equals client first-render markup", () => {
+  liveKisEnv();
+  const freshAt = SEOUL_REGULAR_SESSION_MS;
+  const quote = kisQuote("035720", 33_400, freshAt);
+  // No `now` → absolute Seoul clock only (deterministic).
+  const ssr = quoteFreshnessLabel(quote, { liveKis: true });
+  const clientFirst = quoteFreshnessLabel(quote, { liveKis: true });
+  assert.equal(ssr, clientFirst);
+  assert.equal(ssr, formatSeoulTime(freshAt));
+  assert.doesNotMatch(ssr, /초 전/);
+});
+
+test("Hydration B. after mount, explicit now can mark stale", () => {
+  liveKisEnv();
+  const freshAt = SEOUL_REGULAR_SESSION_MS - LIVE_KIS_QUOTE_FRESH_MS - 1_000;
+  const quote = kisQuote("035720", 33_400, freshAt);
+  const first = quoteFreshnessLabel(quote, { liveKis: true });
+  assert.equal(first, formatSeoulTime(freshAt));
+  const afterMount = quoteFreshnessLabel(quote, {
+    liveKis: true,
+    now: SEOUL_REGULAR_SESSION_MS,
+  });
+  assert.match(afterMount, /시세 지연/);
+  assert.match(afterMount, new RegExp(formatSeoulTime(freshAt)));
+});
+
+test("Hydration C. freshAt missing → deterministic 시세 없음 / —", () => {
+  liveKisEnv();
+  assert.equal(quoteFreshnessLabel(null, { liveKis: true }), "시세 없음");
+  const noFresh = { ...kisQuote(), freshAt: undefined };
+  assert.equal(quoteFreshnessLabel(noFresh, { liveKis: true }), "—");
+});
+
+test("Hydration D. source=kis → KIS display kind without now", () => {
+  liveKisEnv();
+  const quote = kisQuote("035720", 33_400, SEOUL_REGULAR_SESSION_MS);
+  assert.equal(quoteDisplayKind(quote, { liveKis: true }), "KIS_LIVE");
+  assert.equal(quoteFreshnessLabel(quote, { liveKis: true }), formatSeoulTime(SEOUL_REGULAR_SESSION_MS));
+});
+
+test("Hydration E. source=mock/seed in live-like not shown as valid current", () => {
+  liveKisEnv();
+  assert.equal(quoteDisplayKind(mockQuote(), { liveKis: true }), "UNAVAILABLE");
+  assert.equal(quoteFreshnessLabel(mockQuote(), { liveKis: true }), "시세 없음");
+  assert.equal(quoteDisplayKind(seedBookQuote(), { liveKis: true }), "UNAVAILABLE");
+  const rows = filterDashboardQuotes(
+    { a: mockQuote(), b: seedBookQuote("005930"), c: kisQuote("069500", 1, SEOUL_REGULAR_SESSION_MS) },
+    { liveKis: true },
+  );
+  assert.deepEqual(rows.map((r) => r.code), ["069500"]);
+});
+
+test("Hydration F. freshness UI change does not weaken order safety", () => {
+  liveKisEnv();
+  const fresh = kisQuote("035720", 33_400, SEOUL_REGULAR_SESSION_MS);
+  const stale = kisQuote("035720", 33_400, SEOUL_REGULAR_SESSION_MS - LIVE_KIS_QUOTE_FRESH_MS - 1);
+  const mock = mockQuote();
+  // Display may show KIS without now, but order gate still requires fresh kis.
+  assert.equal(quoteDisplayKind(stale, { liveKis: true }), "KIS_LIVE");
+  assert.equal(isOrderableQuote(stale, { liveKis: true, now: SEOUL_REGULAR_SESSION_MS }), false);
+  assert.equal(isOrderableQuote(fresh, { liveKis: true, now: SEOUL_REGULAR_SESSION_MS }), true);
+  assert.equal(isOrderableQuote(mock, { liveKis: true }), false);
+  assert.equal(isFreshKisQuote(mock), false);
 });
