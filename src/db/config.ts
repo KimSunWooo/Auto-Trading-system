@@ -29,13 +29,31 @@ export function databaseName(env: EnvMap = process.env): string {
  * Prefer DATABASE_URL (mysql://… or host:port/db).
  * Credentials may come from the URL or DATABASE_USER_NAME / DATABASE_PASSWORD
  * (also AWS_RDS_USERNAME / AWS_RDS_PASSWORD). Never log the result.
+ *
+ * Legacy typo alias DATABASE_PASSOWORD is accepted with a one-time warning
+ * (value never printed). Prefer DATABASE_PASSWORD.
  */
+let warnedPassowordAlias = false;
+
+export function warnDeprecatedPasswordAlias(env: EnvMap = process.env): void {
+  if (warnedPassowordAlias) return;
+  const hasTypo = Boolean(envOf(env, "DATABASE_PASSOWORD"));
+  const hasCorrect = Boolean(envOf(env, "DATABASE_PASSWORD"));
+  if (hasTypo && !hasCorrect) {
+    warnedPassowordAlias = true;
+    console.warn(
+      "[db] DATABASE_PASSOWORD is a deprecated typo alias; set DATABASE_PASSWORD instead (value not shown).",
+    );
+  }
+}
+
 export function loadDbConnection(env: EnvMap = process.env): DbConnectionConfig | null {
   const url = envOf(env, "DATABASE_URL");
   const userFallback =
     envOf(env, "DATABASE_USER_NAME") ||
     envOf(env, "DATABASE_USERNAME") ||
     envOf(env, "AWS_RDS_USERNAME");
+  warnDeprecatedPasswordAlias(env);
   const passwordFallback =
     envOf(env, "DATABASE_PASSWORD") ||
     envOf(env, "DATABASE_PASSOWORD") ||

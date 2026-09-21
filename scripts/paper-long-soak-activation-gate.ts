@@ -1,6 +1,9 @@
 /**
- * PAPER Long Soak Activation Gate (read-only checklist).
+ * PAPER Long Soak Activation Gate — PRE-ACTIVATION ONLY (read-only).
  * Never enables the rule. Never places orders. Never touches REAL.
+ *
+ * If the rule is already enabled, verdict is ALREADY_ENABLED (not a FAIL).
+ * For armed/runtime checks use: scripts/paper-long-soak-runtime-health.ts
  *
  * Usage: npx tsx scripts/paper-long-soak-activation-gate.ts
  */
@@ -13,6 +16,12 @@ import { hasUnknownOrder, PAPER_OPERATION_DEFAULTS } from "@/src/risk/order-poli
 import { kisJsonPositionDiverged } from "@/src/runtime/controlled-run";
 import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
 import { publicDatabaseStatus } from "@/src/db/mirror";
+import {
+  LONG_SOAK_RULE_ID,
+  activationGateVerdict,
+  formatActivationGateReport,
+  workerRuntimeHealthy,
+} from "@/src/runtime/paper-long-soak-health";
 
 function loadDotEnvLocal() {
   const file = path.join(process.cwd(), ".env.local");
@@ -39,10 +48,6 @@ function loadState(): AppState {
   ) as AppState;
 }
 
-function yn(ok: boolean): string {
-  return ok ? "YES" : "NO";
-}
-
 function main() {
   loadDotEnvLocal();
   if (process.env.ALLOW_LIVE_TRADING === "true") throw new Error("Refuse REAL");
@@ -52,7 +57,7 @@ function main() {
   delete process.env.KIS_LIVE_CONFIRM;
 
   const rules = getRuleConfig().rules;
-  const rule = rules.find((row) => row.id === "paper-long-soak-ma");
+  const rule = rules.find((row) => row.id === LONG_SOAK_RULE_ID);
   const state = loadState();
   const unknown = hasUnknownOrder(state);
   const openBuy = state.orders.some(
@@ -79,75 +84,68 @@ function main() {
     q?.source === "kis" && q.freshAt && Date.now() - q.freshAt < 120_000,
   );
   const dailyHistoryReady = Boolean(q && (q.history?.length ?? 0) >= 20);
+  const workerLock = holdsWorkerLock() || workerLockHealthy();
+  // Prefer runtime.worker when present on live state files; file snapshot may omit it.
+  const runtimeWorker = (state as AppState & { runtime?: { worker?: string } }).runtime?.worker;
+  const workerRuntimeOk =
+    runtimeWorker == null ? workerLock : workerRuntimeHealthy(runtimeWorker);
 
-  const checks = {
+  const prerequisitesOk =
+    Boolean(rule) &&
+    startup === "HEALTHY" &&
+    quoteFresh &&
+    dailyHistoryReady &&
+    state.kisBalance != null &&
+    (state.kisBalance.orderableCash ?? 0) > 0 &&
+    recon === "HEALTHY" &&
+    !posMismatch &&
+    !unknown &&
+    !openBuy &&
+    workerLock &&
+    workerRuntimeOk &&
+    db.mode === "mirror" &&
+    !mirrorDegraded &&
+    PAPER_OPERATION_DEFAULTS.maxQtyPerOrder === 5;
+
+  const verdict = activationGateVerdict({
     ruleExists: Boolean(rule),
     ruleEnabled: rule?.enabled === true,
-    marketOpen,
-    startupHealthy: startup === "HEALTHY",
-    quoteFresh,
-    dailyHistoryReady,
-    balanceHealthy: state.kisBalance != null,
-    orderableHealthy: (state.kisBalance?.orderableCash ?? 0) > 0,
-    reconHealthy: recon === "HEALTHY",
-    positionMatch: !posMismatch,
-    unknownNone: !unknown,
-    openBuyNone: !openBuy,
-    workerLock: holdsWorkerLock() || workerLockHealthy(),
-    rdsMirror: db.mode === "mirror" && !mirrorDegraded,
-    mirrorDegraded,
-    maxQty: PAPER_OPERATION_DEFAULTS.maxQtyPerOrder,
-    realRequests: 0,
-  };
+    prerequisitesOk,
+  });
 
-  // Ready means "safe to enable in a later step". This script never flips enabled.
-  const activationReady =
-    checks.ruleExists &&
-    !checks.ruleEnabled &&
-    checks.startupHealthy &&
-    checks.quoteFresh &&
-    checks.dailyHistoryReady &&
-    checks.balanceHealthy &&
-    checks.orderableHealthy &&
-    checks.reconHealthy &&
-    checks.positionMatch &&
-    checks.unknownNone &&
-    checks.openBuyNone &&
-    checks.rdsMirror &&
-    !checks.mirrorDegraded &&
-    checks.maxQty === 5 &&
-    checks.realRequests === 0;
-
-  console.log("Long Soak Activation Gate");
-  console.log("=========================");
-  console.log(`Rule exists: ${yn(checks.ruleExists)}`);
-  console.log(`Rule enabled: ${checks.ruleEnabled ? "YES" : "NO"}`);
-  console.log(`Market: ${checks.marketOpen ? "OPEN" : "CLOSED"}`);
-  console.log(`Startup Sync: ${checks.startupHealthy ? "HEALTHY" : startup}`);
-  console.log(`KIS Quote: ${checks.quoteFresh ? "FRESH" : "FAIL"}`);
-  console.log(`Daily History: ${checks.dailyHistoryReady ? "READY" : "FAIL"}`);
-  console.log(`Balance: ${checks.balanceHealthy ? "HEALTHY" : "FAIL"}`);
-  console.log(`Orderable: ${checks.orderableHealthy ? "HEALTHY" : "FAIL"}`);
-  console.log("Open Orders: LOCAL_OK (live preflight separate)");
-  console.log("Executions: LOCAL_OK (live preflight separate)");
-  console.log(`Reconciliation: ${checks.reconHealthy ? "HEALTHY" : recon}`);
-  console.log(`KIS/JSON Position: ${checks.positionMatch ? "MATCH" : "FAIL"}`);
-  console.log(`UNKNOWN_ACTIVE: ${checks.unknownNone ? "NONE" : "PRESENT"}`);
-  console.log(`Open BUY: ${checks.openBuyNone ? "NONE" : "PRESENT"}`);
-  console.log(`Worker Lock: ${checks.workerLock ? "HEALTHY" : "FAIL"}`);
-  console.log(`RDS Mirror: ${checks.rdsMirror ? "HEALTHY" : "FAIL"}`);
-  console.log(`DB Mirror Degraded: ${checks.mirrorDegraded ? "YES" : "NO"}`);
-  console.log(`Max Qty: ${checks.maxQty}`);
-  console.log(`REAL Requests: ${checks.realRequests}`);
-  console.log(`Activation Ready: ${activationReady ? "YES" : "NO"}`);
-  console.log("");
-  console.log("NOTE: This phase keeps enabled=false even if Activation Ready=YES.");
-  console.log("Broker order HTTP POST: 0 (gate does not submit)");
+  console.log(
+    formatActivationGateReport({
+      verdict,
+      ruleExists: Boolean(rule),
+      ruleEnabled: rule?.enabled === true,
+      prerequisitesOk,
+      details: {
+        Market: marketOpen ? "OPEN" : "CLOSED",
+        "Startup Sync": startup === "HEALTHY" ? "HEALTHY" : startup,
+        "KIS Quote (obs <=120s)": quoteFresh ? "FRESH" : "FAIL",
+        "Daily History": dailyHistoryReady ? "READY" : "FAIL",
+        Balance: state.kisBalance != null ? "HEALTHY" : "FAIL",
+        Orderable: (state.kisBalance?.orderableCash ?? 0) > 0 ? "HEALTHY" : "FAIL",
+        Reconciliation: recon === "HEALTHY" ? "HEALTHY" : recon,
+        "KIS/JSON Position": posMismatch ? "FAIL" : "MATCH",
+        UNKNOWN_ACTIVE: unknown ? "PRESENT" : "NONE",
+        "Open BUY": openBuy ? "PRESENT" : "NONE",
+        "Worker Runtime": workerRuntimeOk ? "HEALTHY" : "FAIL",
+        "Worker Lock": workerLock ? "HEALTHY" : "FAIL",
+        "RDS Mirror": db.mode === "mirror" && !mirrorDegraded ? "HEALTHY" : "FAIL",
+        "DB Mirror Degraded": mirrorDegraded ? "YES" : "NO",
+        "Max Qty": String(PAPER_OPERATION_DEFAULTS.maxQtyPerOrder),
+        "REAL Requests": "0",
+      },
+    }),
+  );
   if (rule) {
     console.log(
       `Rule: ${rule.id} ticker=${rule.ticker} MA=${rule.fastMa}/${rule.slowMa} budget=${rule.budget} enabled=${rule.enabled}`,
     );
   }
+  // Exit 0 for READY and ALREADY_ENABLED; 1 only when BLOCKED.
+  if (verdict === "BLOCKED") process.exitCode = 1;
 }
 
 main();

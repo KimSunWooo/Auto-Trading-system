@@ -7,7 +7,10 @@ No passwords, endpoints, or account numbers are recorded here.
 Application reads, in order:
 
 1. `DATABASE_URL=mysql://USER:PASSWORD@HOST:3306/auto_trading`
-2. Or `AWS_RDS_USERNAME` + `AWS_RDS_PASSWORD` + `AWS_RDS_DATABASE` (hostname) with database name `AWS_RDS_DB_NAME` (default `auto_trading`)
+2. Or `DATABASE_URL=HOST:3306/db` (no credentials in URL) plus `DATABASE_USER_NAME` + `DATABASE_PASSWORD`
+3. Or `AWS_RDS_USERNAME` + `AWS_RDS_PASSWORD` + `AWS_RDS_DATABASE` (hostname) with database name `AWS_RDS_DB_NAME` (default `auto_trading`)
+
+`DATABASE_PASSWORD` is preferred. Legacy typo `DATABASE_PASSOWORD` is accepted as a deprecated alias (warning only; value never logged).
 
 Also:
 

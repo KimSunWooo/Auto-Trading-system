@@ -22,6 +22,7 @@
     "soak:report": "tsx scripts/domestic-paper-soak.ts --report",
     "long-soak:preflight": "tsx scripts/paper-long-soak-preflight.ts",
     "long-soak:gate": "tsx scripts/paper-long-soak-activation-gate.ts",
+    "long-soak:health": "tsx scripts/paper-long-soak-runtime-health.ts",
     "overseas:server-ready": "tsx scripts/overseas-paper-server-ready.ts",
     "ec2:health": "tsx scripts/ec2-health-check.ts"
   },

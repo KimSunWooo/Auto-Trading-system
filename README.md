@@ -15,7 +15,8 @@
 | Domestic VTS-B2 (BUY → ODNO → Fill → JSON → RDS → Recon) | PASS (이전 검증, ODNO `0000022105` / 005930×1 보존) |
 | Domestic PAPER Live Soak | 구현 완료. Worker+lock. 단발 timeout ≠ AUTO STOP |
 | PAPER operational policy | daily order-count cap REMOVED · max qty/order 5 · position cap 50. VTS harness 1주·1 BUY·daily 5 submit 유지 |
-| PAPER Long Soak MA | `paper-long-soak-ma` (035720, MA 5/20 daily) · **enabled=false** · dry validation only |
+| PAPER Long Soak MA | `paper-long-soak-ma` (035720, MA 5/20 daily) · **enabled=true** (current PAPER validation snapshot) · 069500 interval disabled for isolation |
+| Domestic PAPER Pre-Market Hardening | Activation gate (PRE-ACTIVATION) ≠ Runtime health gate · worker undefined ≠ healthy |
 | 해외주식 UI / 시세 / 외화잔고 / Adapter | 구현. 실제 PAPER 주문은 opt-in |
 | Overseas VTS-A | `npm run vts:overseas-a` (기본 npm test skip) |
 | Overseas VTS-B preflight | Quote/Balance/Orderable PASS 가능. 실제 BUY는 미국 정규장+opt-in |
@@ -75,9 +76,9 @@ src/
     QuantEngine.ts      # 사용자가 저장한 조건식만 순회
 ```
 
-- 배포(B2C)에는 사전 정의된 안정형/중립형/공격형 템플릿이 없습니다. 엔진은 `{ "rules": [] }` 에서 시작합니다.
+- 배포(B2C)에는 사전 정의된 안정형/중립형/공격형 템플릿이 없습니다. **엔진 기본 설계**는 빈 사용자 규칙(`{ "rules": [] }`)을 지원합니다.
 - 로컬(`localhost` / `127.0.0.1`) 또는 `NEXT_PUBLIC_ADMIN_MODE=true` 일 때만 DIY 폼에 운영자 프리셋이 보입니다. 배포 환경의 DOM에는 없습니다.
-- `data/strategy-config.json` 은 `{ "rules": [] }` 로 시작합니다. 폼에서 입력한 값만 저장됩니다.
+- **현재 repository PAPER validation snapshot** (`data/strategy-config.json`): `paper-long-soak-ma` (035720) `enabled=true`, KODEX 200 interval (069500) `enabled=false` — Long Soak 단독 검증용. 제품 기본값과 혼동하지 마세요.
 - 매수는 해당 조건식 `balance` 안에서만 승인된 뒤 브로커로 전달됩니다.
 - 이용 동의 체크박스가 true가 아니면 KIS 주문과 자동 실행이 잠깁니다.
 - 신규 주문은 KST 정규장(09:00~15:20)만 허용합니다. 동시호가·주말·공휴일은 거부합니다.
@@ -178,23 +179,32 @@ REAL 및 PAPER가 아닌 LIVE_TEST 한도(`OrderManager.canBuy` → `checkHardLi
 
 PAPER Long Soak baseline uses a daily MA crossover rule.
 
-- Rule id: `paper-long-soak-ma` (default ticker selected via KIS read-only candidate audit).
-- The rule is **disabled by default** (`enabled=false`).
+- Rule id: `paper-long-soak-ma` (ticker `035720`, MA 5/20 daily).
+- **Product / engine semantics:** empty user rules are supported; a soak rule may be stored disabled until activation.
+- **Current repository PAPER validation snapshot:** `paper-long-soak-ma` is **`enabled=true`** with allocation enabled. The KODEX 200 `interval` rule (`069500`) is **`enabled=false`** so only Long Soak auto-executes.
 - MA5/MA20 uses **daily-close history + current price**, not intraday candles.
 - Operational PAPER has **no daily order-count cap**.
 - Each order is limited to **max 5 shares** (`qty > 5` → **BLOCK**, not truncate).
 - Exposure / max position / daily loss / UNKNOWN / reconciliation / worker-lock gates remain active.
 - Entry requires a **true crossover** (`maRel` below → above). Restart with missing `maRel` does not false-enter.
 - The baseline is for **lifecycle validation**, not an investment recommendation or optimized strategy.
+- Gates are split:
+  - **Activation gate** (`long-soak:gate`) — PRE-ACTIVATION ONLY. If the rule is already enabled → `ALREADY_ENABLED` / NOT APPLICABLE (not a FAIL).
+  - **Runtime health** (`long-soak:health`) — read-only checks for an armed rule. Never flips enable / autoTrading / orders.
+- Quote freshness meanings:
+  - Health observation: `source=kis` and age ≤ **120s**
+  - Order eligible: `source=kis` and `freshAt` ≤ **15s** (order path never relaxes to 120s)
+- Worker: `runtime.worker === "healthy"` required. `undefined` / `unknown` is **not** PASS.
 
-Dry validation / gate (no orders):
+Dry validation / gates (no orders):
 
 ```bash
 npx tsx scripts/paper-long-soak-preflight.ts
-npx tsx scripts/paper-long-soak-activation-gate.ts
+npm run long-soak:gate      # PRE-ACTIVATION ONLY
+npm run long-soak:health    # armed runtime observation
 ```
 
-Do not set `enabled=true` until a later activation step passes the gate. REAL stays locked.
+Do not force crossovers or edit `maRel` for tests. REAL stays locked.
 
 ## Overseas PAPER lifecycle (server-ready)
 

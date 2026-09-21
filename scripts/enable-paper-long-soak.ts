@@ -3,6 +3,8 @@
  * Never forces MA / crossover. Never REAL.
  */
 import { readFileSync, existsSync } from "node:fs";
+import { workerRuntimeHealthy } from "@/src/runtime/paper-long-soak-health";
+import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
 
 function loadEnv() {
   if (!existsSync(".env.local")) return;
@@ -59,6 +61,10 @@ async function evaluate(s: Record<string, any>, db: Record<string, any>) {
   // After-hours inquiry flakes can mark recon unavailable while holdings still match.
   const reconOk = reconSynced || (positionsMatch && s.kisBalance?.freshness === "fresh");
 
+  // Strict: runtime.worker must be exactly "healthy". undefined/unknown ≠ PASS.
+  const workerRuntimeOk = workerRuntimeHealthy(s.runtime?.worker);
+  const workerLockOk = holdsWorkerLock() || workerLockHealthy();
+
   const checks: Record<string, boolean> = {
     brokerKis: s.broker?.driver === "kis" && s.broker?.mode === "paper",
     liveTest: s.runtime?.tradingMode === "live_test",
@@ -72,7 +78,8 @@ async function evaluate(s: Record<string, any>, db: Record<string, any>) {
     recon: reconOk,
     unknownNone: !unknown,
     openBuyNone: !openBuy,
-    worker: s.safety?.workerHealthy !== false,
+    workerRuntime: workerRuntimeOk,
+    workerLock: workerLockOk,
     // Prefer quoteOk, but allow activation if watched KIS quotes are present & fresh enough.
     quoteOk: s.safety?.quoteOk === true || quoteFresh,
     rds,

@@ -29,7 +29,7 @@
       "minAmountKrw": 10000,
       "stopLossPct": 0.05,
       "takeProfitPct": 0.03,
-      "enabled": true,
+      "enabled": false,
       "budget": 7000000
     }
   ]
