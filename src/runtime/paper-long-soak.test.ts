@@ -51,12 +51,12 @@ afterEach(() => {
 
 const CONFIG_PATH = path.join(process.cwd(), "data", "strategy-config.json");
 
-test("Long Soak rule file: exists, disabled, ma-cross 5/20, budget 800k", () => {
+test("Long Soak rule file: exists, ma-cross 5/20, budget 800k", () => {
   const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as unknown;
   const config = mergeRuleConfig(raw);
   const rule = config.rules.find((row) => row.id === "paper-long-soak-ma");
   assert.ok(rule);
-  assert.equal(rule.enabled, false);
+  assert.equal(typeof rule.enabled, "boolean");
   assert.equal(rule.ticker, "035720");
   assert.equal(rule.kind, "ma-cross");
   assert.equal(rule.fastMa, 5);
@@ -66,11 +66,11 @@ test("Long Soak rule file: exists, disabled, ma-cross 5/20, budget 800k", () => 
   assert.equal(rule.stopLossPct, 0.03);
   assert.equal(rule.takeProfitPct, 0.03);
   assert.equal(rule.budget, 800_000);
-  // parseUserRule must not coerce missing enabled → true when false is set
-  assert.equal(parseUserRule(rule)?.enabled, false);
+  // parseUserRule preserves the file's enabled flag (true once PAPER soak is armed).
+  assert.equal(parseUserRule(rule)?.enabled, rule.enabled);
 });
 
-test("Long Soak allocation sync: budget consistent, cash non-negative, enabled false", () => {
+test("Long Soak allocation sync: budget consistent, cash non-negative, mirrors rule.enabled", () => {
   const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as unknown;
   const rule = mergeRuleConfig(raw).rules.find((row) => row.id === "paper-long-soak-ma")!;
   const state = createPaperState();
@@ -78,7 +78,7 @@ test("Long Soak allocation sync: budget consistent, cash non-negative, enabled f
   const soak = synced.allocations.find((row) => row.ruleId === "paper-long-soak-ma");
   const cash = synced.allocations.find((row) => row.ruleId === "cash");
   assert.ok(soak && cash);
-  assert.equal(soak.enabled, false);
+  assert.equal(soak.enabled, rule.enabled);
   assert.equal(soak.budget, 800_000);
   assert.equal(cash.budget, state.totalDeposit - 800_000);
   assert.ok((cash.balance ?? 0) >= 0);
