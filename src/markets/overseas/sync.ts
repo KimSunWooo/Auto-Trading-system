@@ -14,6 +14,7 @@ import {
 } from "@/src/markets/overseas/lifecycle";
 import {
   allExchangeProbesOk,
+  exchangeCoverageAttemptedOk,
   positionCoverageByExchange,
 } from "@/src/markets/overseas/exchange-coverage";
 import { overseasPaperOrdersLocked, vtsOverseasOrderTestsEnabled } from "@/src/markets/overseas/env";
@@ -98,7 +99,10 @@ export async function runOverseasPaperSync(
       executions,
     });
     const coverage = positionCoverageByExchange(positions);
-    const probesOk = allExchangeProbesOk(openProbes) && allExchangeProbesOk(positionProbes);
+    // After-hours KIS rate limits may fail one exchange; require all three attempted + ≥1 ok.
+    const probesOk =
+      exchangeCoverageAttemptedOk(openProbes) && exchangeCoverageAttemptedOk(positionProbes);
+    const allProbesGreen = allExchangeProbesOk(openProbes) && allExchangeProbesOk(positionProbes);
     const sync: OverseasSyncState = {
       status:
         !probesOk ||
@@ -118,11 +122,19 @@ export async function runOverseasPaperSync(
         ? `Exchange probe incomplete: open=${openProbes
             .filter((p) => !p.ok)
             .map((p) => p.exchange)
-            .join(",") || "ok"} pos=${positionProbes
+            .join(",") || "none"} pos=${positionProbes
             .filter((p) => !p.ok)
             .map((p) => p.exchange)
-            .join(",") || "ok"}`
-        : recovery.message,
+            .join(",") || "none"}`
+        : !allProbesGreen
+          ? `${recovery.message} (partial exchange probes: open_fail=${openProbes
+              .filter((p) => !p.ok)
+              .map((p) => p.exchange)
+              .join(",") || "none"} pos_fail=${positionProbes
+              .filter((p) => !p.ok)
+              .map((p) => p.exchange)
+              .join(",") || "none"})`
+          : recovery.message,
       orderPosts: 0,
     };
     const prev = safetyOf(state);

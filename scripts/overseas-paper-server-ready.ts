@@ -28,7 +28,7 @@ import {
 } from "@/src/markets/overseas/lifecycle";
 import { overseasActivationGate } from "@/src/markets/overseas/activation-gate";
 import {
-  allExchangeProbesOk,
+  exchangeCoverageAttemptedOk,
   positionCoverageByExchange,
 } from "@/src/markets/overseas/exchange-coverage";
 import { publicDatabaseStatus } from "@/src/db/mirror";
@@ -131,7 +131,9 @@ async function main() {
   const local = overseasStateFromApp(appState);
   const runtimeWorker = appState.runtime?.worker ?? null;
   const workerRuntimeOk = workerRuntimeHealthy(runtimeWorker);
-  const workerLockOk = holdsWorkerLock() || workerLockHealthy();
+  // beginVtsTestRun redirects the lock path into the VTS run dir — always probe production lock.
+  const prodLockPath = path.join(process.cwd(), "data", "trading-worker.lock");
+  let workerLockOk = holdsWorkerLock() || workerLockHealthy({ filePath: prodLockPath });
   const persistenceHealthy = existsSync(path.join(process.cwd(), "data", "paper-account.json"));
   const mirrorDegraded = Boolean(String(dbStatus.lastError ?? "").includes("DB_MIRROR_DEGRADED"));
   // Pass-through measurement only — gate re-checks publicDatabaseStatus; never inject true.
@@ -149,7 +151,7 @@ async function main() {
   console.log(`[x] RUN_KIS_VTS_OVERSEAS_ORDER_TESTS unset`);
   console.log(`[x] REAL flags none`);
   console.log(`Worker Runtime: ${runtimeWorker ?? "unknown"} (${workerRuntimeOk ? "PASS" : "FAIL"})`);
-  console.log(`Worker Lock: ${workerLockOk ? "HEALTHY" : "FAIL"}`);
+  console.log(`Worker Lock (start): ${workerLockOk ? "HEALTHY" : "FAIL"}`);
   console.log(`Persistence: ${persistenceHealthy ? "HEALTHY" : "FAIL"}`);
   console.log(
     `RDS: mode=${dbStatus.mode} enabled=${dbStatus.enabled} connected=${dbStatus.connected} (${rdsMeasured ? "PASS" : "FAIL"})`,
@@ -266,14 +268,18 @@ async function main() {
     local.intents.some((i) => i.status === "unknown") ||
     recovery.status === "UNKNOWN_BLOCKING";
 
+  // Re-measure production lock immediately before gate.
+  workerLockOk = holdsWorkerLock() || workerLockHealthy({ filePath: prodLockPath });
+  console.log(`Worker Lock (gate): ${workerLockOk ? "HEALTHY" : "FAIL"}`);
+
   const gate = overseasActivationGate({
     quote: selectedQuote,
     usdCash: usd?.cash ?? null,
     usdOrderable: buyingPower?.orderableCash ?? usd?.orderableCash ?? null,
     orderableQty: buyingPower?.orderableQty ?? null,
     presentBalanceOk: Boolean(present.cash.length || present.buyingPower),
-    positionsOk: allExchangeProbesOk(positionProbes),
-    openOrdersOk: allExchangeProbesOk(openProbes),
+    positionsOk: exchangeCoverageAttemptedOk(positionProbes),
+    openOrdersOk: exchangeCoverageAttemptedOk(openProbes),
     executionsOk: true,
     recovery,
     existingOpenBuy: openOrders.some((o) => o.side === "buy" && o.remainingQty > 0),

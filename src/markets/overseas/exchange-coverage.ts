@@ -104,6 +104,11 @@ export async function collectAllExchangePositions(
   };
 }
 
+/** True when every US exchange was probed and at least one succeeded. */
+export function exchangeCoverageAttemptedOk<T>(probes: ExchangeProbeResult<T>[]): boolean {
+  return probes.length >= 3 && probes.some((p) => p.ok);
+}
+
 /** True when every US exchange probe succeeded (empty holdings still count as ok). */
 export function allExchangeProbesOk<T>(probes: ExchangeProbeResult<T>[]): boolean {
   return probes.length > 0 && probes.every((p) => p.ok);

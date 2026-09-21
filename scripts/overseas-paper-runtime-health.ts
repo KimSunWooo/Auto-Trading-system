@@ -20,11 +20,11 @@ import {
 } from "@/src/markets/overseas/lifecycle";
 import { overseasActivationGate } from "@/src/markets/overseas/activation-gate";
 import {
-  allExchangeProbesOk,
+  exchangeCoverageAttemptedOk,
   positionCoverageByExchange,
 } from "@/src/markets/overseas/exchange-coverage";
 import { publicDatabaseStatus } from "@/src/db/mirror";
-import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
+import { holdsWorkerLock, workerLockHealthy, defaultLockPath } from "@/src/runtime/worker-lock";
 import { workerRuntimeHealthy, workerRuntimeStatus } from "@/src/runtime/paper-long-soak-health";
 import { tradingMode } from "@/src/runtime/trading-mode";
 import { realTradingFlags } from "@/src/runtime/vts-harness";
@@ -89,7 +89,7 @@ async function main() {
   const state = await loadAppState();
   const local = overseasStateFromApp(state);
   const runtimeWorker = state.runtime?.worker ?? null;
-  const workerLockOk = holdsWorkerLock() || workerLockHealthy();
+  const workerLockOk = holdsWorkerLock() || workerLockHealthy({ filePath: defaultLockPath() });
   const db = publicDatabaseStatus();
   const adapter = new OverseasTradingAdapter(new KisClient(cfg, fetchImpl));
 
@@ -124,8 +124,8 @@ async function main() {
     usdOrderable: buyingPower?.orderableCash ?? usd?.orderableCash ?? null,
     orderableQty: buyingPower?.orderableQty ?? null,
     presentBalanceOk: present != null,
-    positionsOk: allExchangeProbesOk(positionProbes),
-    openOrdersOk: allExchangeProbesOk(openProbes),
+    positionsOk: exchangeCoverageAttemptedOk(positionProbes),
+    openOrdersOk: exchangeCoverageAttemptedOk(openProbes),
     executionsOk: true,
     recovery,
     existingOpenBuy: openOrders.some((o) => o.side === "buy" && o.remainingQty > 0),
