@@ -22,6 +22,11 @@ import { dashboardStats, ruleCardModel, ruleDisplayName } from "@/lib/dashboard"
 import { DisclaimerModal } from "@/components/disclaimer-modal";
 import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
 import type { PublicState, Quote } from "@/lib/types";
+import {
+  filterDashboardQuotes,
+  quoteDisplayKind,
+  quoteFreshnessLabel,
+} from "@/src/runtime/quote-policy";
 
 function holdingRows(state: PublicState) {
   const rows = new Map<string, { name: string; kisQty: number; localQty: number }>();
@@ -50,15 +55,18 @@ export function OverviewPanel({
 }) {
   const stats = dashboardStats(state);
   const pnl = stats.pnl;
+  const liveKis = state.broker?.driver === "kis" && state.runtime?.tradingMode !== "mock";
   const quotes = useMemo(() => {
-    const symbols = new Set(state.runtime?.currentSymbols ?? []);
-    const rows = Object.values(state.quotes).filter((row) =>
-      symbols.size === 0 ? true : symbols.has(row.code),
-    );
+    const symbols = state.runtime?.currentSymbols ?? [];
+    const rows = filterDashboardQuotes(state.quotes, {
+      liveKis,
+      currentSymbols: symbols.length ? symbols : undefined,
+    });
     return rows.sort(
       (a, b) => a.market.localeCompare(b.market) || a.name.localeCompare(b.name, "ko"),
     );
-  }, [state.quotes, state.runtime?.currentSymbols]);
+  }, [state.quotes, state.runtime?.currentSymbols, liveKis]);
+  const pendingKis = liveKis && quotes.length === 0;
   const kisHoldingRows = state.kisBalance ? holdingRows(state) : [];
   const risk = state.settings.risk ?? DEFAULT_PRODUCT_RISK;
   const rules = state.ruleConfig?.rules ?? [];
@@ -303,7 +311,8 @@ export function OverviewPanel({
         <Watchlist
           quotes={quotes}
           onState={onState}
-          liveQuotes={state.broker?.driver === "kis"}
+          liveQuotes={liveKis}
+          pendingKis={pendingKis}
         />
         <Positions state={state} onState={onState} />
       </div>
@@ -343,10 +352,12 @@ function Watchlist({
   quotes,
   onState,
   liveQuotes,
+  pendingKis,
 }: {
   quotes: Quote[];
   onState: (next: PublicState) => void;
   liveQuotes: boolean;
+  pendingKis?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const filtered = quotes.filter(
@@ -361,7 +372,7 @@ function Watchlist({
             <CardTitle>관심종목</CardTitle>
             <CardDescription>
               {liveQuotes
-                ? "한국투자증권 현재가를 주기적으로 가져옵니다. 상승은 빨강입니다."
+                ? "한국투자증권 현재가(KIS)만 표시합니다. mock/seed 시세는 숨깁니다."
                 : "2.5초마다 호가가 움직입니다. 국내 관례로 상승은 빨강입니다."}
             </CardDescription>
           </div>
@@ -388,51 +399,81 @@ function Watchlist({
             {filtered.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                  {quotes.length === 0
-                    ? "관심종목이 없습니다. 매매 룰에 종목코드를 입력하면 호가가 나타납니다."
-                    : "검색 결과가 없습니다."}
+                  {pendingKis
+                    ? "KIS 시세 대기 중 — mock/seed 시세는 표시하지 않습니다."
+                    : quotes.length === 0
+                      ? "관심종목이 없습니다. 매매 룰에 종목코드를 입력하면 호가가 나타납니다."
+                      : "검색 결과가 없습니다."}
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((quote) => (
-                <TableRow key={quote.code}>
-                  <TableCell>
-                    <div className="font-medium">{quote.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {quote.market} · {quote.code}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Price value={quote.price} prevClose={quote.prevClose} />
-                  </TableCell>
-                  <TableCell>
-                    <Change price={quote.price} prevClose={quote.prevClose} />
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <Sparkline values={quote.history} />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="text-up"
-                        onClick={() => void buySell(quote, "buy", onState)}
-                      >
-                        매수
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="text-down"
-                        onClick={() => void buySell(quote, "sell", onState)}
-                      >
-                        매도
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
+              filtered.map((quote) => {
+                const kind = quoteDisplayKind(quote, { liveKis: liveQuotes });
+                const freshness = quoteFreshnessLabel(quote, { liveKis: liveQuotes });
+                const orderable = kind === "KIS_LIVE";
+                const sourceTag =
+                  kind === "KIS_LIVE" || kind === "STALE"
+                    ? "KIS"
+                    : kind === "MOCK"
+                      ? "MOCK"
+                      : kind === "SEED"
+                        ? "SEED"
+                        : "—";
+                return (
+                  <TableRow key={quote.code}>
+                    <TableCell>
+                      <div className="font-medium">{quote.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {quote.market} · {quote.code}
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <span className="font-medium tracking-wide">{sourceTag}</span>
+                        <span aria-hidden>·</span>
+                        <span>{freshness}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {kind === "UNAVAILABLE" ? (
+                        <span className="text-muted-foreground">시세 없음</span>
+                      ) : (
+                        <Price value={quote.price} prevClose={quote.prevClose} />
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {kind === "UNAVAILABLE" ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <Change price={quote.price} prevClose={quote.prevClose} />
+                      )}
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      {kind === "UNAVAILABLE" ? null : <Sparkline values={quote.history} />}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          className="text-up"
+                          disabled={liveQuotes && !orderable}
+                          onClick={() => void buySell(quote, "buy", onState)}
+                        >
+                          매수
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          className="text-down"
+                          disabled={liveQuotes && !orderable}
+                          onClick={() => void buySell(quote, "sell", onState)}
+                        >
+                          매도
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>

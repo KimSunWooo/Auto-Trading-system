@@ -23,6 +23,7 @@ import { nowMs } from "@/src/clock";
 import { blockSafety } from "@/src/runtime/safety";
 import { holdsWorkerLock } from "@/src/runtime/worker-lock";
 import { preTradeGate } from "@/src/runtime/controlled-run";
+import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 
 /**
  * 한국투자증권 Open API adapter.
@@ -104,7 +105,10 @@ export class KisBroker implements IBroker {
     }
     if (isLiveLike()) {
       const book = this.box.current.quotes[ticker];
-      if (book?.source !== "kis" || !book.freshAt || nowMs() - book.freshAt > 15_000) {
+      if (isMockOrSeedQuote(book)) {
+        throw new Error(`${ticker} mock/seed 시세로는 주문하지 않습니다.`);
+      }
+      if (!isFreshKisQuote(book)) {
         throw new Error(`${ticker} 실시간 시세가 없어 주문하지 않습니다.`);
       }
     }

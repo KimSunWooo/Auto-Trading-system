@@ -23,6 +23,7 @@
 | EC2 PAPER deployment artifacts | Dockerfile / compose / health / docs 준비. 실제 EC2 provisioning 없음 |
 | RDS MySQL mirror | JSON authority. `PERSISTENCE_MODE=mirror`. database SOT 없음 |
 | PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
+| Domestic KIS quote isolation | LIVE_TEST+KIS: mock/seed 시세 표시·주문 금지. `source=kis`+freshAt≤15s만 유효. 실패 시 mock fallback 없음 |
 | Gate 3 / REAL | LOCKED |
 
 로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
@@ -82,6 +83,7 @@ src/
 - 신규 주문은 KST 정규장(09:00~15:20)만 허용합니다. 동시호가·주말·공휴일은 거부합니다.
 - 시장가 의도는 현재가 ±3% 지정가로 바꿔 내고, 같은 룰이 연속 실패/미체결이면 3분 정지합니다.
 - 기본 거래 모드는 `TRADING_MODE=MOCK` 입니다. 브라우저 `/api/tick` 은 MOCK/PAPER 에서만 엔진을 돌립니다. LIVE_TEST/LIVE 엔진은 워커 + 파일 락만 실행합니다.
+- `LIVE_TEST`/`LIVE` + `BROKER=kis` 에서는 persisted mock/seed 시세를 현재가로 쓰지 않습니다. `source=kis` 이고 `freshAt` 15초 이내만 주문·대시보드 현재가로 인정합니다. KIS 시세 실패 시 mock fallback 없습니다.
 - Next가 죽어도 `npm run emergency:stop` 으로 신규 주문을 막고 KIS 미체결을 취소할 수 있습니다. 포지션 청산은 `npm run emergency:flatten` 입니다. 두 명령은 섞이지 않습니다.
 
 로컬 장부(`data/paper-account.json`)는 한도와 UI용입니다. KIS 모의·실전 잔고·수수료와 숫자가 다를 수 있습니다.

@@ -16,6 +16,7 @@ import { httpTickAllowed, isLiveLike } from "@/src/runtime/trading-mode";
 import { holdsWorkerLock } from "@/src/runtime/worker-lock";
 import { buildRuntimePublic } from "@/src/runtime/status";
 import { mirrorAfterJsonSave } from "@/src/db/mirror";
+import { invalidateNonKisQuotes, usesLiveKisQuotes } from "@/src/runtime/quote-policy";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 export const DEFAULT_STORE_PATH = path.join(DATA_DIR, "paper-account.json");
@@ -118,6 +119,9 @@ function migrateState(parsed: AppState): AppState {
   });
   if (!merged.dayStart?.equity) {
     merged.dayStart = { date: seoulDay(), equity: accountValue(merged) };
+  }
+  if (usesLiveKisQuotes()) {
+    merged.quotes = invalidateNonKisQuotes(merged.quotes ?? {});
   }
   return merged;
 }

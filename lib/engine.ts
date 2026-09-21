@@ -37,6 +37,7 @@ import {
   syncHttpAudit,
 } from "@/src/runtime/controlled-run";
 import { startupSyncBlocksTrading, usesPaperStartupSync } from "@/src/runtime/startup-sync";
+import { invalidateNonKisQuotes, usesLiveKisQuotes } from "@/src/runtime/quote-policy";
 
 const HISTORY_LEN = 40;
 
@@ -122,8 +123,9 @@ export function createPaperState(): AppState {
 }
 
 export function ensureUniverseQuotes(state: AppState): AppState {
-  if (isLiveLike() && brokerDriver() === "kis") {
-    return state;
+  if (usesLiveKisQuotes()) {
+    // Never invent seed quotes under live KIS; strip any leftover mock/seed.
+    return { ...state, quotes: invalidateNonKisQuotes(state.quotes) };
   }
   const quotes = { ...state.quotes };
   for (const code of watchedTickersFrom(state)) {
@@ -136,6 +138,10 @@ export function advanceQuotes(
   quotes: Record<string, Quote>,
   rng: () => number = Math.random,
 ): Record<string, Quote> {
+  // Live KIS must never synthesize mock prices from the book.
+  if (usesLiveKisQuotes()) {
+    return invalidateNonKisQuotes(quotes);
+  }
   const next: Record<string, Quote> = {};
   for (const [code, q] of Object.entries(quotes)) {
     const vol = 0.0012 + rng() * 0.004;
@@ -381,6 +387,13 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
       },
     },
   };
+  // LIVE_TEST+KIS: drop persisted mock/seed before any order decision or display path.
+  if (usesLiveKisQuotes()) {
+    box.current = {
+      ...box.current,
+      quotes: invalidateNonKisQuotes(box.current.quotes),
+    };
+  }
   const root = createBroker(box);
   let liveReady = true;
 
