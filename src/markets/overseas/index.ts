@@ -30,4 +30,10 @@ export {
 } from "./lifecycle";
 export { overseasActivationGate } from "./activation-gate";
 export { runOverseasPaperSync, usesOverseasPaperSync } from "./sync";
+export {
+  mergeOverseasPositionsByIdentity,
+  positionCoverageByExchange,
+  collectAllExchangePositions,
+  collectAllExchangeOpenOrders,
+} from "./exchange-coverage";
 export { normalizeOverseasLimitPrice } from "./price";

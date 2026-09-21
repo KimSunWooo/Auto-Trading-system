@@ -31,6 +31,7 @@ import { runOverseasPaperSync } from "@/src/markets/overseas/sync";
 import { findIntent } from "@/src/runtime/intents";
 import { KIS_CURRENCY_EXCHANGE_AUDIT } from "@/src/markets/overseas/exchange-audit";
 import type { OverseasQuote } from "@/src/markets/overseas/types";
+import { recordMirrorDegraded, resetDatabaseStatusForTest } from "@/src/db/status";
 
 const PAPER_ENV = {
   BROKER: "kis",
@@ -41,6 +42,7 @@ const PAPER_ENV = {
   KIS_PAPER_APP_SECRET: "paper-secret",
   KIS_PAPER_ACCOUNT_NO: "11111111-01",
   PERSISTENCE_MODE: "mirror",
+  DATABASE_URL: "mysql://app:x@127.0.0.1:3306/auto_trading",
 } as const;
 
 function clearEnv() {
@@ -50,6 +52,7 @@ function clearEnv() {
     "RUN_KIS_VTS_ORDER_TESTS",
     "KIS_LIVE_CONFIRM",
     "PAPER_POLICY_MODE",
+    "DATABASE_URL",
   ]) {
     delete process.env[key];
   }
@@ -60,7 +63,10 @@ function applyPaper() {
   Object.assign(process.env, PAPER_ENV);
 }
 
-afterEach(() => clearEnv());
+afterEach(() => {
+  clearEnv();
+  resetDatabaseStatusForTest();
+});
 
 function openQuote(partial: Partial<OverseasQuote> = {}): OverseasQuote {
   return {
@@ -605,6 +611,7 @@ test("Test T: dry order transport — price normalized, real host never, POST co
 
 test("Test U: REAL endpoint request → 0 in preparation gate", () => {
   applyPaper();
+  resetDatabaseStatusForTest();
   const gate = overseasActivationGate({
     env: { ...PAPER_ENV },
     quote: openQuote({ marketStatus: "closed", orderable: null }),
@@ -620,9 +627,9 @@ test("Test U: REAL endpoint request → 0 in preparation gate", () => {
     unknownPresent: false,
     paperOrderPosts: 0,
     realRequests: 0,
-    workerHealthy: true,
+    runtimeWorker: "healthy",
+    workerLockOk: true,
     persistenceHealthy: true,
-    rdsMirrorHealthy: true,
   });
   assert.equal(gate.checks.realRequests, "PASS");
   assert.equal(gate.checks.orderOptIn, "OFF");
@@ -688,4 +695,161 @@ test("server startup auto-order safe when opt-in unset", () => {
   assert.equal(overseasServerStartupAutoOrderSafe(), true);
   process.env.RUN_KIS_VTS_OVERSEAS_ORDER_TESTS = "true";
   assert.equal(overseasServerStartupAutoOrderSafe(), false);
+});
+
+test("Test A: worker undefined → overseas runtime BLOCK", () => {
+  applyPaper();
+  const gate = overseasActivationGate({
+    env: { ...PAPER_ENV },
+    quote: openQuote({ marketStatus: "closed", orderable: null }),
+    usdCash: 10,
+    usdOrderable: 50,
+    orderableQty: 4,
+    presentBalanceOk: true,
+    positionsOk: true,
+    openOrdersOk: true,
+    executionsOk: true,
+    recovery: emptyOverseasRecovery(),
+    existingOpenBuy: false,
+    unknownPresent: false,
+    runtimeWorker: undefined,
+    workerLockOk: true,
+  });
+  assert.equal(gate.runtime, "BLOCKED");
+  assert.equal(gate.checks.workerRuntime, "FAIL");
+  assert.match(gate.blocked ?? "", /Worker runtime/);
+});
+
+test("Test B: worker unhealthy → BLOCK", () => {
+  applyPaper();
+  const gate = overseasActivationGate({
+    env: { ...PAPER_ENV },
+    quote: openQuote({ marketStatus: "closed", orderable: null }),
+    usdCash: 10,
+    usdOrderable: 50,
+    orderableQty: 4,
+    presentBalanceOk: true,
+    positionsOk: true,
+    openOrdersOk: true,
+    executionsOk: true,
+    recovery: emptyOverseasRecovery(),
+    existingOpenBuy: false,
+    unknownPresent: false,
+    runtimeWorker: "unhealthy",
+    workerLockOk: true,
+  });
+  assert.equal(gate.runtime, "BLOCKED");
+  assert.equal(gate.checks.workerRuntime, "FAIL");
+});
+
+test("Test C: worker lock unhealthy → BLOCK", () => {
+  applyPaper();
+  const gate = overseasActivationGate({
+    env: { ...PAPER_ENV },
+    quote: openQuote({ marketStatus: "closed", orderable: null }),
+    usdCash: 10,
+    usdOrderable: 50,
+    orderableQty: 4,
+    presentBalanceOk: true,
+    positionsOk: true,
+    openOrdersOk: true,
+    executionsOk: true,
+    recovery: emptyOverseasRecovery(),
+    existingOpenBuy: false,
+    unknownPresent: false,
+    runtimeWorker: "healthy",
+    workerLockOk: false,
+  });
+  assert.equal(gate.runtime, "BLOCKED");
+  assert.equal(gate.checks.workerLock, "FAIL");
+});
+
+test("Test D: RDS degraded → new overseas BUY readiness BLOCK", () => {
+  applyPaper();
+  recordMirrorDegraded("fixture");
+  try {
+    const gate = overseasActivationGate({
+      env: { ...PAPER_ENV },
+      quote: openQuote({ marketStatus: "closed", orderable: null }),
+      usdCash: 10,
+      usdOrderable: 50,
+      orderableQty: 4,
+      presentBalanceOk: true,
+      positionsOk: true,
+      openOrdersOk: true,
+      executionsOk: true,
+      recovery: emptyOverseasRecovery(),
+      existingOpenBuy: false,
+      unknownPresent: false,
+      runtimeWorker: "healthy",
+      workerLockOk: true,
+    });
+    assert.equal(gate.runtime, "BLOCKED");
+    assert.equal(gate.checks.rdsMirror, "FAIL");
+  } finally {
+    resetDatabaseStatusForTest();
+  }
+});
+
+test("Test H2: local pending + exact execution ODNO → EXECUTION_MATCHED", () => {
+  const local: Order = {
+    id: "o1",
+    createdAt: new Date().toISOString(),
+    source: "rule",
+    code: "NYSE:F",
+    name: "Ford",
+    side: "buy",
+    qty: 1,
+    price: 11,
+    amount: 11,
+    commission: 0,
+    tax: 0,
+    net: 11,
+    status: "pending",
+    brokerOrderNo: "0000000999",
+    ruleId: "overseas",
+    intentId: "sig:ov:h2",
+  };
+  const exec = [
+    mapOverseasExecution({
+      odno: "0000000999",
+      pdno: "F",
+      ovrs_excg_cd: "NYSE",
+      sll_buy_dvsn_cd: "02",
+      ft_ord_qty: "1",
+      ft_ccld_qty: "1",
+      nccs_qty: "0",
+      ft_ord_unpr3: "11",
+      ft_ccld_unpr3: "11",
+    })!,
+  ];
+  const r = classifyOverseasRestart({
+    localOrders: [local],
+    openOrders: [],
+    executions: exec,
+  });
+  assert.equal(r.status, "EXECUTION_MATCHED");
+  assert.equal(r.blocksNewBuy, false);
+});
+
+test("hardcoded workerHealthy:true alone does not PASS", () => {
+  applyPaper();
+  const gate = overseasActivationGate({
+    env: { ...PAPER_ENV },
+    quote: openQuote({ marketStatus: "closed", orderable: null }),
+    usdCash: 10,
+    usdOrderable: 50,
+    orderableQty: 4,
+    presentBalanceOk: true,
+    positionsOk: true,
+    openOrdersOk: true,
+    executionsOk: true,
+    recovery: emptyOverseasRecovery(),
+    existingOpenBuy: false,
+    unknownPresent: false,
+    workerHealthy: true,
+    workerLockOk: true,
+  });
+  assert.equal(gate.checks.workerRuntime, "FAIL");
+  assert.equal(gate.runtime, "BLOCKED");
 });

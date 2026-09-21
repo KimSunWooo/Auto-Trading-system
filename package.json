@@ -24,6 +24,7 @@
     "long-soak:gate": "tsx scripts/paper-long-soak-activation-gate.ts",
     "long-soak:health": "tsx scripts/paper-long-soak-runtime-health.ts",
     "overseas:server-ready": "tsx scripts/overseas-paper-server-ready.ts",
+    "overseas:health": "tsx scripts/overseas-paper-runtime-health.ts",
     "ec2:health": "tsx scripts/ec2-health-check.ts"
   },
   "dependencies": {

@@ -1,6 +1,8 @@
 /**
  * Read-only overseas PAPER sync for server startup.
  * Never places orders. Never enables opt-in. Scoped separately from domestic Startup Sync.
+ *
+ * Position/open-order coverage: NASDAQ + NYSE + AMEX (KIS OVRS_EXCG_CD scoped).
  */
 import type { AppState } from "@/lib/types";
 import type { KisOverseasApi } from "@/src/brokers/kis-client";
@@ -8,8 +10,12 @@ import { OverseasTradingAdapter } from "@/src/markets/overseas/adapter";
 import {
   classifyOverseasRestart,
   overseasServerStartupAutoOrderSafe,
+  overseasStateFromApp,
 } from "@/src/markets/overseas/lifecycle";
-import { makeUsInstrument } from "@/src/markets/overseas/instruments";
+import {
+  allExchangeProbesOk,
+  positionCoverageByExchange,
+} from "@/src/markets/overseas/exchange-coverage";
 import { overseasPaperOrdersLocked, vtsOverseasOrderTestsEnabled } from "@/src/markets/overseas/env";
 import { nowIso } from "@/src/clock";
 import type { EnvMap } from "@/src/runtime/trading-mode";
@@ -24,6 +30,7 @@ export type OverseasSyncState = {
   openOrderCount: number;
   executionCount: number;
   positionCount: number;
+  positionCoverage?: Record<"NASDAQ" | "NYSE" | "AMEX", number>;
   recoveryStatus?: string;
   blocksNewBuy?: boolean;
   message?: string;
@@ -48,6 +55,7 @@ export function usesOverseasPaperSync(env: EnvMap = process.env): boolean {
 /**
  * Read-only reconcile. Does not mutate domestic startupSync status.
  * Failure here must not clear a HEALTHY domestic startupSync.
+ * Startup order POST count is always 0.
  */
 export async function runOverseasPaperSync(
   state: AppState,
@@ -79,29 +87,42 @@ export async function runOverseasPaperSync(
 
   const adapter = new OverseasTradingAdapter(client);
   try {
-    const openOrders = await adapter.getOpenOrders("NASDAQ");
-    const nyseOpen = await adapter.getOpenOrders("NYSE").catch(() => []);
-    const allOpen = [...openOrders, ...nyseOpen];
+    const { orders: allOpen, probes: openProbes } = await adapter.getAllOpenOrders();
     const executions = await adapter.getExecutions();
-    const { positions } = await adapter.getBalance("NASDAQ");
+    const { positions, probes: positionProbes } = await adapter.getAllPositions();
+    const local = overseasStateFromApp(state);
     const recovery = classifyOverseasRestart({
-      localIntents: state.intents ?? [],
-      localOrders: state.orders,
+      localIntents: local.intents,
+      localOrders: local.orders,
       openOrders: allOpen,
       executions,
     });
+    const coverage = positionCoverageByExchange(positions);
+    const probesOk = allExchangeProbesOk(openProbes) && allExchangeProbesOk(positionProbes);
     const sync: OverseasSyncState = {
       status:
-        recovery.status === "UNKNOWN_BLOCKING" || recovery.status === "MISMATCH"
+        !probesOk ||
+        recovery.status === "UNKNOWN_BLOCKING" ||
+        recovery.status === "MISMATCH" ||
+        recovery.status === "REMOTE_ONLY"
           ? "FAILED"
           : "HEALTHY",
       lastSyncedAt: nowIso(),
       openOrderCount: allOpen.length,
       executionCount: executions.length,
       positionCount: positions.length,
+      positionCoverage: coverage,
       recoveryStatus: recovery.status,
       blocksNewBuy: recovery.blocksNewBuy,
-      message: recovery.message,
+      message: !probesOk
+        ? `Exchange probe incomplete: open=${openProbes
+            .filter((p) => !p.ok)
+            .map((p) => p.exchange)
+            .join(",") || "ok"} pos=${positionProbes
+            .filter((p) => !p.ok)
+            .map((p) => p.exchange)
+            .join(",") || "ok"}`
+        : recovery.message,
       orderPosts: 0,
     };
     const prev = safetyOf(state);
@@ -119,7 +140,6 @@ export async function runOverseasPaperSync(
               lastError: prev.lastError?.startsWith("overseas sync:") ? undefined : prev.lastError,
             },
     };
-    void makeUsInstrument("NYSE", "F");
     return { ok: sync.status === "HEALTHY", state: next, sync };
   } catch (err) {
     const message = err instanceof Error ? err.message : "overseas sync failed";

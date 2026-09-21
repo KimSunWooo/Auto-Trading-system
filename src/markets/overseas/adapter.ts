@@ -17,13 +17,11 @@ import {
   overseasSellQtyAllowed,
 } from "@/src/markets/overseas/lifecycle";
 import { parseOverseasLimitPrice } from "@/src/markets/overseas/price";
-import type {
-  OverseasAccountSnapshot,
-  OverseasBuyingPower,
-  OverseasExecution,
-  OverseasOpenOrder,
-  OverseasQuote,
-} from "@/src/markets/overseas/types";
+import type { OverseasAccountSnapshot, OverseasBuyingPower, OverseasExecution, OverseasOpenOrder, OverseasQuote } from "@/src/markets/overseas/types";
+import {
+  collectAllExchangeOpenOrders,
+  collectAllExchangePositions,
+} from "@/src/markets/overseas/exchange-coverage";
 import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/runtime/intents";
 import type { StateBox } from "@/src/accounts/StateBox";
 import { checkPaperOrderConstraints, existingOpenBuy, usesPaperOrderPolicy } from "@/src/risk/order-policy";
@@ -61,8 +59,27 @@ export class OverseasTradingAdapter {
     return this.client.inquireOverseasOpenOrders(exchange);
   }
 
+  /** NASDAQ + NYSE + AMEX open orders, de-duplicated by ODNO. */
+  async getAllOpenOrders(): Promise<{
+    orders: OverseasOpenOrder[];
+    probes: Awaited<ReturnType<typeof collectAllExchangeOpenOrders>>["probes"];
+  }> {
+    return collectAllExchangeOpenOrders((exchange) => this.getOpenOrders(exchange));
+  }
+
   getExecutions(): Promise<OverseasExecution[]> {
     return this.client.inquireOverseasExecutions();
+  }
+
+  /** NASDAQ + NYSE + AMEX positions, merged by EXCHANGE:SYMBOL identity. */
+  async getAllPositions(): Promise<{
+    positions: Awaited<ReturnType<typeof collectAllExchangePositions>>["positions"];
+    probes: Awaited<ReturnType<typeof collectAllExchangePositions>>["probes"];
+  }> {
+    return collectAllExchangePositions(async (exchange) => {
+      const { positions } = await this.getBalance(exchange);
+      return positions;
+    });
   }
 
   ordersLocked(env: NodeJS.ProcessEnv = process.env): string | null {
@@ -97,7 +114,7 @@ export class OverseasTradingAdapter {
   async assembleAccount(symbol = "AAPL", exchange: UsExchange = "NASDAQ"): Promise<OverseasAccountSnapshot> {
     const instrument = makeUsInstrument(exchange, symbol);
     const present = await this.getPresentBalance();
-    const { positions } = await this.getBalance(exchange);
+    const { positions: exchangePositions } = await this.getAllPositions();
     const usd = pickUsdCash(present.cash);
     let buyingPower = present.buyingPower;
     try {
@@ -109,7 +126,7 @@ export class OverseasTradingAdapter {
     const fxRate = present.fx?.rate ?? usd?.exchangeRate ?? null;
     return {
       ...present,
-      positions: positions.length ? positions : present.positions,
+      positions: exchangePositions.length ? exchangePositions : present.positions,
       buyingPower,
       cash: present.cash,
       fx: present.fx,

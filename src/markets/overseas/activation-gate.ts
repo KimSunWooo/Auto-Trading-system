@@ -13,6 +13,7 @@ import type { OverseasRecoveryResult } from "@/src/markets/overseas/lifecycle";
 import { KIS_CURRENCY_EXCHANGE_AUDIT } from "@/src/markets/overseas/exchange-audit";
 import { publicDatabaseStatus } from "@/src/db/mirror";
 import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
+import { workerRuntimeHealthy, workerRuntimeStatus } from "@/src/runtime/paper-long-soak-health";
 
 export type OverseasActivationGateResult = {
   ok: boolean;
@@ -27,6 +28,8 @@ export type OverseasActivationGateResult = {
 /**
  * Server-start Activation Gate for the first overseas PAPER 1-share lifecycle.
  * Does not place orders. Opt-in must stay OFF during preparation.
+ *
+ * Worker / RDS must come from real runtime — hardcoded true is rejected.
  */
 export function overseasActivationGate(input: {
   env?: EnvMap;
@@ -43,8 +46,14 @@ export function overseasActivationGate(input: {
   unknownPresent: boolean;
   paperOrderPosts?: number;
   realRequests?: number;
+  /** runtime.worker string — must be exactly "healthy". undefined/unknown ≠ PASS. */
+  runtimeWorker?: string | null;
+  /** When set, used instead of probing the lock file (scripts pass measured value). */
+  workerLockOk?: boolean;
+  /** @deprecated Prefer runtimeWorker. Boolean true without runtimeWorker is ignored. */
   workerHealthy?: boolean;
   persistenceHealthy?: boolean;
+  /** Ignored when set to true without verifying publicDatabaseStatus — RDS is always re-checked. */
   rdsMirrorHealthy?: boolean;
 }): OverseasActivationGateResult {
   const env = input.env ?? process.env;
@@ -56,11 +65,20 @@ export function overseasActivationGate(input: {
   const optInOff = !vtsOverseasOrderTestsEnabled(env);
   const locked = overseasPaperOrdersLocked(env);
   const db = publicDatabaseStatus(env);
-  const mirrorOk =
-    input.rdsMirrorHealthy ??
-    (db.mode === "mirror" ? !db.lastError?.includes("DB_MIRROR_DEGRADED") : true);
-  const workerOk =
-    input.workerHealthy ?? (holdsWorkerLock() || workerLockHealthy());
+  const mirrorDegraded = Boolean(db.lastError?.includes("DB_MIRROR_DEGRADED"));
+  // Always derive RDS from authoritative status — never trust caller hardcoded true.
+  const rdsOk =
+    db.mode === "mirror" &&
+    (db.enabled === true || db.connected === true) &&
+    !mirrorDegraded &&
+    input.rdsMirrorHealthy !== false;
+
+  const workerRuntimeOk = workerRuntimeHealthy(input.runtimeWorker);
+  const workerLockOk =
+    input.workerLockOk ?? (holdsWorkerLock() || workerLockHealthy());
+  // Reject legacy workerHealthy:true when runtimeWorker is missing/unknown.
+  const workerOk = workerRuntimeOk && workerLockOk && input.workerHealthy !== false;
+
   const posts = input.paperOrderPosts ?? 0;
   const real = input.realRequests ?? 0;
 
@@ -85,12 +103,17 @@ export function overseasActivationGate(input: {
     positions: input.positionsOk ? "PASS" : "FAIL",
     openOrders: input.openOrdersOk ? "PASS" : "FAIL",
     executions: input.executionsOk ? "PASS" : "FAIL",
-    reconciliation: input.recovery.status === "HEALTHY" || input.recovery.status === "EXECUTION_MATCHED" ? "PASS" : "FAIL",
+    reconciliation:
+      input.recovery.status === "HEALTHY" || input.recovery.status === "EXECUTION_MATCHED"
+        ? "PASS"
+        : "FAIL",
     unknown: input.unknownPresent || input.recovery.status === "UNKNOWN_BLOCKING" ? "FAIL" : "PASS",
     existingBuy: input.existingOpenBuy || input.recovery.blocksNewBuy ? "FAIL" : "PASS",
+    workerRuntime: workerRuntimeOk ? "PASS" : "FAIL",
+    workerLock: workerLockOk ? "PASS" : "FAIL",
     worker: workerOk ? "PASS" : "FAIL",
     persistence: input.persistenceHealthy === false ? "FAIL" : "PASS",
-    rdsMirror: mirrorOk ? "PASS" : "FAIL",
+    rdsMirror: rdsOk ? "PASS" : "FAIL",
     orderPosts: posts === 0 ? "PASS" : "FAIL",
     realRequests: real === 0 ? "PASS" : "FAIL",
     firstQty: qtyOk.ok ? "PASS" : "FAIL",
@@ -111,8 +134,11 @@ export function overseasActivationGate(input: {
     blocked = input.recovery.message;
   } else if (input.unknownPresent) blocked = "UNKNOWN overseas order present";
   else if (input.existingOpenBuy) blocked = "Existing open BUY";
-  else if (!workerOk) blocked = "Worker lock unhealthy";
-  else if (!mirrorOk) blocked = "RDS mirror degraded";
+  else if (!workerRuntimeOk) {
+    blocked = `Worker runtime ${workerRuntimeStatus(input.runtimeWorker)} — not healthy`;
+  } else if (!workerLockOk) blocked = "Worker lock unhealthy";
+  else if (!rdsOk) blocked = mirrorDegraded ? "RDS mirror degraded" : "RDS mirror not healthy";
+  else if (input.persistenceHealthy === false) blocked = "Persistence unhealthy";
   else if (posts !== 0) blocked = "Unexpected PAPER order POST";
   else if (real !== 0) blocked = "REAL HTTP request observed";
 
