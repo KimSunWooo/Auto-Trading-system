@@ -15,6 +15,22 @@
       "takeProfitPct": 0.03,
       "enabled": true,
       "budget": 800000
+    },
+    {
+      "id": "23cd18d6-5dd3-426b-baf1-4e00a2dfeafc",
+      "name": "안정형 · KODEX 200 적립",
+      "ticker": "069500",
+      "kind": "interval",
+      "intervalMs": 45000,
+      "fastMa": 5,
+      "slowMa": 20,
+      "buyPct": 0.05,
+      "sliceKrw": 150000,
+      "minAmountKrw": 10000,
+      "stopLossPct": 0.05,
+      "takeProfitPct": 0.03,
+      "enabled": true,
+      "budget": 7000000
     }
   ]
 }
