@@ -88,7 +88,7 @@ function healthyState(opts: {
   runtimeWorker?: string | null;
   autoTrading?: boolean;
   matched?: boolean;
-  orderable?: number | null;
+  orderable?: number;
 } = {}) {
   const now = opts.now ?? nowMs();
   if (opts.marketOpenNow === false) {
