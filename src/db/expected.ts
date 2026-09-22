@@ -7,6 +7,7 @@ export const EXPECTED_TABLES = [
   "auto_conditions",
   "broker_accounts",
   "broker_credential_refs",
+  "broker_secret_payloads",
   "cash_balance_snapshots",
   "daily_performance",
   "dca_plans",

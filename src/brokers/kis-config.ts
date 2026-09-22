@@ -249,6 +249,18 @@ export function getKisConfig(
   return cfg;
 }
 
+/** Build a PAPER KisConfig from decrypted user credentials (never REAL). */
+export function kisConfigFromPaperCredentials(creds: {
+  appKey: string;
+  appSecret: string;
+  accountNo: string;
+}): KisConfig {
+  return buildConfig("paper", creds, {
+    KIS_MODE: "paper",
+    ALLOW_LIVE_TRADING: "false",
+  });
+}
+
 /** Dashboard / client inspect. Does not throw. Never copies the other environment's secrets. */
 export function loadKisConfig(env: EnvMap = process.env): KisConfig {
   let environment: KisEnvironment;

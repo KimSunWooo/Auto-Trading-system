@@ -73,3 +73,21 @@ export const tradingAccountState = mysqlTable(
   (table) => [
   ],
 );
+
+/** Encrypted KIS PAPER credential payload (AES-256-GCM). Master key never stored in DB. */
+export const brokerSecretPayloads = mysqlTable(
+  "broker_secret_payloads",
+  {
+    id: char("id", { length: 36 }).primaryKey().notNull(),
+    brokerAccountId: char("broker_account_id", { length: 36 }).notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    iv: varchar("iv", { length: 64 }).notNull(),
+    authTag: varchar("auth_tag", { length: 64 }).notNull(),
+    keyVersion: varchar("key_version", { length: 80 }).notNull().default("v1"),
+    createdAt: datetime("created_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`),
+    updatedAt: datetime("updated_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`).$onUpdate(() => sql`CURRENT_TIMESTAMP(6)`),
+  },
+  (table) => [
+    uniqueIndex("uq_broker_secret_payload_account").on(table.brokerAccountId),
+  ],
+);

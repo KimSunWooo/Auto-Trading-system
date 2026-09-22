@@ -24,6 +24,8 @@ export const users = mysqlTable(
     displayName: varchar("display_name", { length: 120 }).notNull(),
     role: varchar("role", { length: 20 }).notNull().default("USER"),
     status: varchar("status", { length: 20 }).notNull().default("ACTIVE"),
+    /** scrypt password hash (salt:hex|hash:hex). Never store plaintext. */
+    passwordHash: varchar("password_hash", { length: 512 }),
     lastLoginAt: datetime("last_login_at", { fsp: 6, mode: "string" }),
     createdAt: datetime("created_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`),
     updatedAt: datetime("updated_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`).$onUpdate(() => sql`CURRENT_TIMESTAMP(6)`),
