@@ -148,13 +148,13 @@ test("W9/W10 syncSubscriptions: disabled unheld dropped; held kept", async () =>
   const sock = new FakeSocket();
   let t = 1_000;
   const hub = await makeHub(sock, () => t);
-  await syncWatchedSubscriptions(hub, ["035720", "069500"]);
+  await syncWatchedSubscriptions(hub, "acct-a", ["035720", "069500"]);
   assert.deepEqual(hub.health().subscriptions.sort(), ["035720", "069500"]);
-  // W9: drop unused
-  await syncWatchedSubscriptions(hub, ["035720"]);
+  // W9: drop unused for this consumer
+  await syncWatchedSubscriptions(hub, "acct-a", ["035720"]);
   assert.deepEqual(hub.health().subscriptions, ["035720"]);
-  // W10: held ticker remains even if rule list shrinks to held-only
-  await syncWatchedSubscriptions(hub, ["069500"]);
+  // W10: held ticker remains for this consumer
+  await syncWatchedSubscriptions(hub, "acct-a", ["069500"]);
   assert.deepEqual(hub.health().subscriptions, ["069500"]);
   await hub.stop();
 });
@@ -164,7 +164,7 @@ test("W11-W14 freshness + mock/seed blocked via getCurrentPrice", async () => {
   const sock = new FakeSocket();
   let t = 10_000;
   const hub = await makeHub(sock, () => t);
-  await hub.subscribe("035720");
+  await hub.syncSubscriptions("acct-a", ["035720"]);
   sock.pushMessage(buildH0stCnt0Fixture());
 
   const state = createInitialState();
@@ -214,7 +214,7 @@ test("W15-W17 disconnect blocks; reconnect without quote still blocks", async ()
   const sock = new FakeSocket();
   let t = 50_000;
   const hub = await makeHub(sock, () => t);
-  await hub.subscribe("035720");
+  await hub.syncSubscriptions("acct-a", ["035720"]);
   sock.pushMessage(buildH0stCnt0Fixture());
 
   const calls = { price: 0, daily: 0 };
@@ -244,7 +244,7 @@ test("W18-W21 WS tick uses 0 continuous inquirePrice; seed+daily allowed once", 
   const sock = new FakeSocket();
   let t = 80_000;
   const hub = await makeHub(sock, () => t);
-  await hub.subscribe("035720");
+  await hub.syncSubscriptions("acct-a", ["035720"]);
   sock.pushMessage(buildH0stCnt0Fixture());
 
   const calls = { price: 0, daily: 0 };

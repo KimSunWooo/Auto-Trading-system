@@ -1,12 +1,12 @@
 /**
  * Build an official-shaped H0STCNT0 realtime pipe message for tests.
  */
-import { H0STCNT0_COLUMNS, H0STCNT0_TR_ID } from "@/src/market-data/h0stcnt0";
+import { H0STCNT0_COLUMNS, H0STCNT0_FIELD_WIDTH, H0STCNT0_TR_ID } from "@/src/market-data/h0stcnt0";
 
 export type H0stCnt0FixtureOverrides = Partial<Record<(typeof H0STCNT0_COLUMNS)[number], string>>;
 
-export function buildH0stCnt0Fixture(overrides: H0stCnt0FixtureOverrides = {}): string {
-  const fields = H0STCNT0_COLUMNS.map((name) => {
+function rowFields(overrides: H0stCnt0FixtureOverrides = {}): string[] {
+  return H0STCNT0_COLUMNS.map((name) => {
     if (overrides[name] != null) return overrides[name]!;
     switch (name) {
       case "MKSC_SHRN_ISCD":
@@ -35,5 +35,30 @@ export function buildH0stCnt0Fixture(overrides: H0stCnt0FixtureOverrides = {}): 
         return "0";
     }
   });
+}
+
+export function buildH0stCnt0Fixture(overrides: H0stCnt0FixtureOverrides = {}): string {
+  const fields = rowFields(overrides);
   return `0|${H0STCNT0_TR_ID}|001|${fields.join("^")}`;
 }
+
+/** Multi-row frame: data_cnt = rows.length, fields concatenated. */
+export function buildH0stCnt0MultiFixture(rows: H0stCnt0FixtureOverrides[]): string {
+  const all: string[] = [];
+  for (const overrides of rows) {
+    all.push(...rowFields(overrides));
+  }
+  const cnt = String(rows.length).padStart(3, "0");
+  return `0|${H0STCNT0_TR_ID}|${cnt}|${all.join("^")}`;
+}
+
+/** Truncate the last row so it is incomplete (malformed). */
+export function buildH0stCnt0MultiWithMalformedSecond(
+  first: H0stCnt0FixtureOverrides,
+  secondPartialFields: string[],
+): string {
+  const fields = [...rowFields(first), ...secondPartialFields];
+  return `0|${H0STCNT0_TR_ID}|002|${fields.join("^")}`;
+}
+
+export { H0STCNT0_FIELD_WIDTH };

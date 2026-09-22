@@ -125,15 +125,15 @@ export function invalidateRuntimeScope(brokerAccountId: string): void {
   scopes.delete(brokerAccountId);
   startupDoneByAccount.delete(brokerAccountId);
   if (prev?.quoteHub) {
-    void disposeScopeQuoteHub(prev.quoteHub);
+    void disposeScopeQuoteHub(prev.quoteHub, prev.brokerAccountId);
   }
 }
 
 export function resetRuntimeScopesForTest(): void {
-  const hubs = [...scopes.values()].map((s) => s.quoteHub);
+  const entries = [...scopes.values()];
   scopes.clear();
   startupDoneByAccount.clear();
-  for (const hub of hubs) {
-    if (hub) void disposeScopeQuoteHub(hub);
+  for (const scope of entries) {
+    if (scope.quoteHub) void disposeScopeQuoteHub(scope.quoteHub, scope.brokerAccountId);
   }
 }

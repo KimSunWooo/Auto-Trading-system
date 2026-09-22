@@ -4,9 +4,11 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import path from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, before, test } from "node:test";
 import { createInitialState } from "@/lib/engine";
 import type { AppState } from "@/lib/types";
+import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
+import { setNowMs } from "@/src/clock";
 import {
   markProcessBootStartupVerified,
   resetProcessBootStartupForTest,
@@ -40,10 +42,13 @@ const PAPER_ENV = {
 
 const TMP = path.join(process.cwd(), "data", "test-account-safety-gates");
 
+before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
+
 afterEach(() => {
   resetRuntimeScopesForTest();
   resetProcessBootStartupForTest();
   resetWorkerLockForTest();
+  setNowMs(SEOUL_REGULAR_SESSION_MS);
 });
 
 function healthyState(overrides: Partial<AppState> = {}): AppState {

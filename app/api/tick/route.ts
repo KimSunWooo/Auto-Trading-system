@@ -21,6 +21,7 @@ export async function POST() {
           startupSyncVerified: isScopeStartupSyncDone(rt.account.id),
           workerLockPath: rt.scope.lockPath,
           quoteHub: rt.scope.quoteHub,
+          quoteConsumerId: rt.scope.brokerAccountId,
         },
       });
       return Response.json(state);

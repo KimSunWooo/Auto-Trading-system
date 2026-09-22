@@ -73,15 +73,40 @@ export async function ensureQuoteHubStarted(hub: RealtimeQuoteHub): Promise<void
 }
 
 /**
- * Sync WS subscriptions to execution-critical tickers (Set diff).
+ * Sync WS subscriptions for one account/runtime consumer (Set diff via hub union).
  * Throws SubscriptionCapacityError when over limit.
  */
 export async function syncWatchedSubscriptions(
   hub: RealtimeQuoteHub,
+  consumerId: string,
   tickers: string[],
 ): Promise<void> {
   await ensureQuoteHubStarted(hub);
-  await hub.syncSubscriptions(tickers);
+  await hub.syncSubscriptions(consumerId, tickers);
+}
+
+/** Drop one account's subscriptions from a shared hub without affecting peers. */
+export async function clearConsumerWatchedSubscriptions(
+  hub: RealtimeQuoteHub,
+  consumerId: string,
+): Promise<void> {
+  await hub.clearConsumerSubscriptions(consumerId);
+}
+
+/** Dispose hub reference held by a RuntimeScope (ref-counted). Clears consumer first. */
+export async function disposeScopeQuoteHub(
+  hub: RealtimeQuoteHub | null | undefined,
+  consumerId?: string,
+): Promise<void> {
+  if (!hub) return;
+  if (consumerId) {
+    try {
+      await hub.clearConsumerSubscriptions(consumerId);
+    } catch {
+      /* ignore */
+    }
+  }
+  await releaseQuoteHub(hub);
 }
 
 export type WsQuoteRefreshResult = {
@@ -252,10 +277,4 @@ export function brokerQuoteFromSnapshot(
       ? [...prev.history.slice(-39), snap.price]
       : [snap.price],
   };
-}
-
-/** Dispose hub reference held by a RuntimeScope (ref-counted). */
-export async function disposeScopeQuoteHub(hub: RealtimeQuoteHub | null | undefined): Promise<void> {
-  if (!hub) return;
-  await releaseQuoteHub(hub);
 }

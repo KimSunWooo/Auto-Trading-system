@@ -182,6 +182,7 @@ async function tickOneAccount(
       startupSyncVerified: isScopeStartupSyncDone(account.id),
       workerLockPath: rt.scope.lockPath,
       quoteHub: rt.scope.quoteHub,
+      quoteConsumerId: rt.scope.brokerAccountId,
     },
   });
 }

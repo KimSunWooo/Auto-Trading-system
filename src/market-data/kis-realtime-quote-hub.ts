@@ -1,6 +1,8 @@
 /**
  * Persistent KIS PAPER WebSocket quote hub (H0STCNT0).
  * One connection per AppKey session — no per-tick connect/disconnect.
+ * Consumer-scoped subscriptions: same AppKey accounts share a hub without
+ * overwriting each other's ticker sets (union ownership).
  * Orders are never placed here.
  */
 import type { KisConfig, KisEnvironment } from "@/src/brokers/kis-config";
@@ -9,8 +11,10 @@ import { nowMs } from "@/src/clock";
 import {
   buildH0stCnt0SubscribeMessage,
   H0STCNT0_TR_ID,
+  KIS_PAPER_WS_PATH,
   KIS_WS_SUBSCRIPTION_LIMIT,
-  parseH0stCnt0Realtime,
+  KIS_WS_TR_TYPE,
+  parseH0stCnt0RealtimeBatch,
   parseKisWsSystemMessage,
 } from "@/src/market-data/h0stcnt0";
 import {
@@ -19,6 +23,7 @@ import {
   kisCredentialSessionKey,
   type ApprovalFetch,
 } from "@/src/market-data/kis-approval";
+import { createServerWebSocketFactory } from "@/src/market-data/kis-ws-node";
 
 export type RealtimeQuoteSnapshot = {
   ticker: string;
@@ -56,17 +61,22 @@ export type QuoteHubHealth = {
   messagesReceived: number;
   parseErrors: number;
   staleQuoteCount: number;
+  /** Actual KIS subscription union across all consumers. */
   subscriptions: string[];
   subscribeErrors: number;
+  consumers: string[];
 };
 
 export interface RealtimeQuoteHub {
   readonly sessionKey: string;
   start(): Promise<void>;
-  subscribe(ticker: string): Promise<void>;
-  unsubscribe(ticker: string): Promise<void>;
-  /** Diff desired set — subscribe new, unsubscribe removed. */
-  syncSubscriptions(tickers: Iterable<string>): Promise<void>;
+  /**
+   * Replace one consumer's desired tickers; hub actual = union of all consumers.
+   * consumerId = brokerAccountId (or bootstrap-owner).
+   */
+  syncSubscriptions(consumerId: string, tickers: Iterable<string>): Promise<void>;
+  /** Drop one consumer's set and recompute union (other accounts untouched). */
+  clearConsumerSubscriptions(consumerId: string): Promise<void>;
   get(ticker: string): RealtimeQuoteSnapshot | null;
   health(): QuoteHubHealth;
   stop(): Promise<void>;
@@ -130,10 +140,13 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
   private state: QuoteHubConnectionState = "DISCONNECTED";
   private socket: WebSocketLike | null = null;
   private approvalKey: string | null = null;
-  private readonly desired = new Set<string>();
+
+  /** consumerId (brokerAccountId) → tickers that consumer needs. */
+  private readonly consumerSubscriptions = new Map<string, Set<string>>();
+  /** Actual KIS subscription set (= union of consumers). */
+  private actual = new Set<string>();
   private readonly confirmed = new Set<string>();
   private readonly quotes = new Map<string, RealtimeQuoteSnapshot>();
-  private readonly refCounts = new Map<string, number>();
 
   private reconnectCount = 0;
   private approvalRefreshCount = 0;
@@ -154,15 +167,13 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
     this.fetchImpl = opts.fetchImpl;
     this.sessionKey = kisCredentialSessionKey(opts.config.environment, opts.config.appKey);
     const base = opts.config.websocketUrl || KIS_WS[opts.config.environment];
-    const path = opts.wsPath ?? "/tryitout";
+    const path = opts.wsPath ?? KIS_PAPER_WS_PATH;
     this.wsUrl = base.endsWith(path) ? base : `${base.replace(/\/$/, "")}${path}`;
     this.limit = opts.subscriptionLimit ?? KIS_WS_SUBSCRIPTION_LIMIT;
     this.now = opts.now ?? nowMs;
     this.autoReconnect = opts.autoReconnect !== false;
     this.backoffBaseMs = opts.backoffBaseMs ?? 1_000;
-    this.wsFactory =
-      opts.webSocketFactory ??
-      ((url: string) => new WebSocket(url) as unknown as WebSocketLike);
+    this.wsFactory = opts.webSocketFactory ?? createServerWebSocketFactory();
   }
 
   async start(): Promise<void> {
@@ -181,73 +192,35 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
     }
   }
 
-  async subscribe(ticker: string): Promise<void> {
-    const code = normalizeTicker(ticker);
-    if (!code) return;
-    const refs = (this.refCounts.get(code) ?? 0) + 1;
-    this.refCounts.set(code, refs);
-    if (this.desired.has(code)) return;
-
-    if (this.desired.size >= this.limit) {
-      this.refCounts.set(code, refs - 1);
-      if (refs - 1 <= 0) this.refCounts.delete(code);
-      this.subscribeErrors += 1;
-      throw new SubscriptionCapacityError(code, this.limit);
-    }
-
-    this.desired.add(code);
-    if (this.state === "CONNECTED" && this.socket && this.approvalKey) {
-      await this.sendSub(code, "1");
-    } else if (this.state === "DISCONNECTED" || this.state === "STOPPED") {
-      await this.start();
-    }
-  }
-
-  async unsubscribe(ticker: string): Promise<void> {
-    const code = normalizeTicker(ticker);
-    if (!code) return;
-    const refs = (this.refCounts.get(code) ?? 0) - 1;
-    if (refs > 0) {
-      this.refCounts.set(code, refs);
-      return;
-    }
-    this.refCounts.delete(code);
-    if (!this.desired.has(code)) return;
-    this.desired.delete(code);
-    this.confirmed.delete(code);
-    if (this.state === "CONNECTED" && this.socket && this.approvalKey) {
-      await this.sendSub(code, "0");
-    }
-  }
-
-  async syncSubscriptions(tickers: Iterable<string>): Promise<void> {
-    const next = new Set<string>();
+  async syncSubscriptions(consumerId: string, tickers: Iterable<string>): Promise<void> {
+    const id = normalizeConsumerId(consumerId);
+    const nextConsumer = new Set<string>();
     for (const t of tickers) {
       const code = normalizeTicker(t);
-      if (code) next.add(code);
+      if (code) nextConsumer.add(code);
     }
-    if (next.size > this.limit) {
+
+    const prevUnion = this.unionDesired();
+    const provisional = this.computeUnionWith(id, nextConsumer);
+    if (provisional.size > this.limit) {
       this.subscribeErrors += 1;
-      throw new SubscriptionCapacityError([...next][this.limit]!, this.limit);
+      const overflow = [...provisional].find((t) => !prevUnion.has(t)) ?? [...provisional][this.limit]!;
+      throw new SubscriptionCapacityError(overflow, this.limit);
     }
-    for (const code of [...this.desired]) {
-      if (!next.has(code)) {
-        this.refCounts.delete(code);
-        await this.unsubscribe(code);
-      }
-    }
-    for (const code of next) {
-      if (!this.desired.has(code)) {
-        this.refCounts.set(code, 1);
-        this.desired.add(code);
-        if (this.state === "CONNECTED" && this.socket && this.approvalKey) {
-          await this.sendSub(code, "1");
-        }
-      }
-    }
-    if (this.desired.size > 0 && this.state !== "CONNECTED" && this.state !== "CONNECTING") {
+
+    if (nextConsumer.size === 0) this.consumerSubscriptions.delete(id);
+    else this.consumerSubscriptions.set(id, nextConsumer);
+
+    const nextUnion = this.unionDesired();
+    await this.applyUnionDiff(prevUnion, nextUnion);
+
+    if (nextUnion.size > 0 && this.state !== "CONNECTED" && this.state !== "CONNECTING") {
       await this.start();
     }
+  }
+
+  async clearConsumerSubscriptions(consumerId: string): Promise<void> {
+    await this.syncSubscriptions(consumerId, []);
   }
 
   get(ticker: string): RealtimeQuoteSnapshot | null {
@@ -273,8 +246,9 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
       messagesReceived: this.messagesReceived,
       parseErrors: this.parseErrors,
       staleQuoteCount: stale,
-      subscriptions: [...this.desired].sort(),
+      subscriptions: [...this.actual].sort(),
       subscribeErrors: this.subscribeErrors,
+      consumers: [...this.consumerSubscriptions.keys()].sort(),
     };
   }
 
@@ -298,6 +272,50 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
   /** Test helper: inject a raw WS message. */
   handleRawMessageForTest(raw: string): void {
     this.onMessage(raw);
+  }
+
+  /** Test helper: read one consumer's set. */
+  consumerTickersForTest(consumerId: string): string[] {
+    return [...(this.consumerSubscriptions.get(normalizeConsumerId(consumerId)) ?? [])].sort();
+  }
+
+  private unionDesired(): Set<string> {
+    const u = new Set<string>();
+    for (const set of this.consumerSubscriptions.values()) {
+      for (const t of set) u.add(t);
+    }
+    return u;
+  }
+
+  private computeUnionWith(consumerId: string, tickers: Set<string>): Set<string> {
+    const u = new Set<string>();
+    for (const [id, set] of this.consumerSubscriptions) {
+      if (id === consumerId) continue;
+      for (const t of set) u.add(t);
+    }
+    for (const t of tickers) u.add(t);
+    return u;
+  }
+
+  private async applyUnionDiff(prev: Set<string>, next: Set<string>): Promise<void> {
+    for (const code of prev) {
+      if (!next.has(code)) {
+        this.actual.delete(code);
+        this.confirmed.delete(code);
+        if (this.state === "CONNECTED" && this.socket && this.approvalKey) {
+          await this.sendSub(code, KIS_WS_TR_TYPE.unsubscribe);
+        }
+      }
+    }
+    for (const code of next) {
+      if (!prev.has(code)) {
+        this.actual.add(code);
+        if (this.state === "CONNECTED" && this.socket && this.approvalKey) {
+          await this.sendSub(code, KIS_WS_TR_TYPE.subscribe);
+        }
+      }
+    }
+    this.actual = new Set(next);
   }
 
   private async connect(): Promise<void> {
@@ -362,8 +380,8 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
       this.state = "CONNECTED";
       this.lastError = undefined;
       this.confirmed.clear();
-      for (const code of this.desired) {
-        await this.sendSub(code, "1");
+      for (const code of this.actual) {
+        await this.sendSub(code, KIS_WS_TR_TYPE.subscribe);
       }
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : "WebSocket connect failed";
@@ -399,30 +417,35 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
       return;
     }
 
-    const parsed = parseH0stCnt0Realtime(raw);
-    if (!parsed) {
+    const batch = parseH0stCnt0RealtimeBatch(raw);
+    if (batch.rows.length === 0) {
       this.parseErrors += 1;
       return;
     }
+    if (batch.malformedRows > 0) {
+      this.parseErrors += batch.malformedRows;
+    }
     const receivedAt = this.now();
-    const snap: RealtimeQuoteSnapshot = {
-      ticker: parsed.ticker,
-      price: parsed.price,
-      open: parsed.open,
-      high: parsed.high,
-      low: parsed.low,
-      bid: parsed.bid,
-      ask: parsed.ask,
-      volume: parsed.volume,
-      tradeVolume: parsed.tradeVolume,
-      businessDate: parsed.businessDate || undefined,
-      tradeTime: parsed.tradeTime || undefined,
-      receivedAt,
-      source: "kis",
-      transport: "ws",
-    };
-    this.quotes.set(parsed.ticker, snap);
-    this.lastQuoteAt = receivedAt;
+    for (const parsed of batch.rows) {
+      const snap: RealtimeQuoteSnapshot = {
+        ticker: parsed.ticker,
+        price: parsed.price,
+        open: parsed.open,
+        high: parsed.high,
+        low: parsed.low,
+        bid: parsed.bid,
+        ask: parsed.ask,
+        volume: parsed.volume,
+        tradeVolume: parsed.tradeVolume,
+        businessDate: parsed.businessDate || undefined,
+        tradeTime: parsed.tradeTime || undefined,
+        receivedAt,
+        source: "kis",
+        transport: "ws",
+      };
+      this.quotes.set(parsed.ticker, snap);
+      this.lastQuoteAt = receivedAt;
+    }
   }
 
   private replyPingPong(raw: string): void {
@@ -476,7 +499,7 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
     }
   }
 
-  private async sendSub(ticker: string, trType: "1" | "0"): Promise<void> {
+  private async sendSub(ticker: string, trType: "1" | "2"): Promise<void> {
     const sock = this.socket;
     const key = this.approvalKey;
     if (!sock || sock.readyState !== WS_OPEN || !key) return;
@@ -491,4 +514,9 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
 
 function normalizeTicker(ticker: string): string {
   return String(ticker ?? "").trim();
+}
+
+function normalizeConsumerId(consumerId: string): string {
+  const id = String(consumerId ?? "").trim();
+  return id || "__default__";
 }

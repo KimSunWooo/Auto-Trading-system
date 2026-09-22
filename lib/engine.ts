@@ -201,6 +201,7 @@ async function refreshLiveQuotes(
   ruleConfig?: RuleConfigFile,
   quoteHub?: RealtimeQuoteHub | null,
   kisClient?: KisApi,
+  quoteConsumerId = "bootstrap-owner",
 ): Promise<boolean> {
   const codes = watchedTickers(box.current, ruleConfig);
   if (codes.length === 0) {
@@ -212,7 +213,7 @@ async function refreshLiveQuotes(
   const hub = quoteHub ?? (kisClient ? resolvePaperQuoteHub(kisClient) : null);
   if (hub && broker.driver === "kis") {
     try {
-      await syncWatchedSubscriptions(hub, codes);
+      await syncWatchedSubscriptions(hub, quoteConsumerId, codes);
     } catch (err) {
       const reason =
         err instanceof SubscriptionCapacityError
@@ -433,6 +434,8 @@ export type TickRuntimeDeps = {
   workerLockPath?: string;
   /** PAPER WebSocket quote hub (process-local). */
   quoteHub?: RealtimeQuoteHub | null;
+  /** Consumer id for shared-hub subscription ownership (brokerAccountId). */
+  quoteConsumerId?: string;
 };
 
 export async function tickState(
@@ -450,6 +453,7 @@ export async function tickState(
   const kisClient = deps.kisClient ?? getSharedKisClient();
   const forceBalance = deps.forceBalanceSync ?? false;
   const quoteHub = deps.quoteHub ?? resolvePaperQuoteHub(kisClient);
+  const quoteConsumerId = deps.quoteConsumerId ?? "bootstrap-owner";
   const safety = {
     startupSyncVerified: deps.startupSyncVerified,
     workerLockPath: deps.workerLockPath,
@@ -522,7 +526,14 @@ export async function tickState(
       box.current = markInquiryFailure(box.current, "broker", synced.error ?? "잔고 조회에 실패했습니다.");
       liveReady = false;
     }
-    const quotesOk = await refreshLiveQuotes(box, root, ruleConfig, quoteHub, kisClient);
+    const quotesOk = await refreshLiveQuotes(
+      box,
+      root,
+      ruleConfig,
+      quoteHub,
+      kisClient,
+      quoteConsumerId,
+    );
     if (!quotesOk && isLiveLike()) liveReady = false;
     box.current = noteInquiry(box.current, {
       quoteOk: quotesOk,
