@@ -5,6 +5,9 @@
  * Distinct from activation gate (PRE-ACTIVATION ONLY).
  * Quote freshness: Health Observation <=120s vs Order Eligible <=15s.
  *
+ * RDS status comes from the live server GET /api/runtime/database (pingDb).
+ * API failure ⇒ RDS UNKNOWN/FAIL — never silently PASS via local publicDatabaseStatus.
+ *
  * Usage: npx tsx scripts/paper-long-soak-runtime-health.ts
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -17,6 +20,7 @@ import {
   evaluateRuntimeHealth,
   formatRuntimeHealthReport,
 } from "@/src/runtime/paper-long-soak-health";
+import { fetchLiveDatabaseStatus } from "@/src/runtime/live-runtime-status";
 
 const BASE = process.env.LONG_SOAK_BASE_URL ?? "http://127.0.0.1:43147";
 
@@ -60,9 +64,12 @@ async function main() {
   delete process.env.KIS_LIVE_CONFIRM;
 
   const state = await loadLiveState();
+  // Live server ping — null means UNKNOWN/FAIL (no local status fallback for PASS).
+  const databaseStatus = await fetchLiveDatabaseStatus(BASE);
   const report = evaluateRuntimeHealth(state, {
     runtimeWorker: state.runtime?.worker,
     includeLockProbe: true,
+    databaseStatus,
   });
   const histLen = state.quotes[LONG_SOAK_TICKER]?.history?.length ?? 0;
 
@@ -75,6 +82,15 @@ async function main() {
       historyLen: histLen,
     }),
   );
+  if (databaseStatus == null) {
+    console.log("");
+    console.log("RDS Runtime Status: UNKNOWN (GET /api/runtime/database failed)");
+  } else {
+    console.log("");
+    console.log(
+      `RDS Runtime Status: mode=${databaseStatus.mode} enabled=${databaseStatus.enabled} connected=${databaseStatus.connected} lastError=${databaseStatus.lastError ?? "null"}`,
+    );
+  }
   console.log("");
   console.log("NOTE: Runtime health is observational. Order path still enforces");
   console.log("OrderManager / preTradeGate / worker lock / KIS freshAt<=15s / recon / UNKNOWN.");

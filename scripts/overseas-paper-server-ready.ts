@@ -31,7 +31,11 @@ import {
   exchangeCoverageAttemptedOk,
   positionCoverageByExchange,
 } from "@/src/markets/overseas/exchange-coverage";
-import { publicDatabaseStatus } from "@/src/db/mirror";
+import {
+  fetchLiveDatabaseStatus,
+  isLiveRdsHealthy,
+  measurePersistenceHealth,
+} from "@/src/runtime/live-runtime-status";
 import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
 import { workerRuntimeHealthy } from "@/src/runtime/paper-long-soak-health";
 import { assertVtsSafeEnv, beginVtsTestRun, finishVtsTestRun, realTradingFlags } from "@/src/runtime/vts-harness";
@@ -75,14 +79,9 @@ async function loadAppState(): Promise<AppState & { runtime?: { worker?: string 
   ) as AppState;
 }
 
-async function loadDatabaseStatus(): Promise<ReturnType<typeof publicDatabaseStatus>> {
-  try {
-    const res = await fetch(`${BASE}/api/runtime/database`);
-    if (res.ok) return (await res.json()) as ReturnType<typeof publicDatabaseStatus>;
-  } catch {
-    // fall through
-  }
-  return publicDatabaseStatus();
+async function loadDatabaseStatus() {
+  // Live server ping only — null on failure (no local publicDatabaseStatus PASS).
+  return fetchLiveDatabaseStatus(BASE);
 }
 
 async function main() {
@@ -134,13 +133,9 @@ async function main() {
   // beginVtsTestRun redirects the lock path into the VTS run dir — always probe production lock.
   const prodLockPath = path.join(process.cwd(), "data", "trading-worker.lock");
   let workerLockOk = holdsWorkerLock() || workerLockHealthy({ filePath: prodLockPath });
-  const persistenceHealthy = existsSync(path.join(process.cwd(), "data", "paper-account.json"));
-  const mirrorDegraded = Boolean(String(dbStatus.lastError ?? "").includes("DB_MIRROR_DEGRADED"));
-  // Pass-through measurement only — gate re-checks publicDatabaseStatus; never inject true.
-  const rdsMeasured =
-    dbStatus.mode === "mirror" &&
-    (dbStatus.enabled === true || dbStatus.connected === true) &&
-    !mirrorDegraded;
+  const persistence = await measurePersistenceHealth(BASE);
+  const persistenceHealthy = persistence.healthy;
+  const rdsMeasured = isLiveRdsHealthy(dbStatus);
 
   console.log("Overseas PAPER Server Startup Checklist");
   console.log("=======================================");
@@ -152,10 +147,16 @@ async function main() {
   console.log(`[x] REAL flags none`);
   console.log(`Worker Runtime: ${runtimeWorker ?? "unknown"} (${workerRuntimeOk ? "PASS" : "FAIL"})`);
   console.log(`Worker Lock (start): ${workerLockOk ? "HEALTHY" : "FAIL"}`);
-  console.log(`Persistence: ${persistenceHealthy ? "HEALTHY" : "FAIL"}`);
   console.log(
-    `RDS: mode=${dbStatus.mode} enabled=${dbStatus.enabled} connected=${dbStatus.connected} (${rdsMeasured ? "PASS" : "FAIL"})`,
+    `Persistence: ${persistenceHealthy ? "HEALTHY" : "FAIL"} (${persistence.reason})`,
   );
+  if (dbStatus == null) {
+    console.log(`RDS: UNKNOWN (GET /api/runtime/database failed)`);
+  } else {
+    console.log(
+      `RDS: mode=${dbStatus.mode} enabled=${dbStatus.enabled} connected=${dbStatus.connected} (${rdsMeasured ? "PASS" : "FAIL"})`,
+    );
+  }
   console.log(`Local overseas intents: ${local.intents.length}`);
   console.log(`Local overseas orders: ${local.orders.length}`);
 
@@ -289,8 +290,7 @@ async function main() {
     runtimeWorker,
     workerLockOk,
     persistenceHealthy,
-    // Never pass true; only false when measured bad so gate can FAIL early.
-    rdsMirrorHealthy: rdsMeasured ? undefined : false,
+    databaseStatus: dbStatus,
   });
 
   console.log("");

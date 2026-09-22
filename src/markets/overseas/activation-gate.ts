@@ -12,6 +12,11 @@ import type { OverseasQuote } from "@/src/markets/overseas/types";
 import type { OverseasRecoveryResult } from "@/src/markets/overseas/lifecycle";
 import { KIS_CURRENCY_EXCHANGE_AUDIT } from "@/src/markets/overseas/exchange-audit";
 import { publicDatabaseStatus } from "@/src/db/mirror";
+import type { DatabasePublicStatus } from "@/src/db/status";
+import {
+  isLiveRdsHealthy,
+  isMirrorDegraded,
+} from "@/src/runtime/live-runtime-status";
 import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
 import { workerRuntimeHealthy, workerRuntimeStatus } from "@/src/runtime/paper-long-soak-health";
 
@@ -53,7 +58,13 @@ export function overseasActivationGate(input: {
   /** @deprecated Prefer runtimeWorker. Boolean true without runtimeWorker is ignored. */
   workerHealthy?: boolean;
   persistenceHealthy?: boolean;
-  /** Ignored when set to true without verifying publicDatabaseStatus — RDS is always re-checked. */
+  /**
+   * Authoritative DB status (prefer live GET /api/runtime/database).
+   * Pass `null` when unavailable — RDS must FAIL.
+   * Omit to fall back to local publicDatabaseStatus (unit tests).
+   */
+  databaseStatus?: DatabasePublicStatus | null;
+  /** When false, forces RDS FAIL. Never inject true to bypass live status. */
   rdsMirrorHealthy?: boolean;
 }): OverseasActivationGateResult {
   const env = input.env ?? process.env;
@@ -64,14 +75,11 @@ export function overseasActivationGate(input: {
   const orderableQtyOk = (input.orderableQty ?? 0) >= 1 || orderableOk;
   const optInOff = !vtsOverseasOrderTestsEnabled(env);
   const locked = overseasPaperOrdersLocked(env);
-  const db = publicDatabaseStatus(env);
-  const mirrorDegraded = Boolean(db.lastError?.includes("DB_MIRROR_DEGRADED"));
-  // Always derive RDS from authoritative status — never trust caller hardcoded true.
-  const rdsOk =
-    db.mode === "mirror" &&
-    (db.enabled === true || db.connected === true) &&
-    !mirrorDegraded &&
-    input.rdsMirrorHealthy !== false;
+  const db: DatabasePublicStatus | null =
+    input.databaseStatus !== undefined ? input.databaseStatus : publicDatabaseStatus(env);
+  const mirrorDegraded = isMirrorDegraded(db);
+  // Prefer measured live status. Never treat missing status as PASS.
+  const rdsOk = isLiveRdsHealthy(db) && input.rdsMirrorHealthy !== false;
 
   const workerRuntimeOk = workerRuntimeHealthy(input.runtimeWorker);
   const workerLockOk =
@@ -137,8 +145,14 @@ export function overseasActivationGate(input: {
   else if (!workerRuntimeOk) {
     blocked = `Worker runtime ${workerRuntimeStatus(input.runtimeWorker)} — not healthy`;
   } else if (!workerLockOk) blocked = "Worker lock unhealthy";
-  else if (!rdsOk) blocked = mirrorDegraded ? "RDS mirror degraded" : "RDS mirror not healthy";
-  else if (input.persistenceHealthy === false) blocked = "Persistence unhealthy";
+  else if (!rdsOk) {
+    blocked =
+      db == null
+        ? "RDS runtime status unavailable"
+        : mirrorDegraded
+          ? "RDS mirror degraded"
+          : "RDS mirror not healthy";
+  }  else if (input.persistenceHealthy === false) blocked = "Persistence unhealthy";
   else if (posts !== 0) blocked = "Unexpected PAPER order POST";
   else if (real !== 0) blocked = "REAL HTTP request observed";
 

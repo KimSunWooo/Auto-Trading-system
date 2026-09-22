@@ -2,10 +2,15 @@ import type { AppState, Quote } from "@/lib/types";
 import { isRegularSession } from "@/lib/market-hours";
 import { nowMs } from "@/src/clock";
 import { publicDatabaseStatus } from "@/src/db/mirror";
+import type { DatabasePublicStatus } from "@/src/db/status";
 import { hasUnknownOrder, PAPER_OPERATION_DEFAULTS } from "@/src/risk/order-policy";
 import { kisHttpAudit } from "@/src/runtime/kis-http-audit";
 import { kisJsonPositionDiverged } from "@/src/runtime/controlled-run";
 import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
+import {
+  isLiveRdsHealthy,
+  isMirrorDegraded,
+} from "@/src/runtime/live-runtime-status";
 import { allowLiveTrading, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { brokerDriver } from "@/src/brokers/kis-config";
 import { getRuleConfig } from "@/src/rules/config";
@@ -122,6 +127,10 @@ export type RuntimeHealthReport = {
   orderableOk: boolean;
   balanceOk: boolean;
   rdsOk: boolean;
+  rdsMode: string | null;
+  rdsEnabled: boolean | null;
+  rdsConnected: boolean | null;
+  rdsStatusKnown: boolean;
   mirrorDegraded: boolean;
   mockCount: number;
   seedCount: number;
@@ -150,6 +159,12 @@ export function evaluateRuntimeHealth(
     env?: EnvMap;
     now?: number;
     includeLockProbe?: boolean;
+    /**
+     * Authoritative DB status (prefer live GET /api/runtime/database).
+     * Pass `null` when the server status could not be loaded — RDS must not PASS.
+     * Omit to fall back to local publicDatabaseStatus (unit tests).
+     */
+    databaseStatus?: DatabasePublicStatus | null;
   } = {},
 ): RuntimeHealthReport {
   const env = opts.env ?? process.env;
@@ -167,8 +182,10 @@ export function evaluateRuntimeHealth(
   const hist = q?.history ?? [];
   const fast = sma(hist, soak?.fastMa ?? 5);
   const slow = sma(hist, soak?.slowMa ?? 20);
-  const db = publicDatabaseStatus(env);
-  const mirrorDegraded = Boolean(db.lastError?.includes("DB_MIRROR_DEGRADED"));
+  const db: DatabasePublicStatus | null =
+    opts.databaseStatus !== undefined ? opts.databaseStatus : publicDatabaseStatus(env);
+  const rdsStatusKnown = db != null;
+  const mirrorDegraded = isMirrorDegraded(db);
   const unknown = hasUnknownOrder(state);
   const openBuy = state.orders.some(
     (o) =>
@@ -209,7 +226,7 @@ export function evaluateRuntimeHealth(
   const positionsMatch = state.kisBalance != null && !kisJsonPositionDiverged(state);
   const orderableOk = (state.kisBalance?.orderableCash ?? 0) > 0;
   const balanceOk = state.kisBalance != null;
-  const rdsOk = db.mode === "mirror" && (db.enabled || db.connected) && !mirrorDegraded;
+  const rdsOk = isLiveRdsHealthy(db);
   const quoteSourceKis = q?.source === "kis";
   const healthFresh = isHealthObservationFresh(q, now);
   const orderEligibleFresh = isOrderEligibleFresh(q, now);
@@ -227,8 +244,8 @@ export function evaluateRuntimeHealth(
   if (!positionsMatch) blockers.push("POSITION_MISMATCH");
   if (!balanceOk) blockers.push("BALANCE");
   if (!orderableOk) blockers.push("ORDERABLE");
-  if (!rdsOk) blockers.push("RDS");
-  if (mirrorDegraded) blockers.push("DB_MIRROR_DEGRADED");
+  if (!rdsStatusKnown) blockers.push("RDS_STATUS_UNKNOWN");
+  else if (!rdsOk) blockers.push(mirrorDegraded ? "DB_MIRROR_DEGRADED" : "RDS");
   if (mock > 0 || seed > 0) blockers.push("MOCK_SEED_QUOTE");
   if (!quoteSourceKis) blockers.push("QUOTE_SOURCE");
   // After hours: stale quotes are observation-only (market closed ≠ code failure).
@@ -267,6 +284,10 @@ export function evaluateRuntimeHealth(
     orderableOk,
     balanceOk,
     rdsOk,
+    rdsMode: db?.mode ?? null,
+    rdsEnabled: db?.enabled ?? null,
+    rdsConnected: db?.connected ?? null,
+    rdsStatusKnown,
     mirrorDegraded,
     mockCount: mock,
     seedCount: seed,
@@ -415,10 +436,20 @@ export function formatRuntimeHealthReport(
     "--------",
     "",
     `Mode:`,
-    "mirror",
+    report.rdsMode ?? "UNKNOWN",
+    "",
+    `Enabled:`,
+    report.rdsEnabled == null ? "UNKNOWN" : yn(report.rdsEnabled),
     "",
     `Connected:`,
-    yn(report.rdsOk),
+    !report.rdsStatusKnown
+      ? "UNKNOWN"
+      : report.rdsConnected == null
+        ? "UNKNOWN"
+        : yn(report.rdsConnected),
+    "",
+    `RDS Health:`,
+    !report.rdsStatusKnown ? "UNKNOWN" : report.rdsOk ? "PASS" : "FAIL",
     "",
     `DB_MIRROR_DEGRADED:`,
     report.mirrorDegraded ? "YES" : "NO",

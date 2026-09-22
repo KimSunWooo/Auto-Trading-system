@@ -337,3 +337,96 @@ test("Test J: quote source mock/seed → runtime BLOCK", () => {
     assert.match(report.reason, /MOCK_SEED_QUOTE|QUOTE_SOURCE/);
   }
 });
+
+const HEALTHY_DB = {
+  mode: "mirror" as const,
+  enabled: true,
+  connected: true,
+  lastMirrorAt: "2026-09-22T00:00:00.000Z",
+  lastError: null,
+};
+
+test("D1: mirror+enabled+connected+no degraded → RDS PASS", () => {
+  applyPaperEnv();
+  const { state, runtimeWorker } = healthyState();
+  const report = evaluateRuntimeHealth(state, {
+    runtimeWorker,
+    env: PAPER_ENV,
+    includeLockProbe: false,
+    databaseStatus: HEALTHY_DB,
+  });
+  assert.equal(report.rdsOk, true);
+  assert.equal(report.rdsStatusKnown, true);
+  assert.equal(report.mirrorDegraded, false);
+  assert.equal(report.runtimeHealthReady, true);
+});
+
+test("D2: mirror+enabled+connected=false → RDS BLOCK", () => {
+  applyPaperEnv();
+  const { state, runtimeWorker } = healthyState();
+  const report = evaluateRuntimeHealth(state, {
+    runtimeWorker,
+    env: PAPER_ENV,
+    includeLockProbe: false,
+    databaseStatus: { ...HEALTHY_DB, connected: false },
+  });
+  assert.equal(report.rdsOk, false);
+  assert.equal(report.runtimeHealthReady, false);
+  assert.match(report.reason, /RDS/);
+});
+
+test("D3: connected=true + DB_MIRROR_DEGRADED → BLOCK", () => {
+  applyPaperEnv();
+  const { state, runtimeWorker } = healthyState();
+  const report = evaluateRuntimeHealth(state, {
+    runtimeWorker,
+    env: PAPER_ENV,
+    includeLockProbe: false,
+    databaseStatus: {
+      ...HEALTHY_DB,
+      lastError: "DB_MIRROR_DEGRADED: boom",
+    },
+  });
+  assert.equal(report.rdsOk, false);
+  assert.equal(report.mirrorDegraded, true);
+  assert.equal(report.runtimeHealthReady, false);
+  assert.match(report.reason, /DB_MIRROR_DEGRADED/);
+});
+
+test("D4: database status missing → PASS 금지", () => {
+  applyPaperEnv();
+  const { state, runtimeWorker } = healthyState();
+  const report = evaluateRuntimeHealth(state, {
+    runtimeWorker,
+    env: PAPER_ENV,
+    includeLockProbe: false,
+    databaseStatus: null,
+  });
+  assert.equal(report.rdsStatusKnown, false);
+  assert.equal(report.rdsOk, false);
+  assert.equal(report.runtimeHealthReady, false);
+  assert.match(report.reason, /RDS_STATUS_UNKNOWN/);
+});
+
+test("D5: market closed + healthy DB → Runtime Health READY, Order Eligible NO", () => {
+  applyPaperEnv();
+  const closedMs = SEOUL_WEEKEND_MS;
+  setNowMs(closedMs);
+  const { state, runtimeWorker } = healthyState({
+    now: closedMs,
+    quoteAgeMs: 200_000,
+  });
+  const report = evaluateRuntimeHealth(state, {
+    runtimeWorker,
+    env: PAPER_ENV,
+    now: closedMs,
+    includeLockProbe: false,
+    databaseStatus: HEALTHY_DB,
+  });
+  assert.equal(report.rdsOk, true);
+  assert.equal(report.marketOpen, false);
+  assert.equal(report.runtimeHealthReady, true);
+  assert.equal(report.orderEligibleNow, false);
+  assert.equal(report.reason, "MARKET CLOSED");
+  setNowMs(SEOUL_REGULAR_SESSION_MS);
+});

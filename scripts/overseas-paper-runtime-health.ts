@@ -23,7 +23,11 @@ import {
   exchangeCoverageAttemptedOk,
   positionCoverageByExchange,
 } from "@/src/markets/overseas/exchange-coverage";
-import { publicDatabaseStatus } from "@/src/db/mirror";
+import {
+  fetchLiveDatabaseStatus,
+  isLiveRdsHealthy,
+  measurePersistenceHealth,
+} from "@/src/runtime/live-runtime-status";
 import { holdsWorkerLock, workerLockHealthy, defaultLockPath } from "@/src/runtime/worker-lock";
 import { workerRuntimeHealthy, workerRuntimeStatus } from "@/src/runtime/paper-long-soak-health";
 import { tradingMode } from "@/src/runtime/trading-mode";
@@ -90,7 +94,10 @@ async function main() {
   const local = overseasStateFromApp(state);
   const runtimeWorker = state.runtime?.worker ?? null;
   const workerLockOk = holdsWorkerLock() || workerLockHealthy({ filePath: defaultLockPath() });
-  const db = publicDatabaseStatus();
+  // Live server ping — null ⇒ RDS FAIL (no local publicDatabaseStatus PASS).
+  const databaseStatus = await fetchLiveDatabaseStatus(BASE);
+  const rdsOk = isLiveRdsHealthy(databaseStatus);
+  const persistence = await measurePersistenceHealth(BASE);
   const adapter = new OverseasTradingAdapter(new KisClient(cfg, fetchImpl));
 
   const present = await adapter.getPresentBalance().catch(() => null);
@@ -135,7 +142,8 @@ async function main() {
     realRequests,
     runtimeWorker,
     workerLockOk,
-    persistenceHealthy: true,
+    persistenceHealthy: persistence.healthy,
+    databaseStatus,
   });
 
   console.log("Overseas PAPER Runtime Health");
@@ -148,7 +156,16 @@ async function main() {
   console.log("");
   console.log(`Worker Runtime: ${workerRuntimeStatus(runtimeWorker)} (${workerRuntimeHealthy(runtimeWorker) ? "PASS" : "FAIL"})`);
   console.log(`Worker Lock: ${workerLockOk ? "HEALTHY" : "FAIL"}`);
-  console.log(`RDS: mode=${db.mode} connected=${db.connected} enabled=${db.enabled}`);
+  console.log(
+    `Persistence: ${persistence.healthy ? "HEALTHY" : "FAIL"} (${persistence.reason})`,
+  );
+  if (databaseStatus == null) {
+    console.log(`RDS: UNKNOWN (GET /api/runtime/database failed)`);
+  } else {
+    console.log(
+      `RDS: mode=${databaseStatus.mode} connected=${databaseStatus.connected} enabled=${databaseStatus.enabled} (${rdsOk ? "PASS" : "FAIL"})`,
+    );
+  }
   console.log(`Recovery: ${recovery.status}`);
   console.log(`UNKNOWN: ${gate.checks.unknown}`);
   console.log(`REMOTE_ONLY: ${recovery.status === "REMOTE_ONLY" ? "PRESENT" : "NONE"}`);
