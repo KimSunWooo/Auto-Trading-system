@@ -19,6 +19,10 @@ import {
 } from "@/src/risk/kis-balance-semantics";
 import { diffLocalVsKis } from "@/src/risk/balance-sync";
 import { HARD_LIMITS } from "@/src/risk/limits";
+import {
+  applyPaperBrokerBaseline,
+  needsPaperBrokerBaseline,
+} from "@/src/runtime/paper-broker-baseline";
 
 async function inquireOrFail<T>(fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
   try {
@@ -542,6 +546,14 @@ export async function runPaperStartupSync(
       },
     };
     return { ok: false, state: healthy, error: diff.message, classifications };
+  }
+
+  // First healthy PAPER sync: discard user/default deposit authority; set broker baseline once.
+  if (needsPaperBrokerBaseline(healthy, env)) {
+    const deposit = healthy.kisBalance?.cash;
+    if (deposit != null && Number.isFinite(deposit)) {
+      healthy = applyPaperBrokerBaseline(healthy, deposit);
+    }
   }
 
   return { ok: true, state: healthy, classifications };

@@ -241,14 +241,22 @@ export function OverviewPanel({
             </p>
           </CardHeader>
           <CardContent className="space-y-3 pt-4 text-sm">
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div>
-                <div className="text-xs text-muted-foreground">로컬 버킷 합계</div>
-                <div className="tabular-nums font-medium">{formatWon(state.cash)}</div>
+                <div className="text-xs text-muted-foreground">예수금 (dnca_tot_amt)</div>
+                <div className="tabular-nums font-medium">{formatWon(state.kisBalance.cash)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">KIS 예수금</div>
-                <div className="tabular-nums font-medium">{formatWon(state.kisBalance.cash)}</div>
+                <div className="text-xs text-muted-foreground">주문가능 (ord_psbl_cash)</div>
+                <div className="tabular-nums font-medium">
+                  {state.kisBalance.orderableCash != null
+                    ? formatWon(state.kisBalance.orderableCash)
+                    : "—"}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">전략 배정 잔액</div>
+                <div className="tabular-nums font-medium">{formatWon(state.cash)}</div>
               </div>
             </div>
             {kisHoldingRows.length === 0 ? (

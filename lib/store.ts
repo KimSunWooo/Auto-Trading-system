@@ -113,6 +113,7 @@ function migrateState(parsed: AppState): AppState {
     lastEngineAt: parsed.lastEngineAt,
     lastBalanceSyncAt: parsed.lastBalanceSyncAt,
     kisBalance: parsed.kisBalance,
+    paperBrokerBaseline: parsed.paperBrokerBaseline,
     dayStart: parsed.dayStart ?? { date: seoulDay(), equity: totalDeposit },
     equityHistory: parsed.equityHistory ?? [totalDeposit],
     intents: parsed.intents ?? [],

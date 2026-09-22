@@ -258,6 +258,13 @@ export type StartupSyncPublic = {
   message?: string;
 };
 
+/** First successful PAPER sync marker — never reset on every restart. */
+export type PaperBrokerBaseline = {
+  source: "KIS_PAPER";
+  initializedAt: string;
+  depositCash: number;
+};
+
 export type AppState = {
   updatedAt: string;
   tickCount: number;
@@ -281,6 +288,8 @@ export type AppState = {
   safety?: SafetyState;
   controlledRun?: ControlledRunState;
   startupSync?: StartupSyncPublic;
+  /** Present after first healthy PAPER broker sync. */
+  paperBrokerBaseline?: PaperBrokerBaseline;
 };
 
 export type BrokerPublicStatus = {

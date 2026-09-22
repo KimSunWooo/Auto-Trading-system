@@ -98,18 +98,25 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             </Button>
             <MarketBadge state={state} />
             <div className="hidden text-right sm:block">
-              <div className="text-[11px] text-muted-foreground">예수금</div>
-              <div className="text-sm tabular-nums font-medium">{formatWon(state.cash)}</div>
               {state.kisBalance ? (
-                <div
-                  className={`text-[10px] tabular-nums ${
-                    state.kisBalance.matched ? "text-muted-foreground" : "text-destructive"
-                  }`}
-                >
-                  KIS {formatWon(state.kisBalance.cash)}
-                  {state.kisBalance.matched ? "" : " 불일치"}
-                </div>
-              ) : null}
+                <>
+                  <div className="text-[11px] text-muted-foreground">예수금 (KIS)</div>
+                  <div className="text-sm tabular-nums font-medium">
+                    {formatWon(state.kisBalance.cash)}
+                  </div>
+                  <div className="text-[10px] tabular-nums text-muted-foreground">
+                    주문가능{" "}
+                    {state.kisBalance.orderableCash != null
+                      ? formatWon(state.kisBalance.orderableCash)
+                      : "—"}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-[11px] text-muted-foreground">전략 배정 잔액</div>
+                  <div className="text-sm tabular-nums font-medium">{formatWon(state.cash)}</div>
+                </>
+              )}
             </div>
           </div>
         </div>
