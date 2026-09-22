@@ -20,6 +20,7 @@
     "db:test": "MIRAEMAESU_TEST=1 tsx --test --test-concurrency=1 src/db/*.test.ts",
     "soak:preflight": "tsx scripts/domestic-paper-soak.ts",
     "soak:report": "tsx scripts/domestic-paper-soak.ts --report",
+    "paper:ws:soak": "tsx scripts/kis-paper-ws-soak.ts",
     "long-soak:preflight": "tsx scripts/paper-long-soak-preflight.ts",
     "long-soak:gate": "tsx scripts/paper-long-soak-activation-gate.ts",
     "long-soak:health": "tsx scripts/paper-long-soak-runtime-health.ts",

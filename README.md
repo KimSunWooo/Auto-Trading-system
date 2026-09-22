@@ -26,6 +26,7 @@
 | PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
 | Domestic KIS quote isolation | LIVE_TEST+KIS: mock/seed 시세 표시·주문 금지. `source=kis`+freshAt≤15s만 유효. 실패 시 mock fallback 없음 |
 | KIS PAPER WebSocket market data | Domestic H0STCNT0 (`ws://ops.koreainvestment.com:31000`). Continuous REST inquire-price polling removed. Fail-closed on disconnect/stale. REAL WS locked. |
+| KIS PAPER WS read-only soak | `npm run paper:ws:soak` — approval → H0STCNT0 subscribe → quote observe. **No autoTrading / orders / inquirePrice.** Ready For Automated Market Test remains **NO**. |
 | Gate 3 / REAL | LOCKED |
 | Per-user RuntimeScope wiring | USER trading APIs → owned ACTIVE PAPER RuntimeScope (store/rules/KIS/lock). Bootstrap path preserved for operator soak. ADMIN presets = `users.role===ADMIN` only. |
 
@@ -302,6 +303,19 @@ npm run soak:report
 ```
 
 Ready=NO 이면 자동매매를 시작하지 않습니다. 시세 실패 시 주문하지 않으며, 강제 시그널은 만들지 않습니다.
+
+### KIS PAPER WebSocket read-only soak
+
+자동매매를 켜지 않고 H0STCNT0 transport만 검증합니다. `soak:preflight` 를 쓰지 마세요.
+
+```bash
+WS_SOAK_SECONDS=300 WS_SOAK_TICKER=035720 npm run paper:ws:soak
+```
+
+- PAPER `approval_key` → `ws://ops.koreainvestment.com:31000/tryitout` → H0STCNT0 subscribe
+- consumerId `ws-readonly-soak` · order HTTP POST 0 · REST inquire-price poll 0
+- 장 종료/비거래시간이면 `WS_CONNECTED_BUT_NO_QUOTE` 가능 — 리포트에 session hint 표시
+- 종료 후에도 **Ready For PAPER Automated Market Test: NO**
 
 ### PAPER Startup Sync
 
