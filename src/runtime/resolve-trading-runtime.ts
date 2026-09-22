@@ -91,6 +91,8 @@ async function buildScopeForAccount(
       brokerAccountId: account.id,
       persistState: (state) => store.persistStateNow(state),
     });
+  } else {
+    scope.persistState = (state) => store.persistStateNow(state);
   }
   return { scope, store, rules };
 }
@@ -102,6 +104,24 @@ export async function resolveCurrentTradingRuntime(): Promise<ResolvedTradingRun
   if (!account) throw new AccountNotConnectedError();
   const { scope, store, rules } = await buildScopeForAccount(user, account);
   return { user, account, scope, store, rules };
+}
+
+/** Background worker path — resolve by owned ACTIVE PAPER account row (no session cookie). */
+export async function resolveTradingRuntimeForAccount(
+  account: typeof schema.brokerAccounts.$inferSelect,
+): Promise<Omit<ResolvedTradingRuntime, "user"> & { userId: string }> {
+  if (account.status !== "ACTIVE" || account.environment !== "PAPER") {
+    throw new AccountNotConnectedError("Broker account is not an ACTIVE PAPER account");
+  }
+  const stubUser: AuthUser = {
+    id: account.userId,
+    email: "",
+    displayName: "",
+    role: "USER",
+    status: "ACTIVE",
+  };
+  const { scope, store, rules } = await buildScopeForAccount(stubUser, account);
+  return { userId: account.userId, account, scope, store, rules };
 }
 
 /** Explicit operator/bootstrap path only. */
