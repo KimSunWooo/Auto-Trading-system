@@ -86,3 +86,35 @@ export function resetKisQueryTelemetryForTest(): void {
 export function isTransientQueryReason(reason: string | undefined): boolean {
   return classifyKisQueryError({ message: reason }) === "TRANSIENT";
 }
+
+export type KisQueryTelemetrySummary = {
+  total: number;
+  byCategory: Record<KisQueryCategory, number>;
+  rateLimited: number;
+  timeouts: number;
+  failures: number;
+};
+
+export function summarizeKisQueryTelemetry(
+  rows: KisQueryTelemetryEvent[] = listKisQueryTelemetry(),
+): KisQueryTelemetrySummary {
+  const byCategory = {
+    quote: 0,
+    daily_closes: 0,
+    balance: 0,
+    psbl_order: 0,
+    open_orders: 0,
+    daily_ccld: 0,
+    other: 0,
+  } satisfies Record<KisQueryCategory, number>;
+  let rateLimited = 0;
+  let timeouts = 0;
+  let failures = 0;
+  for (const row of rows) {
+    byCategory[row.category] = (byCategory[row.category] ?? 0) + 1;
+    if (row.rateLimited) rateLimited += 1;
+    if (row.timeout) timeouts += 1;
+    if (!row.ok) failures += 1;
+  }
+  return { total: rows.length, byCategory, rateLimited, timeouts, failures };
+}
