@@ -34,6 +34,8 @@ export type Quote = {
   ask: number;
   history: number[];
   source?: "mock" | "kis" | "seed";
+  /** How the latest price arrived. Optional diagnostic; safety still keys off source+freshAt. */
+  transport?: "rest" | "ws";
   freshAt?: number;
 };
 

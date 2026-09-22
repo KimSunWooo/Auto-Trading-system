@@ -20,6 +20,7 @@ export async function POST() {
           ruleConfig: rules,
           startupSyncVerified: isScopeStartupSyncDone(rt.account.id),
           workerLockPath: rt.scope.lockPath,
+          quoteHub: rt.scope.quoteHub,
         },
       });
       return Response.json(state);

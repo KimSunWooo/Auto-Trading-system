@@ -181,6 +181,7 @@ async function tickOneAccount(
       forceBalanceSync: false,
       startupSyncVerified: isScopeStartupSyncDone(account.id),
       workerLockPath: rt.scope.lockPath,
+      quoteHub: rt.scope.quoteHub,
     },
   });
 }
@@ -230,6 +231,12 @@ export async function stopAccountEngineLoop(reason = "shutdown"): Promise<void> 
     }
     g.__accountWorkerIds.clear();
   }
+  const { resetRuntimeScopesForTest } = await import("@/src/runtime/runtime-scope");
+  // Release account scope WS refs without clearing test helpers incorrectly in prod:
+  // invalidate each known scope via registry reset.
+  const { resetQuoteHubRegistry } = await import("@/src/market-data/kis-realtime-registry");
+  await resetQuoteHubRegistry();
+  void resetRuntimeScopesForTest;
 }
 
 export function stopAccountEngineLoopForTest(): void {

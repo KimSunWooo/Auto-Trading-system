@@ -24,6 +24,8 @@ import { blockSafety } from "@/src/runtime/safety";
 import { workerLockAllowsTrading, preTradeGate } from "@/src/runtime/controlled-run";
 import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
 import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
+import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
+import { brokerQuoteFromSnapshot } from "@/src/market-data/ws-quote-feed";
 
 /**
  * 한국투자증권 Open API adapter.
@@ -34,6 +36,7 @@ export class KisBroker implements IBroker {
   readonly driver = "kis" as const;
   private readonly persistState: (state: import("@/lib/types").AppState) => Promise<void>;
   private readonly safety?: TradingSafetyContext;
+  private readonly quoteHub: RealtimeQuoteHub | null;
 
   constructor(
     private readonly box: StateBox,
@@ -45,16 +48,19 @@ export class KisBroker implements IBroker {
     opts: {
       persistState?: (state: import("@/lib/types").AppState) => Promise<void>;
       safety?: TradingSafetyContext;
+      quoteHub?: RealtimeQuoteHub | null;
     } = {},
   ) {
     this.persistState = opts.persistState ?? defaultPersistNow;
     this.safety = opts.safety;
+    this.quoteHub = opts.quoteHub ?? null;
   }
 
   forRule(ruleKey: string): KisBroker {
     return new KisBroker(this.box, this.client, ruleKey, this.source, this.sourceId, this.intent, {
       persistState: this.persistState,
       safety: this.safety,
+      quoteHub: this.quoteHub,
     });
   }
 
@@ -62,6 +68,7 @@ export class KisBroker implements IBroker {
     return new KisBroker(this.box, this.client, this.ruleKey, source, sourceId, this.intent, {
       persistState: this.persistState,
       safety: this.safety,
+      quoteHub: this.quoteHub,
     });
   }
 
@@ -69,10 +76,15 @@ export class KisBroker implements IBroker {
     return new KisBroker(this.box, this.client, this.ruleKey, this.source, this.sourceId, meta, {
       persistState: this.persistState,
       safety: this.safety,
+      quoteHub: this.quoteHub,
     });
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
+    // PAPER WebSocket path: never REST-poll current price when hub is bound.
+    if (this.quoteHub && this.client.mode === "paper") {
+      return this.fromWebSocket(ticker);
+    }
     if (!this.client.configured) {
       if (isLiveLike()) return null;
       return this.fromBook(ticker);
@@ -102,7 +114,7 @@ export class KisBroker implements IBroker {
         volume: live.volume,
         history,
       };
-      this.remember(quote);
+      this.remember(quote, "rest");
       return quote;
     } catch (err) {
       if (isLiveLike()) {
@@ -116,7 +128,28 @@ export class KisBroker implements IBroker {
     }
   }
 
+  /**
+   * Order path price authority.
+   * PAPER + quoteHub: fresh WS/local book only — no REST inquirePrice.
+   */
   async getCurrentPrice(ticker: string): Promise<number> {
+    if (this.quoteHub && this.client.mode === "paper" && isLiveLike()) {
+      if (!this.quoteHub.health().connected) {
+        throw new Error(`${ticker} WebSocket 미연결 — 주문하지 않습니다.`);
+      }
+      const book = this.box.current.quotes[ticker];
+      if (isMockOrSeedQuote(book)) {
+        throw new Error(`${ticker} mock/seed 시세로는 주문하지 않습니다.`);
+      }
+      if (!isFreshKisQuote(book)) {
+        throw new Error(`${ticker} 실시간 시세가 없어 주문하지 않습니다.`);
+      }
+      if (book?.transport && book.transport !== "ws") {
+        throw new Error(`${ticker} WebSocket 시세가 없어 주문하지 않습니다.`);
+      }
+      return book!.price;
+    }
+
     const quote = await this.getQuote(ticker);
     if (!quote) {
       throw new Error(`${ticker} 시세를 한국투자증권에서 가져오지 못했습니다.`);
@@ -131,6 +164,45 @@ export class KisBroker implements IBroker {
       }
     }
     return quote.price;
+  }
+
+  private fromWebSocket(ticker: string): BrokerQuote | null {
+    if (!this.quoteHub) return null;
+    if (!this.quoteHub.health().connected) {
+      if (isLiveLike()) {
+        this.box.current = blockSafety(
+          this.box.current,
+          "market_data_unavailable",
+          "KIS WebSocket disconnected — 신규 주문 차단",
+          { quoteOk: false },
+        );
+      }
+      return null;
+    }
+    const snap = this.quoteHub.get(ticker);
+    if (!snap) return null;
+    if (!isFreshKisQuote({
+      code: ticker,
+      name: "",
+      market: "KOSPI",
+      price: snap.price,
+      prevClose: 0,
+      open: snap.open,
+      high: snap.high,
+      low: snap.low,
+      volume: snap.volume,
+      bid: snap.bid,
+      ask: snap.ask,
+      history: [],
+      source: "kis",
+      freshAt: snap.receivedAt,
+    })) {
+      return null;
+    }
+    const prev = this.box.current.quotes[ticker];
+    const quote = brokerQuoteFromSnapshot(snap, prev);
+    this.remember(quote, "ws", snap.receivedAt);
+    return quote;
   }
 
   private overseasClient(): KisClient {
@@ -428,7 +500,7 @@ export class KisBroker implements IBroker {
     };
   }
 
-  private remember(quote: BrokerQuote) {
+  private remember(quote: BrokerQuote, transport: "rest" | "ws" = "rest", freshAt = nowMs()) {
     const prev = this.box.current.quotes[quote.ticker];
     const next: Quote = {
       code: quote.ticker,
@@ -444,7 +516,8 @@ export class KisBroker implements IBroker {
       ask: quote.ask,
       history: quote.history,
       source: "kis",
-      freshAt: nowMs(),
+      transport,
+      freshAt,
     };
     this.box.current = {
       ...this.box.current,

@@ -41,6 +41,7 @@ export async function POST(request: Request) {
         persistState: rt.scope.persistState,
         ruleKey: ruleId,
         safety,
+        quoteHub: rt.scope.quoteHub,
       })
         .forRule(ruleId)
         .withSource("manual")

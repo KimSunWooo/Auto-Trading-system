@@ -179,6 +179,8 @@ export async function gracefulShutdown(reason = "shutdown"): Promise<void> {
     g.__mirimaesuWorkerId = undefined;
   }
   await closeDb();
+  const { resetQuoteHubRegistry } = await import("@/src/market-data/kis-realtime-registry");
+  await resetQuoteHubRegistry();
 }
 
 export function stopEngineLoopForTest() {

@@ -257,17 +257,40 @@ function addDays(date: Date, days: number): Date {
 
 const ACCESS_TOKENS = new Map<string, TokenCache>();
 
+/** Official PAPER REST: 1 request / second. Safety margin included. */
+export const PAPER_REST_MIN_SPACING_MS = 1_050;
+
+/** Test/telemetry: count of inquire-price REST calls (not WS). */
+let inquirePriceRestCount = 0;
+
+export function inquirePriceRestCountForTest(): number {
+  return inquirePriceRestCount;
+}
+
+export function resetInquirePriceRestCountForTest(): void {
+  inquirePriceRestCount = 0;
+}
+
 export class KisClient implements KisApi {
   private inflight = 0;
   private readonly waiters: Array<() => void> = [];
   private readonly priceCache = new Map<string, { at: number; value: KisPrice }>();
   private readonly dailyCache = new Map<string, { at: number; value: number[] }>();
+  /** PAPER REST serial queue — wait ≠ HTTP retry. */
+  private restTail: Promise<void> = Promise.resolve();
+  private lastRestAt = 0;
+  private paperRestCalls = 0;
 
   constructor(
     private readonly config: KisConfig,
     private readonly fetchImpl: FetchLike = globalThis.fetch.bind(globalThis),
     private readonly maxConcurrent = 6,
   ) {}
+
+  /** PAPER paced REST call count (this instance). */
+  paperRestCallCount(): number {
+    return this.paperRestCalls;
+  }
 
   static fromEnv(env: Record<string, string | undefined> = process.env): KisClient {
     return new KisClient(loadKisConfig(env));
@@ -305,11 +328,23 @@ export class KisClient implements KisApi {
     return this.config.issues;
   }
 
+  /** Secret-bearing config pick for WebSocket hub acquisition. Never log. */
+  wsConfig(): Pick<KisConfig, "environment" | "appKey" | "appSecret" | "host" | "websocketUrl"> {
+    return {
+      environment: this.config.environment,
+      appKey: this.config.appKey,
+      appSecret: this.config.appSecret,
+      host: this.config.host,
+      websocketUrl: this.config.websocketUrl,
+    };
+  }
+
   async inquirePrice(ticker: string): Promise<KisPrice> {
     this.assertConfigured();
     const cached = this.priceCache.get(ticker);
     if (cached && Date.now() - cached.at < 1_000) return cached.value;
 
+    inquirePriceRestCount += 1;
     const json = await this.uapi(
       "GET",
       "/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -986,7 +1021,7 @@ export class KisClient implements KisApi {
     kind: "query" | "order" = "query",
   ): Promise<Record<string, unknown>> {
     noteKisHttp(url, method);
-    return this.slot(async () => {
+    const run = async () => {
       let res: Response;
       try {
         res = await this.fetchImpl(url, {
@@ -1017,7 +1052,47 @@ export class KisClient implements KisApi {
         throw new Error(message);
       }
       return json;
+    };
+
+    // PAPER: serialize + pace. Waiting for a scheduler slot is NOT an HTTP retry.
+    // Orders still POST exactly once after the slot is granted.
+    if (this.config.environment === "paper") {
+      return this.pacePaperRest(kind, run);
+    }
+    return this.slot(run);
+  }
+
+  /**
+   * PAPER REST scheduler: ≥1 req/s. Priority: order/cancel before read.
+   * Does not retry timed-out order POSTs — UNKNOWN semantics unchanged.
+   */
+  private async pacePaperRest<T>(
+    kind: "query" | "order",
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const priority = kind === "order" ? 0 : 1;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    const prev = this.restTail;
+    this.restTail = prev.then(() => gate);
+    await prev;
+    try {
+      if (priority === 0) {
+        /* order: still waits for prior in-flight REST to finish; no parallel burst */
+      }
+      const elapsed = Date.now() - this.lastRestAt;
+      const wait = Math.max(0, PAPER_REST_MIN_SPACING_MS - elapsed);
+      if (wait > 0) {
+        await new Promise<void>((r) => setTimeout(r, wait));
+      }
+      this.lastRestAt = Date.now();
+      this.paperRestCalls += 1;
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   private wrapTransportError(err: unknown, kind: "query" | "order"): Error {

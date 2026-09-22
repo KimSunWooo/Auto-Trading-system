@@ -38,6 +38,13 @@ import {
 } from "@/src/runtime/controlled-run";
 import { startupSyncBlocksTrading, usesPaperStartupSync } from "@/src/runtime/startup-sync";
 import { invalidateNonKisQuotes, usesLiveKisQuotes } from "@/src/runtime/quote-policy";
+import {
+  refreshQuotesFromWebSocket,
+  resolvePaperQuoteHub,
+  syncWatchedSubscriptions,
+} from "@/src/market-data/ws-quote-feed";
+import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
+import { SubscriptionCapacityError } from "@/src/market-data/kis-realtime-quote-hub";
 
 const HISTORY_LEN = 40;
 
@@ -192,13 +199,49 @@ async function refreshLiveQuotes(
   box: StateBox,
   broker: IBroker,
   ruleConfig?: RuleConfigFile,
+  quoteHub?: RealtimeQuoteHub | null,
+  kisClient?: KisApi,
 ): Promise<boolean> {
-  let ok = true;
   const codes = watchedTickers(box.current, ruleConfig);
   if (codes.length === 0) {
     box.current = noteQuoteResult(box.current, true);
     return true;
   }
+
+  // KIS PAPER: WebSocket cache only — no continuous REST inquirePrice.
+  const hub = quoteHub ?? (kisClient ? resolvePaperQuoteHub(kisClient) : null);
+  if (hub && broker.driver === "kis") {
+    try {
+      await syncWatchedSubscriptions(hub, codes);
+    } catch (err) {
+      const reason =
+        err instanceof SubscriptionCapacityError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "WebSocket subscribe failed";
+      box.current = noteQuoteResult(box.current, false);
+      if (isLiveLike()) {
+        box.current = markInquiryFailure(box.current, "data", reason);
+      }
+      return false;
+    }
+    const client = kisClient ?? getSharedKisClient();
+    const result = await refreshQuotesFromWebSocket(box, hub, client, codes);
+    box.current = noteQuoteResult(box.current, result.ok);
+    if (!result.ok && isLiveLike()) {
+      const detail = !result.connected
+        ? "KIS WebSocket disconnected — 신규 주문을 막았습니다."
+        : result.stale.length
+          ? "KIS WebSocket 시세가 만료되어 신규 주문을 막았습니다."
+          : "KIS WebSocket 시세가 없어 신규 주문을 막았습니다.";
+      box.current = markInquiryFailure(box.current, "data", detail);
+    }
+    return result.ok;
+  }
+
+  // MOCK / tests without hub: legacy broker.getQuote path.
+  let ok = true;
   for (const code of codes) {
     try {
       const quote = await broker.getQuote(code);
@@ -388,6 +431,8 @@ export type TickRuntimeDeps = {
   startupSyncVerified?: boolean;
   /** Account path: scope.lockPath. Omit → bootstrap holdsWorkerLock(). */
   workerLockPath?: string;
+  /** PAPER WebSocket quote hub (process-local). */
+  quoteHub?: RealtimeQuoteHub | null;
 };
 
 export async function tickState(
@@ -404,6 +449,7 @@ export async function tickState(
 
   const kisClient = deps.kisClient ?? getSharedKisClient();
   const forceBalance = deps.forceBalanceSync ?? false;
+  const quoteHub = deps.quoteHub ?? resolvePaperQuoteHub(kisClient);
   const safety = {
     startupSyncVerified: deps.startupSyncVerified,
     workerLockPath: deps.workerLockPath,
@@ -411,6 +457,7 @@ export async function tickState(
   const brokerOpts: CreateBrokerOpts = {
     kisClient,
     persistState: deps.persistState,
+    quoteHub,
     safety:
       deps.startupSyncVerified !== undefined || deps.workerLockPath
         ? safety
@@ -475,7 +522,7 @@ export async function tickState(
       box.current = markInquiryFailure(box.current, "broker", synced.error ?? "잔고 조회에 실패했습니다.");
       liveReady = false;
     }
-    const quotesOk = await refreshLiveQuotes(box, root, ruleConfig);
+    const quotesOk = await refreshLiveQuotes(box, root, ruleConfig, quoteHub, kisClient);
     if (!quotesOk && isLiveLike()) liveReady = false;
     box.current = noteInquiry(box.current, {
       quoteOk: quotesOk,
@@ -528,6 +575,7 @@ export async function tickState(
       persistState: deps.persistState,
       ruleConfig,
       safety: brokerOpts.safety,
+      quoteHub,
     });
     box.current = RiskManager.checkDailyLoss(box.current);
   }
@@ -545,6 +593,7 @@ export async function tickState(
       persistState: deps.persistState,
       ruleConfig,
       safety: brokerOpts.safety,
+      quoteHub,
     });
   } else if (tradingOn && !clock.open) {
     const msg = `정규장 아님 (${clock.sessionLabel}) — 신규 주문 거부`;

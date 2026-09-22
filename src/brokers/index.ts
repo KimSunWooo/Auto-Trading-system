@@ -12,6 +12,8 @@ export type CreateBrokerOpts = {
   kisClient?: KisApi;
   persistState?: (state: AppState) => Promise<void>;
   safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
+  /** PAPER WebSocket quote hub — process-local, never persisted. */
+  quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
 };
 
 export function createBroker(
@@ -23,6 +25,7 @@ export function createBroker(
     return new KisBroker(box, opts.kisClient ?? getSharedKisClient(), ruleKey, "rule", undefined, undefined, {
       persistState: opts.persistState,
       safety: opts.safety,
+      quoteHub: opts.quoteHub,
     });
   }
   return new MockBroker(box, ruleKey);
@@ -36,12 +39,14 @@ export function createBrokerForRuntime(
     persistState: (state: AppState) => Promise<void>;
     ruleKey?: string;
     safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
+    quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
   },
 ): IBroker {
   return createBroker(box, opts.ruleKey ?? CASH_RULE_ID, {
     kisClient: opts.kisClient,
     persistState: opts.persistState,
     safety: opts.safety,
+    quoteHub: opts.quoteHub,
   });
 }
 

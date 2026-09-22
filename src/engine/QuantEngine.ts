@@ -18,6 +18,7 @@ export type QuantEngineDeps = {
   persistState?: (state: AppState) => Promise<void>;
   ruleConfig?: RuleConfigFile;
   safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
+  quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
 };
 
 export class QuantEngine {
@@ -41,6 +42,7 @@ export class QuantEngine {
       kisClient: deps.kisClient,
       persistState: deps.persistState,
       safety: deps.safety,
+      quoteHub: deps.quoteHub,
     };
     const root = createBroker(box, CASH_RULE_ID, brokerOpts);
     const rules = (deps.ruleConfig ?? getRuleConfig()).rules.filter((row) => row.enabled && row.ticker);
