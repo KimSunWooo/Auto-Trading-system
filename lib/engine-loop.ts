@@ -11,6 +11,8 @@ import {
   runPaperStartupSync,
   usesPaperStartupSync,
   emptyStartupSync,
+  markProcessBootStartupVerified,
+  resetProcessBootStartupForTest,
 } from "@/src/runtime/startup-sync";
 import {
   runOverseasPaperSync,
@@ -37,6 +39,7 @@ function workerId(): string {
 async function ensureStartupSync(): Promise<void> {
   if (!usesPaperStartupSync()) {
     g.__mirimaesuStartupSyncDone = true;
+    markProcessBootStartupVerified(true);
     return;
   }
   if (g.__mirimaesuStartupSyncDone) return;
@@ -51,16 +54,14 @@ async function ensureStartupSync(): Promise<void> {
     let healthy = false;
     let rateLimited = false;
     await mutateStore(async (state) => {
-      if (state.startupSync?.status === "HEALTHY") {
-        healthy = true;
-        return state;
-      }
+      // CRITICAL: never trust persisted startupSync.status === HEALTHY as boot authority.
+      // A prior process may have written HEALTHY; this process must fresh-query KIS.
       const marked = {
         ...state,
         startupSync: {
           ...(state.startupSync ?? emptyStartupSync()),
           status: "SYNCING" as const,
-          message: "KIS PAPER Startup Sync starting before trading ticks",
+          message: "Process boot — fresh KIS PAPER Startup Sync (persisted HEALTHY is not authority)",
         },
       };
       const client = getSharedKisClient();
@@ -79,6 +80,7 @@ async function ensureStartupSync(): Promise<void> {
     });
     if (healthy) {
       g.__mirimaesuStartupSyncDone = true;
+      markProcessBootStartupVerified(true);
       g.__mirimaesuStartupSyncNextAttemptAt = undefined;
       // Additive overseas read-only sync. Never enables order opt-in. Never auto-orders.
       if (usesOverseasPaperSync() && overseasServerStartupAutoOrderSafe() && !g.__mirimaesuOverseasSyncDone) {
@@ -136,6 +138,9 @@ async function runTick() {
 
 export function startEngineLoop() {
   if (g.__mirimaesuEngine) return;
+  // New process: never inherit a prior process HEALTHY as boot authority.
+  g.__mirimaesuStartupSyncDone = false;
+  markProcessBootStartupVerified(false);
   bindShutdownSignals();
   void runTick().catch((err: unknown) => {
     console.error("[engine-loop]", err instanceof Error ? err.message : err);
@@ -185,10 +190,12 @@ export function stopEngineLoopForTest() {
   g.__mirimaesuStartupSyncDone = false;
   g.__mirimaesuStartupSyncPromise = undefined;
   g.__mirimaesuOverseasSyncDone = false;
+  resetProcessBootStartupForTest();
 }
 
 export function resetStartupSyncFlagForTest() {
   g.__mirimaesuStartupSyncDone = false;
   g.__mirimaesuStartupSyncPromise = undefined;
   g.__mirimaesuOverseasSyncDone = false;
+  resetProcessBootStartupForTest();
 }

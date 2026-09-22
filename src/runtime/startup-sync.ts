@@ -10,7 +10,9 @@ import { findStock } from "@/lib/universe";
 import { patchIntent, upsertIntent } from "@/src/runtime/intents";
 import { recordPending } from "@/src/accounts/fills";
 import { clearSafetyBlock, safetyOf } from "@/src/runtime/safety";
+import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
 import { tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
+import { isNodeTestProcess } from "@/src/runtime/test-process";
 import {
   snapshotFromBrokerBalance,
   usesPaperBrokerBalanceSemantics,
@@ -497,19 +499,16 @@ export async function runPaperStartupSync(
     };
   }
 
-  // Clear hard/recon halts that were only from orphaned historical unknowns.
+  // Clear only recoverable inquiry-related circuits that Startup Sync itself resolves.
+  // Preserve kill / daily-loss / soak-stop / unknown-active ownership.
   const prevSafety = safetyOf(box.current);
-  const clearedCircuit =
-    box.current.circuit?.kind === "unknown" ||
-    box.current.circuit?.kind === "recon" ||
-    box.current.circuit?.kind === "hard" ||
-    box.current.circuit?.kind === "balance"
-      ? {
-          halted: false as const,
-          kind: undefined,
-          unknownCount: box.current.circuit?.unknownCount ?? 0,
-        }
-      : box.current.circuit;
+  const clearedCircuit = isRecoverableInquiryHalt(box.current)
+    ? {
+        halted: false as const,
+        kind: undefined,
+        unknownCount: box.current.circuit?.unknownCount ?? 0,
+      }
+    : box.current.circuit;
 
   let healthy = clearSafetyBlock(
     {
@@ -565,17 +564,39 @@ function failSync(state: AppState, error: string): StartupSyncResult {
   };
 }
 
+/** Process-local: THIS Node process completed a fresh KIS Startup Sync. */
+let processBootStartupVerified = isNodeTestProcess();
+
+export function isProcessBootStartupVerified(): boolean {
+  return processBootStartupVerified;
+}
+
+export function markProcessBootStartupVerified(done = true): void {
+  processBootStartupVerified = done;
+}
+
+export function resetProcessBootStartupForTest(): void {
+  // Unit tests default to verified so existing PAPER policy suites stay focused.
+  // R1 / boot-sync suites explicitly set false before asserting.
+  processBootStartupVerified = isNodeTestProcess();
+}
+
 export function startupSyncBlocksTrading(state: AppState, env: EnvMap = process.env): string | null {
   if (!usesPaperStartupSync(env)) return null;
   const sync = state.startupSync;
-  if (!sync || sync.status === "IDLE" || sync.status === "SYNCING") {
-    return "Startup Sync가 끝나기 전에는 신규 주문을 하지 않습니다.";
-  }
-  if (sync.status === "FAILED") {
+  // FAILED is always authoritative — do not hide behind process-boot message.
+  if (sync?.status === "FAILED") {
     const detail = sync.message?.trim();
     return detail
       ? `Startup Sync FAILED — ${detail} 신규 주문을 차단합니다.`
       : "Startup Sync FAILED — 신규 주문을 차단합니다.";
+  }
+  // Persisted HEALTHY is historical — this process must still fresh-sync.
+  if (!processBootStartupVerified) {
+    return "Process boot Startup Sync가 끝나기 전에는 신규 주문을 하지 않습니다.";
+  }
+  if (!sync || sync.status === "IDLE" || sync.status === "SYNCING") {
+    return "Startup Sync가 끝나기 전에는 신규 주문을 하지 않습니다.";
   }
   return null;
 }

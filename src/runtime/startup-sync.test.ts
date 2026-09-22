@@ -9,6 +9,8 @@ import {
   classifyLocalActiveOrder,
   emptyStartupSync,
   findActiveUnknownOrder,
+  markProcessBootStartupVerified,
+  resetProcessBootStartupForTest,
   runPaperStartupSync,
   startupSyncBlocksTrading,
   syncRuntimePositionsFromBroker,
@@ -50,7 +52,10 @@ function clearEnv() {
   }
 }
 
-afterEach(() => clearEnv());
+afterEach(() => {
+  clearEnv();
+  resetProcessBootStartupForTest();
+});
 
 class FakeKis implements KisApi {
   mode: KisApi["mode"] = "paper";
@@ -143,6 +148,7 @@ test("Test A: yesterday pending without KIS ODNO + test provenance → ORPHANED_
   assert.equal(order?.activeClass, "ORPHANED_LOCAL");
   assert.ok(order);
   assert.equal(findActiveUnknownOrder(result.state), undefined);
+  markProcessBootStartupVerified(true);
   assert.equal(startupSyncBlocksTrading(result.state, PAPER_ENV), null);
   assert.equal(tradingBlocked(result.state), null);
   const reset = resetCircuit(result.state);
@@ -270,6 +276,7 @@ test("Test G: startup sync FAILED → no order", async () => {
 
 test("Test H: startup sync HEALTHY → normal PAPER trading allowed", () => {
   applyEnv(PAPER_ENV);
+  markProcessBootStartupVerified(true);
   const state = createPaperState();
   state.startupSync = {
     ...emptyStartupSync(),
@@ -277,6 +284,18 @@ test("Test H: startup sync HEALTHY → normal PAPER trading allowed", () => {
     lastSyncedAt: new Date().toISOString(),
   };
   assert.equal(startupSyncBlocksTrading(state, PAPER_ENV), null);
+});
+
+test("R1: persisted HEALTHY without process boot verify still blocks trading", () => {
+  applyEnv(PAPER_ENV);
+  markProcessBootStartupVerified(false);
+  const state = createPaperState();
+  state.startupSync = {
+    ...emptyStartupSync(),
+    status: "HEALTHY",
+    lastSyncedAt: new Date().toISOString(),
+  };
+  assert.match(startupSyncBlocksTrading(state, PAPER_ENV) ?? "", /Process boot|Startup Sync/);
 });
 
 test("Test I: REAL policy unchanged / startup sync not applied", () => {
