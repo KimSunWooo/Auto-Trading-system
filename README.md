@@ -25,6 +25,7 @@
 | RDS MySQL mirror | JSON authority. `PERSISTENCE_MODE=mirror`. database SOT 없음 |
 | PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
 | Domestic KIS quote isolation | LIVE_TEST+KIS: mock/seed 시세 표시·주문 금지. `source=kis`+freshAt≤15s만 유효. 실패 시 mock fallback 없음 |
+| KIS PAPER WebSocket market data | Domestic H0STCNT0 (`ws://ops.koreainvestment.com:31000`). Continuous REST inquire-price polling removed. Fail-closed on disconnect/stale. REAL WS locked. |
 | Gate 3 / REAL | LOCKED |
 | Per-user RuntimeScope wiring | USER trading APIs → owned ACTIVE PAPER RuntimeScope (store/rules/KIS/lock). Bootstrap path preserved for operator soak. ADMIN presets = `users.role===ADMIN` only. |
 
@@ -43,20 +44,28 @@
 ## 아키텍처
 
 ```
-사용자 조건식 / 조건매수 / 적립 / 수동주문
-        │
-        ▼
-     IBroker
-   ┌────┴────┐
-MockBroker  KisBroker
- 로컬체결    KIS REST
-               ├─ DomesticTrading (시세·잔고·주문)
-               └─ OverseasTradingAdapter (미국 시세·외화잔고·주문 게이트)
-
-        │
-        ▼
-  OrderManager  →  조건식별 예수금 버킷 (리스크 한도)
+                  KIS PAPER
+                     │
+       ┌─────────────┴─────────────┐
+       │                           │
+ WebSocket                     REST
+ H0STCNT0                         │
+       │                          ├─ Startup Sync / Balance / Orderable
+       │                          ├─ Open Orders / Executions
+       │                          ├─ Daily History (MA)
+       │                          └─ Order/Cancel
+       ▼
+Realtime Quote Hub → AppState.quotes (source=kis, transport=ws)
+       │
+       ▼
+Strategy / Risk / Intent / KisBroker → REST ORDER
 ```
+
+PAPER authority 분리:
+
+- Broker money: `dnca_tot_amt` (예수금) · `ord_psbl_cash` (주문가능)
+- Market price: H0STCNT0 WebSocket (freshAt ≤ 15s, connected)
+- Strategy budget: rule allocation only
 
 ```
 src/
@@ -64,6 +73,11 @@ src/
     IBroker.ts          # getCurrentPrice / buyMarket / buyLimit / sellMarket / sellLimit
     MockBroker.ts       # 로컬 페이퍼 북
     KisBroker.ts        # 한국투자증권 Open API
+  market-data/
+    h0stcnt0.ts         # Official H0STCNT0 columns + parser
+    kis-realtime-quote-hub.ts  # Persistent WS session
+    kis-realtime-registry.ts   # AppKey-scoped shared hub
+    ws-quote-feed.ts    # Project WS → AppState (no REST price poll)
   accounts/
     OrderManager.ts     # 버킷 게이트 · 정규장 락 · 면책 락 · 룰 쿨다운
     execution-policy.ts # 정규장 검증 · ±3% 지정가 밴드 · 분할
