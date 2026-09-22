@@ -26,6 +26,7 @@ import {
 } from "@/src/runtime/runtime-scope";
 import { resolveTradingRuntimeForAccount } from "@/src/runtime/resolve-trading-runtime";
 import { isNodeTestProcess } from "@/src/runtime/test-process";
+import { gatePaperWorkerStart } from "@/src/runtime/paper-runtime-owner";
 
 const g = globalThis as typeof globalThis & {
   __accountEngine?: NodeJS.Timeout;
@@ -202,8 +203,23 @@ async function runAccountTicks(): Promise<void> {
   }
 }
 
-export function startAccountEngineLoop(): void {
-  if (g.__accountEngine || isNodeTestProcess()) return;
+export function startAccountEngineLoop(): {
+  started: boolean;
+  allowed: boolean;
+  reason?: string;
+} {
+  const gate = gatePaperWorkerStart("accounts");
+  if (!gate.allowed) {
+    console.error(`[account-worker] refuse start: ${gate.reason}`);
+    return { started: false, allowed: false, reason: gate.reason };
+  }
+  if (g.__accountEngine) {
+    return { started: false, allowed: true, reason: "already-running" };
+  }
+  if (isNodeTestProcess()) {
+    // Ownership gate passed; node:test must not run live account ticks.
+    return { started: false, allowed: true, reason: "test-process" };
+  }
   g.__accountEngineShuttingDown = false;
   // Account scopes use per-account startup flags; do not bind bootstrap process flag.
   markProcessBootStartupVerified(false);
@@ -215,6 +231,7 @@ export function startAccountEngineLoop(): void {
       console.error("[account-worker]", err instanceof Error ? err.message : err);
     });
   }, HARD_LIMITS.minTickMs);
+  return { started: true, allowed: true };
 }
 
 export async function stopAccountEngineLoop(reason = "shutdown"): Promise<void> {

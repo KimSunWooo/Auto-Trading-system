@@ -17,6 +17,10 @@ import { KisClient } from "@/src/brokers/kis-client";
 import { kisConfigFromPaperCredentials } from "@/src/brokers/kis-config";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import {
+  findDuplicateActivePaperPhysicalAccount,
+  normalizePaperAccountIdentity,
+} from "@/src/runtime/paper-physical-account";
 
 export type ConnectedAccountView = {
   id: string;
@@ -101,6 +105,8 @@ export async function connectPaperAccount(input: {
   };
   const validated = await validatePaperCredentials(secret);
   if (!validated.ok) throw new Error(validated.error ?? "PAPER credential validation failed");
+
+  await assertUniqueActivePaperPhysicalAccount(secret.accountNo);
 
   const id = randomUUID();
   const enc = encryptPaperCredentials(secret);
@@ -256,7 +262,44 @@ export async function rotatePaperCredentials(input: {
 }
 
 function normalizeAccountNo(value: string): string {
-  return value.replace(/[\s-]/g, "");
+  return normalizePaperAccountIdentity(value);
+}
+
+/**
+ * Fail closed when another ACTIVE PAPER broker_account already owns this physical CANO.
+ * Cross-user and same-user duplicates are both blocked.
+ */
+async function assertUniqueActivePaperPhysicalAccount(
+  accountNo: string,
+  excludeBrokerAccountId?: string,
+): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  const rows = await db
+    .select()
+    .from(schema.brokerAccounts)
+    .where(eq(schema.brokerAccounts.environment, "PAPER"));
+  const candidates: Array<{ id: string; identity: string; status: string; environment: string }> =
+    [];
+  for (const row of rows) {
+    if (row.status !== "ACTIVE") continue;
+    const secret = await loadPaperSecretForAccount(row.id);
+    candidates.push({
+      id: row.id,
+      identity: secret?.accountNo ?? "",
+      status: row.status,
+      environment: row.environment,
+    });
+  }
+  const dup = findDuplicateActivePaperPhysicalAccount(candidates, accountNo, {
+    excludeBrokerAccountId,
+  });
+  if (dup) {
+    throw new Error(
+      `ACTIVE PAPER physical account already registered (brokerAccountId=${dup}). ` +
+        `Only one ACTIVE ownership is allowed per KIS PAPER CANO.`,
+    );
+  }
 }
 
 async function disableAutoTradingForAccount(brokerAccountId: string): Promise<void> {

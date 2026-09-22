@@ -24,6 +24,8 @@ import {
   getRuntimeScope,
   invalidateRuntimeScope,
 } from "@/src/runtime/runtime-scope";
+import { gatePaperWorkerStart } from "@/src/runtime/paper-runtime-owner";
+import { isNodeTestProcess } from "@/src/runtime/test-process";
 
 const g = globalThis as typeof globalThis & {
   __mirimaesuEngine?: NodeJS.Timeout;
@@ -148,8 +150,17 @@ async function runTick() {
   await tickAndGet({ source: "worker" });
 }
 
-export function startEngineLoop() {
-  if (g.__mirimaesuEngine) return;
+export function startEngineLoop(): { started: boolean; allowed: boolean; reason?: string } {
+  const gate = gatePaperWorkerStart("bootstrap");
+  if (!gate.allowed) {
+    console.error(`[engine-loop] refuse start: ${gate.reason}`);
+    return { started: false, allowed: false, reason: gate.reason };
+  }
+  if (g.__mirimaesuEngine) return { started: false, allowed: true, reason: "already-running" };
+  if (isNodeTestProcess()) {
+    // Ownership gate passed; node:test must not run live bootstrap ticks.
+    return { started: false, allowed: true, reason: "test-process" };
+  }
   // New process: never inherit a prior process HEALTHY as boot authority.
   g.__mirimaesuStartupSyncDone = false;
   markProcessBootStartupVerified(false);
@@ -163,6 +174,7 @@ export function startEngineLoop() {
       console.error("[engine-loop]", err instanceof Error ? err.message : err);
     });
   }, HARD_LIMITS.minTickMs);
+  return { started: true, allowed: true };
 }
 
 function bindShutdownSignals() {

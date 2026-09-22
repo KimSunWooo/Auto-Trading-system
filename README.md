@@ -29,6 +29,7 @@
 | KIS PAPER WS read-only soak | `npm run paper:ws:soak` — approval → H0STCNT0 subscribe → quote observe. **No autoTrading / orders / inquirePrice.** Ready For Automated Market Test remains **NO**. |
 | Gate 3 / REAL | LOCKED |
 | Per-user RuntimeScope wiring | USER trading APIs → owned ACTIVE PAPER RuntimeScope (store/rules/KIS/lock). Bootstrap path preserved for operator soak. ADMIN presets = `users.role===ADMIN` only. |
+| PAPER runtime ownership | Exclusive `PAPER_RUNTIME_OWNER=bootstrap\|accounts\|disabled`. Bootstrap+account workers never start together. Same physical CANO → one ACTIVE broker_account. |
 
 로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
 
@@ -247,6 +248,39 @@ npm run vts:overseas-b-preflight
 
 검증이 끝나면 `.env.local`을 다시 Mock 기본값으로 되돌리세요.
 
+## 환경 분리: LOCAL MOCK / KIS PAPER / KIS REAL
+
+이 세 가지는 **다른 개념**입니다. 섞지 마세요.
+
+| 환경 | 의미 | 주문 |
+| --- | --- | --- |
+| **LOCAL MOCK** | `BROKER=mock` 로컬 페이퍼 북. KIS API 없음 | 로컬 시뮬만 |
+| **KIS PAPER** | `KIS_MODE=paper\|demo` 한국투자 모의투자(VTS) | PAPER 주문 가능 (별도 안전장치) |
+| **KIS REAL** | `KIS_MODE=real` + live unlock | **LOCKED** (이번 단계에서 사용 금지) |
+
+### PAPER background runtime ownership
+
+한 프로세스에서 PAPER **주문 worker** owner는 하나만 허용합니다.
+
+```env
+# legacy operator soak (.env KIS_PAPER_* + data/paper-account.json)
+PAPER_RUNTIME_OWNER=bootstrap
+
+# authenticated multi-user PAPER (DB broker_account + data/accounts/<id>/)
+PAPER_RUNTIME_OWNER=accounts
+
+# Web/Auth/DB/read-only APIs only — no background trading workers
+PAPER_RUNTIME_OWNER=disabled
+```
+
+- unset → `bootstrap` compatibility mode (경고 로그). **서버 재시작 없이는 hot switch 불가.**
+- `instrumentation.ts`는 owner에 따라 **하나만** 시작합니다. `startEngineLoop` / `startAccountEngineLoop`도 각각 owner gate를 재검사합니다.
+- 자동매매 계좌 flow 테스트에서는 반드시:
+
+```env
+PAPER_RUNTIME_OWNER=accounts
+```
+
 ## 한국투자증권 실전 (이번 단계에서 사용하지 않음)
 
 실전은 `TRADING_MODE=live` + `ALLOW_LIVE_TRADING=true` + `KIS_MODE=real` + `KIS_REAL_*` + `KIS_LIVE_CONFIRM=I_UNDERSTAND`가 **모두** 있을 때만 열립니다. VTS 시나리오가 통과하기 전에는 켜지 마세요.
@@ -295,11 +329,14 @@ curl -X PUT http://127.0.0.1:43147/api/strategy-config \
 
 해외 주문 버튼은 UI에서 비활성화입니다. 실제 해외 PAPER 주문은 `RUN_KIS_VTS_OVERSEAS_ORDER_TESTS` 가 있을 때만 코드 경로가 열리며, 이번 작업에서는 설정하지 않습니다.
 
-국내 PAPER 장중 제한 운용은 기존 Worker 경로만 사용합니다.
+국내 PAPER 장중 제한 운용은 **owner에 맞는 Worker 하나만** 사용합니다.
 
 ```bash
-TRADING_MODE=live_test KIS_MODE=demo BROKER=kis PERSISTENCE_MODE=mirror ALLOW_LIVE_TRADING=false npm run soak:preflight
-npm run soak:report
+# operator bootstrap soak (legacy)
+PAPER_RUNTIME_OWNER=bootstrap TRADING_MODE=live_test KIS_MODE=demo BROKER=kis PERSISTENCE_MODE=mirror ALLOW_LIVE_TRADING=false npm run soak:preflight
+
+# multi-user account runtime
+PAPER_RUNTIME_OWNER=accounts
 ```
 
 Ready=NO 이면 자동매매를 시작하지 않습니다. 시세 실패 시 주문하지 않으며, 강제 시그널은 만들지 않습니다.
@@ -315,7 +352,7 @@ WS_SOAK_SECONDS=300 WS_SOAK_TICKER=035720 npm run paper:ws:soak
 - PAPER `approval_key` → `ws://ops.koreainvestment.com:31000/tryitout` → H0STCNT0 subscribe
 - consumerId `ws-readonly-soak` · order HTTP POST 0 · REST inquire-price poll 0
 - 장 종료/비거래시간이면 `WS_CONNECTED_BUT_NO_QUOTE` 가능 — 리포트에 session hint 표시
-- 종료 후에도 **Ready For PAPER Automated Market Test: NO**
+- 종료 리포트의 **Ready For PAPER Automated Market Test** 는 장중 자동매매 판단용이며, runtime ownership과는 별개로 유지합니다.
 
 ### PAPER Startup Sync
 
