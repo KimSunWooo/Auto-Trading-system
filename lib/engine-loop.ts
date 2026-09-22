@@ -1,4 +1,4 @@
-import { tickAndGet, mutateStore } from "@/lib/store";
+import { tickAndGet, mutateStore, persistStateNow } from "@/lib/store";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { closeDb } from "@/src/db/client";
 import { getSharedKisClient, type KisClient } from "@/src/brokers/kis-client";
@@ -19,6 +19,11 @@ import {
   usesOverseasPaperSync,
 } from "@/src/markets/overseas/sync";
 import { overseasServerStartupAutoOrderSafe } from "@/src/markets/overseas/lifecycle";
+import {
+  createBootstrapRuntimeScope,
+  getRuntimeScope,
+  invalidateRuntimeScope,
+} from "@/src/runtime/runtime-scope";
 
 const g = globalThis as typeof globalThis & {
   __mirimaesuEngine?: NodeJS.Timeout;
@@ -34,6 +39,12 @@ const g = globalThis as typeof globalThis & {
 function workerId(): string {
   g.__mirimaesuWorkerId ??= `engine-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   return g.__mirimaesuWorkerId;
+}
+
+/** One acquire for bootstrap worker lifetime — ticks only peek, never re-acquire. */
+function ensureBootstrapQuoteHubOwned(): void {
+  if (getRuntimeScope("bootstrap-owner")) return;
+  createBootstrapRuntimeScope((state) => persistStateNow(state));
 }
 
 async function ensureStartupSync(): Promise<void> {
@@ -132,6 +143,7 @@ async function runTick() {
     console.error("[engine-loop] worker lock 미획득 — 이 프로세스는 주문을 실행하지 않습니다.");
     return;
   }
+  ensureBootstrapQuoteHubOwned();
   await ensureStartupSync();
   await tickAndGet({ source: "worker" });
 }
@@ -141,6 +153,7 @@ export function startEngineLoop() {
   // New process: never inherit a prior process HEALTHY as boot authority.
   g.__mirimaesuStartupSyncDone = false;
   markProcessBootStartupVerified(false);
+  ensureBootstrapQuoteHubOwned();
   bindShutdownSignals();
   void runTick().catch((err: unknown) => {
     console.error("[engine-loop]", err instanceof Error ? err.message : err);
@@ -178,6 +191,7 @@ export async function gracefulShutdown(reason = "shutdown"): Promise<void> {
     releaseWorkerLock(g.__mirimaesuWorkerId);
     g.__mirimaesuWorkerId = undefined;
   }
+  invalidateRuntimeScope("bootstrap-owner");
   await closeDb();
   const { resetQuoteHubRegistry } = await import("@/src/market-data/kis-realtime-registry");
   await resetQuoteHubRegistry();

@@ -9,9 +9,10 @@ import { KisClient, getSharedKisClient } from "@/src/brokers/kis-client";
 import { kisConfigFromPaperCredentials } from "@/src/brokers/kis-config";
 import { accountDataDir, loadPaperSecretForAccount } from "@/src/auth/paper-accounts";
 import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
+import { dropQuoteHubRef } from "@/src/market-data/kis-realtime-registry";
 import {
+  acquirePaperQuoteHub,
   disposeScopeQuoteHub,
-  resolvePaperQuoteHub,
 } from "@/src/market-data/ws-quote-feed";
 
 export type StatePersister = (state: AppState) => Promise<void>;
@@ -27,7 +28,7 @@ export type RuntimeScope = {
   persistState: StatePersister;
   /** Process-local: this scope completed fresh startup sync in THIS process. */
   startupSyncDone: boolean;
-  /** Process-local WS quote hub (AppKey-scoped; not serialized). */
+  /** Process-local WS quote hub (AppKey-scoped; not serialized). One acquire per scope. */
   quoteHub: RealtimeQuoteHub | null;
 };
 
@@ -39,6 +40,16 @@ export function createBootstrapRuntimeScope(
   persistState: StatePersister,
 ): RuntimeScope {
   const brokerAccountId = "bootstrap-owner";
+  const existing = scopes.get(brokerAccountId);
+  if (existing) {
+    scopes.delete(brokerAccountId);
+    if (existing.quoteHub) {
+      const hub = existing.quoteHub;
+      existing.quoteHub = null;
+      void hub.clearConsumerSubscriptions(existing.brokerAccountId).catch(() => undefined);
+      void dropQuoteHubRef(hub);
+    }
+  }
   const kisClient = getSharedKisClient();
   const scope: RuntimeScope = {
     userId: null,
@@ -50,7 +61,7 @@ export function createBootstrapRuntimeScope(
     kisClient,
     persistState,
     startupSyncDone: startupDoneByAccount.get(brokerAccountId) === true,
-    quoteHub: resolvePaperQuoteHub(kisClient),
+    quoteHub: acquirePaperQuoteHub(kisClient),
   };
   scopes.set(brokerAccountId, scope);
   warnDuplicateKisAccountOwnership(scope);
@@ -62,6 +73,13 @@ export async function createAccountRuntimeScope(input: {
   brokerAccountId: string;
   persistState: StatePersister;
 }): Promise<RuntimeScope> {
+  const existing = scopes.get(input.brokerAccountId);
+  if (existing) {
+    scopes.delete(input.brokerAccountId);
+    if (existing.quoteHub) {
+      await disposeScopeQuoteHub(existing.quoteHub, existing.brokerAccountId);
+    }
+  }
   const secret = await loadPaperSecretForAccount(input.brokerAccountId);
   if (!secret) throw new Error("PAPER credentials not found for account");
   const cfg = kisConfigFromPaperCredentials(secret);
@@ -77,7 +95,7 @@ export async function createAccountRuntimeScope(input: {
     kisClient,
     persistState: input.persistState,
     startupSyncDone: startupDoneByAccount.get(input.brokerAccountId) === true,
-    quoteHub: resolvePaperQuoteHub(kisClient),
+    quoteHub: acquirePaperQuoteHub(kisClient),
   };
   scopes.set(input.brokerAccountId, scope);
   warnDuplicateKisAccountOwnership(scope);
@@ -125,7 +143,12 @@ export function invalidateRuntimeScope(brokerAccountId: string): void {
   scopes.delete(brokerAccountId);
   startupDoneByAccount.delete(brokerAccountId);
   if (prev?.quoteHub) {
-    void disposeScopeQuoteHub(prev.quoteHub, prev.brokerAccountId);
+    const hub = prev.quoteHub;
+    const consumerId = prev.brokerAccountId;
+    prev.quoteHub = null; // prevent double release of the same scope object
+    // Consumer clear is best-effort async; registry ref drops synchronously.
+    void hub.clearConsumerSubscriptions(consumerId).catch(() => undefined);
+    void dropQuoteHubRef(hub);
   }
 }
 
@@ -134,6 +157,12 @@ export function resetRuntimeScopesForTest(): void {
   scopes.clear();
   startupDoneByAccount.clear();
   for (const scope of entries) {
-    if (scope.quoteHub) void disposeScopeQuoteHub(scope.quoteHub, scope.brokerAccountId);
+    if (scope.quoteHub) {
+      const hub = scope.quoteHub;
+      const consumerId = scope.brokerAccountId;
+      scope.quoteHub = null;
+      void hub.clearConsumerSubscriptions(consumerId).catch(() => undefined);
+      void dropQuoteHubRef(hub);
+    }
   }
 }

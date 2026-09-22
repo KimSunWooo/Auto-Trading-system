@@ -40,7 +40,7 @@ import { startupSyncBlocksTrading, usesPaperStartupSync } from "@/src/runtime/st
 import { invalidateNonKisQuotes, usesLiveKisQuotes } from "@/src/runtime/quote-policy";
 import {
   refreshQuotesFromWebSocket,
-  resolvePaperQuoteHub,
+  peekPaperQuoteHub,
   syncWatchedSubscriptions,
 } from "@/src/market-data/ws-quote-feed";
 import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
@@ -210,7 +210,8 @@ async function refreshLiveQuotes(
   }
 
   // KIS PAPER: WebSocket cache only — no continuous REST inquirePrice.
-  const hub = quoteHub ?? (kisClient ? resolvePaperQuoteHub(kisClient) : null);
+  // Never acquire here — hub lifetime is owned by RuntimeScope.
+  const hub = quoteHub ?? (kisClient ? peekPaperQuoteHub(kisClient) : null);
   if (hub && broker.driver === "kis") {
     try {
       await syncWatchedSubscriptions(hub, quoteConsumerId, codes);
@@ -452,7 +453,8 @@ export async function tickState(
 
   const kisClient = deps.kisClient ?? getSharedKisClient();
   const forceBalance = deps.forceBalanceSync ?? false;
-  const quoteHub = deps.quoteHub ?? resolvePaperQuoteHub(kisClient);
+  // Prefer injected scope hub. Peek only — never acquire on tick (refCount leak / wrong ownership).
+  const quoteHub = deps.quoteHub ?? peekPaperQuoteHub(kisClient);
   const quoteConsumerId = deps.quoteConsumerId ?? "bootstrap-owner";
   const safety = {
     startupSyncVerified: deps.startupSyncVerified,

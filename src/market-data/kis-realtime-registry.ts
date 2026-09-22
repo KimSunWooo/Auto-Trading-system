@@ -52,16 +52,29 @@ export function acquireQuoteHub(opts: AcquireQuoteHubOpts): RealtimeQuoteHub {
   return hub;
 }
 
-/** Release one RuntimeScope reference. Closes socket only when last ref drops. */
-export async function releaseQuoteHub(sessionKeyOrHub: string | RealtimeQuoteHub): Promise<void> {
+/**
+ * Drop one registry reference synchronously.
+ * Returns a stop promise when this was the last ref (caller should await).
+ * Idempotent when hub already removed / refCount already 0.
+ */
+export function dropQuoteHubRef(sessionKeyOrHub: string | RealtimeQuoteHub): Promise<void> {
   const key =
     typeof sessionKeyOrHub === "string" ? sessionKeyOrHub : sessionKeyOrHub.sessionKey;
   const entry = registry.get(key);
-  if (!entry) return;
+  if (!entry) return Promise.resolve();
+  if (entry.refCount <= 0) {
+    registry.delete(key);
+    return Promise.resolve();
+  }
   entry.refCount -= 1;
-  if (entry.refCount > 0) return;
+  if (entry.refCount > 0) return Promise.resolve();
   registry.delete(key);
-  await entry.hub.stop();
+  return entry.hub.stop();
+}
+
+/** Release one RuntimeScope reference. Closes socket only when last ref drops. */
+export async function releaseQuoteHub(sessionKeyOrHub: string | RealtimeQuoteHub): Promise<void> {
+  await dropQuoteHubRef(sessionKeyOrHub);
 }
 
 export function getQuoteHub(sessionKey: string): RealtimeQuoteHub | undefined {
@@ -76,9 +89,18 @@ export function quoteHubRefCount(sessionKey: string): number {
   return registry.get(sessionKey)?.refCount ?? 0;
 }
 
-/** Test / shutdown: stop all hubs. */
+/** Test / shutdown: stop all hubs. Idempotent; does not create negative refCounts. */
 export async function resetQuoteHubRegistry(): Promise<void> {
   const entries = [...registry.values()];
   registry.clear();
-  await Promise.all(entries.map((e) => e.hub.stop()));
+  await Promise.all(
+    entries.map(async (e) => {
+      e.refCount = 0;
+      try {
+        await e.hub.stop();
+      } catch {
+        /* ignore */
+      }
+    }),
+  );
 }

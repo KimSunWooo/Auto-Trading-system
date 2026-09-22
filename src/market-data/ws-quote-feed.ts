@@ -14,8 +14,8 @@ import { LIVE_KIS_QUOTE_FRESH_MS } from "@/src/runtime/quote-policy";
 import type { RealtimeQuoteHub, RealtimeQuoteSnapshot } from "@/src/market-data/kis-realtime-quote-hub";
 import {
   acquireQuoteHub,
+  dropQuoteHubRef,
   getQuoteHub,
-  releaseQuoteHub,
 } from "@/src/market-data/kis-realtime-registry";
 import { kisCredentialSessionKey } from "@/src/market-data/kis-approval";
 
@@ -38,19 +38,39 @@ export function isKisClient(client: KisApi): client is KisClient {
   return client instanceof KisClientClass;
 }
 
-/** Resolve PAPER quote hub for a KIS client without double-acquiring when already registered. */
-export function resolvePaperQuoteHub(client: KisApi): RealtimeQuoteHub | null {
+/**
+ * Acquire one hub reference for a RuntimeScope.
+ * Always bumps registry refCount — callers must release exactly once on dispose.
+ * Do NOT call from tick loops.
+ */
+export function acquirePaperQuoteHub(client: KisApi): RealtimeQuoteHub | null {
+  if (!isKisClient(client)) return null;
+  if (client.mode !== "paper" || !client.configured) return null;
+  try {
+    return acquireQuoteHub({ config: client.wsConfig() });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lookup existing hub without changing refCount.
+ * Safe for tick fallback when deps.quoteHub was not injected.
+ */
+export function peekPaperQuoteHub(client: KisApi): RealtimeQuoteHub | null {
   if (!isKisClient(client)) return null;
   if (client.mode !== "paper" || !client.configured) return null;
   const cfg = client.wsConfig();
   const key = kisCredentialSessionKey(cfg.environment, cfg.appKey);
-  const existing = getQuoteHub(key);
-  if (existing) return existing;
-  try {
-    return acquireQuoteHub({ config: cfg });
-  } catch {
-    return null;
-  }
+  return getQuoteHub(key) ?? null;
+}
+
+/**
+ * @deprecated Use acquirePaperQuoteHub at scope create, peekPaperQuoteHub on tick.
+ * Kept as alias to acquire for any remaining call sites during migration.
+ */
+export function resolvePaperQuoteHub(client: KisApi): RealtimeQuoteHub | null {
+  return acquirePaperQuoteHub(client);
 }
 
 export async function ensureQuoteHubStarted(hub: RealtimeQuoteHub): Promise<void> {
@@ -106,7 +126,7 @@ export async function disposeScopeQuoteHub(
       /* ignore */
     }
   }
-  await releaseQuoteHub(hub);
+  await dropQuoteHubRef(hub);
 }
 
 export type WsQuoteRefreshResult = {
