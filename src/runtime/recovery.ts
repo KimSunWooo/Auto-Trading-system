@@ -7,7 +7,11 @@ import { CASH_RULE_ID } from "@/src/rules/params";
 import { openCircuit } from "@/src/risk/circuit";
 import { blockSafety, safetyOf } from "@/src/runtime/safety";
 import { upsertIntent, patchIntent } from "@/src/runtime/intents";
-import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
+import {
+  CONSECUTIVE_INQUIRY_FAIL_LIMIT,
+  isRecoverableInquiryHalt,
+} from "@/src/runtime/controlled-run";
+import { classifyKisQueryError } from "@/src/runtime/kis-query-telemetry";
 import {
   classifyLocalActiveOrder,
   findActiveUnknownOrder,
@@ -231,7 +235,23 @@ export async function recoverExternalOrders(box: StateBox, client: KisApi): Prom
   return { ok: true, value: adopted };
 }
 
-export function markInquiryFailure(state: AppState, kind: "recon" | "data" | "broker", reason: string): AppState {
+/**
+ * Mark a read-only inquiry failure.
+ *
+ * Transient (timeout / rate-limit / network):
+ *   safety blocks trading for this tick (fail-closed)
+ *   circuit.halted stays false unless already a non-recoverable halt
+ *
+ * Persistent (threshold exceeded or non-transient / hard):
+ *   openCircuit so soak/stop semantics apply
+ *
+ * Order POST paths must never call this for retry — queries only.
+ */
+export function markInquiryFailure(
+  state: AppState,
+  kind: "recon" | "data" | "broker",
+  reason: string,
+): AppState {
   const blocked = blockSafety(
     state,
     kind === "data"
@@ -246,6 +266,33 @@ export function markInquiryFailure(state: AppState, kind: "recon" | "data" | "br
       reconciliation: kind === "recon" ? "unavailable" : safetyOf(state).reconciliation,
     },
   );
+
+  // Preserve hard/kill/unknown/daily-loss/store-corrupt style halts.
+  if (state.circuit?.halted && !isRecoverableInquiryHalt(state)) {
+    return blocked;
+  }
+
+  const consecutive = state.controlledRun?.consecutiveInquiryFailures ?? 0;
+  const errorClass = classifyKisQueryError({ message: reason });
+  // Single transient/unknown inquiry failures stay safety-only (fail-closed, not persistent).
+  // Auth/config failures and threshold breaches promote to circuit.halted.
+  const promotePersistent =
+    errorClass === "AUTH_CONFIG" || consecutive + 1 >= CONSECUTIVE_INQUIRY_FAIL_LIMIT;
+
+  if (!promotePersistent) {
+    return {
+      ...blocked,
+      circuit: {
+        halted: false,
+        kind: undefined,
+        unknownCount: blocked.circuit?.unknownCount ?? state.circuit?.unknownCount ?? 0,
+        lastError: reason,
+        reason: undefined,
+        openedAt: undefined,
+      },
+    };
+  }
+
   return openCircuit(
     blocked,
     reason,

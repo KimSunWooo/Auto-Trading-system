@@ -156,3 +156,12 @@ export function validateRuleConfig(config: RuleConfigFile): string | null {
 export function watchedRuleTickers(config: RuleConfigFile): string[] {
   return [...new Set(config.rules.map((row) => row.ticker).filter(Boolean))];
 }
+
+/** Enabled rules only — display/disabled rules do not drive quote pressure alone. */
+export function enabledRuleTickers(config: RuleConfigFile): string[] {
+  return [
+    ...new Set(
+      config.rules.filter((row) => row.enabled && row.ticker).map((row) => row.ticker),
+    ),
+  ];
+}

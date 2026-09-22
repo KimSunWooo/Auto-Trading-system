@@ -9,6 +9,7 @@ import {
   overlayRuleConfig,
   validateRuleConfig,
   watchedRuleTickers,
+  enabledRuleTickers,
   type RuleConfigFile,
   type UserRule,
 } from "@/src/rules/params";
@@ -144,9 +145,16 @@ export function syncAllocationsToRules(state: AppState, rules: UserRule[] = getR
   };
 }
 
+/**
+ * Execution-critical tickers for LIVE quote refresh.
+ * Includes: enabled rules, held positions, active conditions, enabled DCA.
+ * Disabled unused rules are excluded so they cannot open a global data circuit.
+ */
 export function watchedTickersFrom(state: Pick<AppState, "allocations" | "positions" | "conditions" | "dcaPlans">): string[] {
-  const codes = new Set<string>(watchedRuleTickers(getRuleConfig()));
-  for (const pos of state.positions) codes.add(pos.code);
+  const codes = new Set<string>(enabledRuleTickers(getRuleConfig()));
+  for (const pos of state.positions) {
+    if (pos.qty > 0) codes.add(pos.code);
+  }
   for (const cond of state.conditions) {
     if (cond.watching) codes.add(cond.code);
   }
