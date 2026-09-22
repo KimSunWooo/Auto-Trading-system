@@ -26,6 +26,7 @@
 | PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
 | Domestic KIS quote isolation | LIVE_TEST+KIS: mock/seed 시세 표시·주문 금지. `source=kis`+freshAt≤15s만 유효. 실패 시 mock fallback 없음 |
 | Gate 3 / REAL | LOCKED |
+| Per-user RuntimeScope wiring | USER trading APIs → owned ACTIVE PAPER RuntimeScope (store/rules/KIS/lock). Bootstrap path preserved for operator soak. ADMIN presets = `users.role===ADMIN` only. |
 
 로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
 
