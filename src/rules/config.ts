@@ -150,8 +150,11 @@ export function syncAllocationsToRules(state: AppState, rules: UserRule[] = getR
  * Includes: enabled rules, held positions, active conditions, enabled DCA.
  * Disabled unused rules are excluded so they cannot open a global data circuit.
  */
-export function watchedTickersFrom(state: Pick<AppState, "allocations" | "positions" | "conditions" | "dcaPlans">): string[] {
-  const codes = new Set<string>(enabledRuleTickers(getRuleConfig()));
+export function watchedTickersFrom(
+  state: Pick<AppState, "allocations" | "positions" | "conditions" | "dcaPlans">,
+  ruleConfig?: RuleConfigFile,
+): string[] {
+  const codes = new Set<string>(enabledRuleTickers(ruleConfig ?? getRuleConfig()));
   for (const pos of state.positions) {
     if (pos.qty > 0) codes.add(pos.code);
   }

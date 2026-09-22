@@ -6,7 +6,7 @@ import { canFillLimit } from "@/src/accounts/fills";
 import { cashFromAllocations, DEFAULT_ALLOCATIONS, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
 import { accountValue } from "@/src/accounts/portfolio";
 import type { StateBox } from "@/src/accounts/StateBox";
-import { createBroker, brokerDriver } from "@/src/brokers/index";
+import { createBroker, brokerDriver, type CreateBrokerOpts } from "@/src/brokers/index";
 import type { IBroker } from "@/src/brokers/IBroker";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 import { emptyCircuit, tradingBlocked } from "@/src/risk/circuit";
@@ -15,10 +15,10 @@ import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
 import { RiskManager } from "@/src/risk/RiskManager";
 import { expireStaleInFlight, settleOpenOrders } from "@/src/risk/reconcile";
 import { syncKisBalance } from "@/src/risk/balance-sync";
-import { getSharedKisClient } from "@/src/brokers/kis-client";
+import { getSharedKisClient, type KisApi } from "@/src/brokers/kis-client";
 import { watchedTickersFrom } from "@/src/rules/config";
 import { autoRunAllowed } from "@/src/rules/disclaimer";
-import { CASH_RULE_ID } from "@/src/rules/params";
+import { CASH_RULE_ID, type RuleConfigFile } from "@/src/rules/params";
 import { guardLog } from "@/src/rules/guard-log";
 import { emptySafety, safetyOf, clearSafetyBlock } from "@/src/runtime/safety";
 import { isLiveLike } from "@/src/runtime/trading-mode";
@@ -184,13 +184,17 @@ export function conditionMatches(cond: AutoCondition, quote: Quote): boolean {
     : quote.volume <= cond.volume;
 }
 
-function watchedTickers(state: AppState): string[] {
-  return watchedTickersFrom(state);
+function watchedTickers(state: AppState, ruleConfig?: RuleConfigFile): string[] {
+  return watchedTickersFrom(state, ruleConfig);
 }
 
-async function refreshLiveQuotes(box: StateBox, broker: IBroker): Promise<boolean> {
+async function refreshLiveQuotes(
+  box: StateBox,
+  broker: IBroker,
+  ruleConfig?: RuleConfigFile,
+): Promise<boolean> {
   let ok = true;
-  const codes = watchedTickers(box.current);
+  const codes = watchedTickers(box.current, ruleConfig);
   if (codes.length === 0) {
     box.current = noteQuoteResult(box.current, true);
     return true;
@@ -211,9 +215,13 @@ async function refreshLiveQuotes(box: StateBox, broker: IBroker): Promise<boolea
   return ok;
 }
 
-export async function evaluateConditions(state: AppState, nowIso: string): Promise<AppState> {
+export async function evaluateConditions(
+  state: AppState,
+  nowIso: string,
+  brokerOpts: CreateBrokerOpts = {},
+): Promise<AppState> {
   const box: StateBox = { current: state };
-  const root = createBroker(box);
+  const root = createBroker(box, CASH_RULE_ID, brokerOpts);
   const now = new Date(nowIso).getTime();
 
   box.current = {
@@ -300,9 +308,13 @@ export async function evaluateConditions(state: AppState, nowIso: string): Promi
   return box.current;
 }
 
-export async function evaluateDca(state: AppState, nowIso: string): Promise<AppState> {
+export async function evaluateDca(
+  state: AppState,
+  nowIso: string,
+  brokerOpts: CreateBrokerOpts = {},
+): Promise<AppState> {
   const box: StateBox = { current: state };
-  const root = createBroker(box);
+  const root = createBroker(box, CASH_RULE_ID, brokerOpts);
   const now = new Date(nowIso).getTime();
 
   for (const plan of box.current.dcaPlans) {
@@ -358,13 +370,35 @@ export async function evaluateDca(state: AppState, nowIso: string): Promise<AppS
   return box.current;
 }
 
-export async function tickState(state: AppState, now = new Date(nowMs())): Promise<AppState> {
+export type TickRuntimeDeps = {
+  /** Defaults to getSharedKisClient() for bootstrap compatibility. */
+  kisClient?: KisApi;
+  persistState?: (state: AppState) => Promise<void>;
+  /** Account-scoped rules; defaults to global getRuleConfig(). */
+  ruleConfig?: RuleConfigFile;
+  /**
+   * Observation balance sync. Default false uses HARD_LIMITS.balanceSyncMs.
+   * Pre-trade paths still call refreshBrokerBalanceSnapshot forcefully.
+   */
+  forceBalanceSync?: boolean;
+};
+
+export async function tickState(
+  state: AppState,
+  now = new Date(nowMs()),
+  deps: TickRuntimeDeps = {},
+): Promise<AppState> {
   if (state.safety && state.safety.kind === "store_corrupt") {
     return state;
   }
   if (state.lastEngineAt && now.getTime() - state.lastEngineAt < HARD_LIMITS.minTickMs) {
     return state;
   }
+
+  const kisClient = deps.kisClient ?? getSharedKisClient();
+  const forceBalance = deps.forceBalanceSync ?? false;
+  const brokerOpts: CreateBrokerOpts = { kisClient, persistState: deps.persistState };
+  const ruleConfig = deps.ruleConfig;
 
   const clock = getMarketClock(now);
   const prevSafety = safetyOf(state);
@@ -394,12 +428,12 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
       quotes: invalidateNonKisQuotes(box.current.quotes),
     };
   }
-  const root = createBroker(box);
+  const root = createBroker(box, CASH_RULE_ID, brokerOpts);
   let liveReady = true;
 
   if (root.driver === "kis") {
     expireStaleInFlight(box);
-    const settled = await settleOpenOrders(box, getSharedKisClient());
+    const settled = await settleOpenOrders(box, kisClient);
     let recoveredOk = settled.ok;
     if (!settled.ok) {
       box.current = markInquiryFailure(
@@ -409,19 +443,21 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
       );
       liveReady = false;
     } else {
-      const recovered = await recoverExternalOrders(box, getSharedKisClient());
+      const recovered = await recoverExternalOrders(box, kisClient);
       recoveredOk = recovered.ok;
       if (!recovered.ok) {
         box.current = markInquiryFailure(box.current, "recon", recovered.error);
         liveReady = false;
       }
     }
-    const synced = await syncKisBalance(box, getSharedKisClient(), now.getTime(), { force: isLiveLike() });
+    const synced = await syncKisBalance(box, kisClient, now.getTime(), {
+      force: forceBalance,
+    });
     if (!synced.ok) {
       box.current = markInquiryFailure(box.current, "broker", synced.error ?? "잔고 조회에 실패했습니다.");
       liveReady = false;
     }
-    const quotesOk = await refreshLiveQuotes(box, root);
+    const quotesOk = await refreshLiveQuotes(box, root, ruleConfig);
     if (!quotesOk && isLiveLike()) liveReady = false;
     box.current = noteInquiry(box.current, {
       quoteOk: quotesOk,
@@ -462,7 +498,11 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
     liveReady = false;
   }
   if (sessionOk && tradingOn) {
-    await new RiskManager(box).enforceStops();
+    await new RiskManager(box).enforceStops({
+      kisClient,
+      persistState: deps.persistState,
+      ruleConfig,
+    });
     box.current = RiskManager.checkDailyLoss(box.current);
   }
 
@@ -472,9 +512,13 @@ export async function tickState(state: AppState, now = new Date(nowMs())): Promi
     !tradingBlocked(box.current) &&
     (root.driver !== "kis" || liveReady);
   if (tradingAllowed) {
-    box.current = await evaluateConditions(box.current, clock.iso);
-    box.current = await evaluateDca(box.current, clock.iso);
-    box.current = await QuantEngine.run(box.current);
+    box.current = await evaluateConditions(box.current, clock.iso, brokerOpts);
+    box.current = await evaluateDca(box.current, clock.iso, brokerOpts);
+    box.current = await QuantEngine.run(box.current, {
+      kisClient,
+      persistState: deps.persistState,
+      ruleConfig,
+    });
   } else if (tradingOn && !clock.open) {
     const msg = `정규장 아님 (${clock.sessionLabel}) — 신규 주문 거부`;
     const already = box.current.allocations.some((row) => row.lastMessage?.includes("정규장 아님"));

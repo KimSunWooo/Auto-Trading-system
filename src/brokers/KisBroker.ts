@@ -32,6 +32,7 @@ import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
  */
 export class KisBroker implements IBroker {
   readonly driver = "kis" as const;
+  private readonly persistState: (state: import("@/lib/types").AppState) => Promise<void>;
 
   constructor(
     private readonly box: StateBox,
@@ -40,18 +41,27 @@ export class KisBroker implements IBroker {
     private readonly source: OrderSource = "rule",
     private readonly sourceId?: string,
     private readonly intent?: IntentMeta,
-  ) {}
+    opts: { persistState?: (state: import("@/lib/types").AppState) => Promise<void> } = {},
+  ) {
+    this.persistState = opts.persistState ?? defaultPersistNow;
+  }
 
   forRule(ruleKey: string): KisBroker {
-    return new KisBroker(this.box, this.client, ruleKey, this.source, this.sourceId, this.intent);
+    return new KisBroker(this.box, this.client, ruleKey, this.source, this.sourceId, this.intent, {
+      persistState: this.persistState,
+    });
   }
 
   withSource(source: OrderSource, sourceId?: string): KisBroker {
-    return new KisBroker(this.box, this.client, this.ruleKey, source, sourceId, this.intent);
+    return new KisBroker(this.box, this.client, this.ruleKey, source, sourceId, this.intent, {
+      persistState: this.persistState,
+    });
   }
 
   withIntent(meta: IntentMeta): KisBroker {
-    return new KisBroker(this.box, this.client, this.ruleKey, this.source, this.sourceId, meta);
+    return new KisBroker(this.box, this.client, this.ruleKey, this.source, this.sourceId, meta, {
+      persistState: this.persistState,
+    });
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
@@ -230,7 +240,7 @@ export class KisBroker implements IBroker {
       ) {
         return orders.toFill(pending);
       }
-      await persistNow(this.box.current);
+      await this.persistState(this.box.current);
       try {
         const placed = await this.client.orderCash({
           ticker,
@@ -245,10 +255,10 @@ export class KisBroker implements IBroker {
           `주문 접수(${placed.orderNo}). 체결수량은 체결내역으로만 반영합니다.`,
           { krxOrgNo: placed.krxOrgNo, ordDvsn },
         );
-        await persistNow(this.box.current);
+        await this.persistState(this.box.current);
         await settleOpenOrders(this.box, this.client);
         await refreshBrokerBalanceSnapshot(this.box, this.client);
-        await persistNow(this.box.current);
+        await this.persistState(this.box.current);
         const latest = this.box.current.orders.find((row) => row.id === pending.id);
         return latest ? orders.toFill(latest) : working;
       } catch (err) {
@@ -296,7 +306,7 @@ export class KisBroker implements IBroker {
       ) {
         return orders.toFill(pending);
       }
-      await persistNow(this.box.current);
+      await this.persistState(this.box.current);
       try {
         const placed = await this.client.orderCash({
           ticker,
@@ -311,10 +321,10 @@ export class KisBroker implements IBroker {
           `주문 접수(${placed.orderNo}). 체결수량은 체결내역으로만 반영합니다.`,
           { krxOrgNo: placed.krxOrgNo, ordDvsn },
         );
-        await persistNow(this.box.current);
+        await this.persistState(this.box.current);
         await settleOpenOrders(this.box, this.client);
         await refreshBrokerBalanceSnapshot(this.box, this.client);
-        await persistNow(this.box.current);
+        await this.persistState(this.box.current);
         const latest = this.box.current.orders.find((row) => row.id === pending.id);
         return latest ? orders.toFill(latest) : working;
       } catch (err) {
@@ -480,7 +490,7 @@ export class KisBroker implements IBroker {
   }
 }
 
-async function persistNow(state: import("@/lib/types").AppState) {
+async function defaultPersistNow(state: import("@/lib/types").AppState) {
   const { persistStateNow } = await import("@/lib/store");
   await persistStateNow(state);
 }

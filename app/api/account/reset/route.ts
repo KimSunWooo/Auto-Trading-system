@@ -1,9 +1,12 @@
 import { createInitialState } from "@/lib/engine";
-import { mutateStore, toPublic } from "@/lib/store";
+import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
 
 export const dynamic = "force-dynamic";
 
 export async function POST() {
-  const state = await mutateStore(() => createInitialState());
-  return Response.json(toPublic(state));
+  return withUserTradingRuntime(async (rt) => {
+    const rules = rt.rules.get();
+    const state = await rt.store.mutateStore(() => createInitialState());
+    return Response.json(rt.store.toPublic(state, rules));
+  });
 }

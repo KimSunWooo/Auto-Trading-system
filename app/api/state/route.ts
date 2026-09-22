@@ -1,15 +1,10 @@
-import { getPublicState } from "@/lib/store";
+import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  try {
-    const state = await getPublicState();
+  return withUserTradingRuntime(async (rt) => {
+    const state = await rt.store.getPublicState(rt.rules.get());
     return Response.json(state);
-  } catch (err) {
-    return Response.json(
-      { error: err instanceof Error ? err.message : "상태를 불러오지 못했습니다." },
-      { status: 500 },
-    );
-  }
+  });
 }

@@ -11,9 +11,10 @@ import { openCircuit, resetCircuit } from "@/src/risk/circuit";
 import { DEFAULT_PRODUCT_RISK, type ProductRisk } from "@/src/risk/product";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { applyKisSnapshot } from "@/src/risk/balance-sync";
-import { createBroker } from "@/src/brokers/index";
+import { createBroker, type CreateBrokerOpts } from "@/src/brokers/index";
 import { sellBandSlices } from "@/src/accounts/execution-policy";
 import { getRuleConfig } from "@/src/rules/config";
+import { CASH_RULE_ID, type RuleConfigFile } from "@/src/rules/params";
 import { autoRunAllowed } from "@/src/rules/disclaimer";
 import { blockSafety, safetyOf } from "@/src/runtime/safety";
 import { isLiveLike } from "@/src/runtime/trading-mode";
@@ -45,11 +46,24 @@ function abandonWorking(state: AppState, reason: string): AppState {
   };
 }
 
-async function persist(box: StateBox) {
+async function persist(
+  box: StateBox,
+  persistState?: (state: AppState) => Promise<void>,
+) {
   if (process.env.npm_lifecycle_event === "test") return;
+  if (persistState) {
+    await persistState(box.current);
+    return;
+  }
   const { persistStateNow } = await import("@/lib/store");
   await persistStateNow(box.current);
 }
+
+export type RiskRuntimeDeps = {
+  kisClient?: KisApi;
+  persistState?: (state: AppState) => Promise<void>;
+  ruleConfig?: RuleConfigFile;
+};
 
 export class RiskManager {
   constructor(private readonly box: StateBox) {}
@@ -178,7 +192,7 @@ export class RiskManager {
   /** New orders off + cancel KIS working tickets. Does not flatten positions. */
   static async emergencyStop(
     box: StateBox,
-    opts: { kis?: KisApi | null } = {},
+    opts: { kis?: KisApi | null; persistState?: (state: AppState) => Promise<void> } = {},
   ): Promise<AppState> {
     const notes: string[] = [];
     const frozen = RiskManager.freezeForKill(box.current);
@@ -186,7 +200,7 @@ export class RiskManager {
       ...frozen,
       settings: { ...frozen.settings, liquidating: false },
     };
-    await persist(box);
+    await persist(box, opts.persistState);
 
     const kis =
       opts.kis === undefined
@@ -218,7 +232,7 @@ export class RiskManager {
       } catch (err) {
         notes.push(`미체결 조회 실패: ${err instanceof Error ? err.message : "알 수 없음"}`);
       }
-      await persist(box);
+      await persist(box, opts.persistState);
     } else {
       notes.push("로컬 모의는 증권사 미체결 취소 대상이 없습니다.");
     }
@@ -232,27 +246,31 @@ export class RiskManager {
         notes: ["emergency-stop: 신규 주문 중단 + 미체결 취소", ...notes],
       },
     };
-    await persist(box);
+    await persist(box, opts.persistState);
     return box.current;
   }
 
   /** Flatten positions only. Does not mix with emergency-stop. */
   static async emergencyFlatten(
     box: StateBox,
-    opts: { kis?: KisApi | null } = {},
+    opts: { kis?: KisApi | null; persistState?: (state: AppState) => Promise<void> } = {},
   ): Promise<AppState> {
     box.current = {
       ...box.current,
       settings: { ...box.current.settings, liquidating: true, autoTrading: false },
     };
-    await persist(box);
+    await persist(box, opts.persistState);
     const kis =
       opts.kis === undefined
         ? brokerDriver() === "kis"
           ? getSharedKisClient()
           : null
         : opts.kis;
-    const broker = kis?.configured ? new KisBroker(box, kis) : new MockBroker(box);
+    const broker = kis?.configured
+      ? new KisBroker(box, kis, CASH_RULE_ID, "rule", undefined, undefined, {
+          persistState: opts.persistState,
+        })
+      : new MockBroker(box);
     let flattened = 0;
     const notes: string[] = [];
     const snapshot = [...box.current.positions];
@@ -275,7 +293,7 @@ export class RiskManager {
           : await broker.forRule(pos.ruleId).sellMarket(pos.code, live.qty);
       if (fill.ok || fill.status === "pending") flattened += 1;
       else notes.push(`${pos.name} 청산 실패: ${fill.reason ?? "알 수 없음"}`);
-      await persist(box);
+      await persist(box, opts.persistState);
     }
     box.current = {
       ...box.current,
@@ -287,7 +305,7 @@ export class RiskManager {
         notes: ["emergency-flatten: 포지션 청산만 수행", ...notes],
       },
     };
-    await persist(box);
+    await persist(box, opts.persistState);
     return box.current;
   }
 
@@ -311,12 +329,12 @@ export class RiskManager {
    */
   static async executeKillSwitch(
     box: StateBox,
-    opts: { kis?: KisApi | null } = {},
+    opts: { kis?: KisApi | null; persistState?: (state: AppState) => Promise<void> } = {},
   ): Promise<AppState> {
     const notes: string[] = [];
     const before = box.current;
     box.current = RiskManager.freezeForKill(box.current);
-    await persist(box);
+    await persist(box, opts.persistState);
 
     const kis =
       opts.kis === undefined
@@ -327,7 +345,7 @@ export class RiskManager {
 
     if (kis?.configured) {
       await settleOpenOrders(box, kis, nowMs(), { cancelImmediately: true });
-      await persist(box);
+      await persist(box, opts.persistState);
     }
 
     if (hasUnknown(box.current)) {
@@ -337,7 +355,11 @@ export class RiskManager {
 
     let flattened = 0;
     const snapshot = [...box.current.positions];
-    const broker = kis?.configured ? new KisBroker(box, kis) : new MockBroker(box);
+    const broker = kis?.configured
+      ? new KisBroker(box, kis, CASH_RULE_ID, "rule", undefined, undefined, {
+          persistState: opts.persistState,
+        })
+      : new MockBroker(box);
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;
       const live = box.current.positions.find(
@@ -363,7 +385,7 @@ export class RiskManager {
       } else {
         notes.push(`${pos.name} 청산 실패: ${fill.reason ?? "알 수 없음"}`);
       }
-      await persist(box);
+      await persist(box, opts.persistState);
     }
 
     let overwritten = false;
@@ -379,7 +401,7 @@ export class RiskManager {
           `잔고 조회 실패로 장부 덮어쓰기를 건너뛰었습니다. ${err instanceof Error ? err.message : ""}`.trim(),
         );
       }
-      await persist(box);
+      await persist(box, opts.persistState);
 
       if (box.current.orders.some((order) => order.status === "pending" && order.brokerOrderNo)) {
         await settleOpenOrders(box, kis, nowMs(), { cancelImmediately: true });
@@ -398,7 +420,7 @@ export class RiskManager {
           "긴급 정지 후 KIS 잔고를 기준으로 대기 주문을 장부에서 닫았습니다.",
         );
       }
-      await persist(box);
+      await persist(box, opts.persistState);
     } else {
       notes.push("로컬 모의는 증권사 잔고가 없어 장부 덮어쓰기를 건너뜁니다.");
     }
@@ -445,13 +467,17 @@ export class RiskManager {
     return box.current;
   }
 
-  async enforceStops(): Promise<void> {
+  async enforceStops(deps: RiskRuntimeDeps = {}): Promise<void> {
     const state = this.box.current;
     if (!autoRunAllowed(state)) return;
     if (state.circuit?.kind === "kill" || state.circuit?.kind === "unknown") return;
     const product = riskOf(state);
-    const rules = getRuleConfig().rules;
-    const root = createBroker(this.box);
+    const rules = (deps.ruleConfig ?? getRuleConfig()).rules;
+    const brokerOpts: CreateBrokerOpts = {
+      kisClient: deps.kisClient,
+      persistState: deps.persistState,
+    };
+    const root = createBroker(this.box, CASH_RULE_ID, brokerOpts);
     const snapshot = [...state.positions];
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;

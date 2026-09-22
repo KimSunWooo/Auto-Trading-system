@@ -1,6 +1,6 @@
 import { toBucket } from "@/src/accounts/AccountBucket";
 import type { StateBox } from "@/src/accounts/StateBox";
-import { createBroker } from "@/src/brokers/index";
+import { createBroker, type CreateBrokerOpts } from "@/src/brokers/index";
 import { RuleRunner } from "@/src/rules/RuleRunner";
 import { getRuleConfig } from "@/src/rules/config";
 import { autoRunAllowed } from "@/src/rules/disclaimer";
@@ -10,9 +10,17 @@ import type { AppState } from "@/lib/types";
 import { getMarketClock } from "@/lib/market-hours";
 import { nowMs } from "@/src/clock";
 import { tradingBlocked } from "@/src/risk/circuit";
+import { CASH_RULE_ID, type RuleConfigFile } from "@/src/rules/params";
+import type { KisApi } from "@/src/brokers/kis-client";
+
+export type QuantEngineDeps = {
+  kisClient?: KisApi;
+  persistState?: (state: AppState) => Promise<void>;
+  ruleConfig?: RuleConfigFile;
+};
 
 export class QuantEngine {
-  static async run(state: AppState): Promise<AppState> {
+  static async run(state: AppState, deps: QuantEngineDeps = {}): Promise<AppState> {
     if (!autoRunAllowed(state)) return state;
     const clock = getMarketClock(new Date(nowMs()));
     if (!clock.open) {
@@ -28,8 +36,12 @@ export class QuantEngine {
     }
 
     const box: StateBox = { current: state };
-    const root = createBroker(box);
-    const rules = getRuleConfig().rules.filter((row) => row.enabled && row.ticker);
+    const brokerOpts: CreateBrokerOpts = {
+      kisClient: deps.kisClient,
+      persistState: deps.persistState,
+    };
+    const root = createBroker(box, CASH_RULE_ID, brokerOpts);
+    const rules = (deps.ruleConfig ?? getRuleConfig()).rules.filter((row) => row.enabled && row.ticker);
 
     for (const rule of rules) {
       const alloc = box.current.allocations.find((row) => row.ruleId === rule.id);

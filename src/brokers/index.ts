@@ -3,15 +3,38 @@ import { KisBroker } from "@/src/brokers/KisBroker";
 import { MockBroker } from "@/src/brokers/MockBroker";
 import type { IBroker } from "@/src/brokers/IBroker";
 import { brokerDriver } from "@/src/brokers/kis-config";
-import { getSharedKisClient } from "@/src/brokers/kis-client";
+import { getSharedKisClient, type KisApi } from "@/src/brokers/kis-client";
+import type { AppState } from "@/lib/types";
 
 import { CASH_RULE_ID } from "@/src/rules/params";
 
-export function createBroker(box: StateBox, ruleKey = CASH_RULE_ID): IBroker {
+export type CreateBrokerOpts = {
+  kisClient?: KisApi;
+  persistState?: (state: AppState) => Promise<void>;
+};
+
+export function createBroker(
+  box: StateBox,
+  ruleKey = CASH_RULE_ID,
+  opts: CreateBrokerOpts = {},
+): IBroker {
   if (brokerDriver() === "kis") {
-    return new KisBroker(box, getSharedKisClient(), ruleKey);
+    return new KisBroker(box, opts.kisClient ?? getSharedKisClient(), ruleKey, "rule", undefined, undefined, {
+      persistState: opts.persistState,
+    });
   }
   return new MockBroker(box, ruleKey);
+}
+
+/** Account RuntimeScope entry — uses injected KIS client + persister. */
+export function createBrokerForRuntime(
+  box: StateBox,
+  opts: { kisClient: KisApi; persistState: (state: AppState) => Promise<void>; ruleKey?: string },
+): IBroker {
+  return createBroker(box, opts.ruleKey ?? CASH_RULE_ID, {
+    kisClient: opts.kisClient,
+    persistState: opts.persistState,
+  });
 }
 
 export type { IBroker, BrokerFill, BrokerQuote } from "@/src/brokers/IBroker";

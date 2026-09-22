@@ -1,9 +1,22 @@
+import { redirect } from "next/navigation";
 import { TradingApp } from "@/components/trading-app";
-import { getPublicState } from "@/lib/store";
+import { getCurrentUser } from "@/src/auth/guards";
+import {
+  AccountNotConnectedError,
+  resolveCurrentTradingRuntime,
+} from "@/src/runtime/resolve-trading-runtime";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const initialState = await getPublicState();
-  return <TradingApp initialState={initialState} />;
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  try {
+    const rt = await resolveCurrentTradingRuntime();
+    const initialState = await rt.store.getPublicState(rt.rules.get());
+    return <TradingApp initialState={initialState} />;
+  } catch (err) {
+    if (err instanceof AccountNotConnectedError) redirect("/mypage");
+    throw err;
+  }
 }
