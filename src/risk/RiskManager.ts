@@ -63,6 +63,7 @@ export type RiskRuntimeDeps = {
   kisClient?: KisApi;
   persistState?: (state: AppState) => Promise<void>;
   ruleConfig?: RuleConfigFile;
+  safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
 };
 
 export class RiskManager {
@@ -476,6 +477,7 @@ export class RiskManager {
     const brokerOpts: CreateBrokerOpts = {
       kisClient: deps.kisClient,
       persistState: deps.persistState,
+      safety: deps.safety,
     };
     const root = createBroker(this.box, CASH_RULE_ID, brokerOpts);
     const snapshot = [...state.positions];

@@ -179,6 +179,8 @@ async function tickOneAccount(
       persistState: rt.scope.persistState,
       ruleConfig: rules,
       forceBalanceSync: false,
+      startupSyncVerified: isScopeStartupSyncDone(account.id),
+      workerLockPath: rt.scope.lockPath,
     },
   });
 }

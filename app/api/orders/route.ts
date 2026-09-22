@@ -3,6 +3,7 @@ import { CASH_RULE_ID, normalizeTicker } from "@/src/rules/params";
 import type { Side } from "@/lib/types";
 import { manualIntentId } from "@/src/runtime/intents";
 import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
+import { isScopeStartupSyncDone } from "@/src/runtime/runtime-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,10 @@ export async function POST(request: Request) {
     const side = body.side === "sell" ? "sell" : "buy";
     const ruleId = body.ruleId || CASH_RULE_ID;
     const rules = rt.rules.get();
+    const safety = {
+      startupSyncVerified: isScopeStartupSyncDone(rt.account.id),
+      workerLockPath: rt.scope.lockPath,
+    };
 
     let rejected: string | undefined;
     let unknown = false;
@@ -35,6 +40,7 @@ export async function POST(request: Request) {
         kisClient: rt.scope.kisClient,
         persistState: rt.scope.persistState,
         ruleKey: ruleId,
+        safety,
       })
         .forRule(ruleId)
         .withSource("manual")

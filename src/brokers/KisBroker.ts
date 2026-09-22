@@ -21,8 +21,8 @@ import { isLiveLike, liveOrdersLocked, tradingMode } from "@/src/runtime/trading
 import { findOrderByIntent } from "@/src/runtime/intents";
 import { nowMs } from "@/src/clock";
 import { blockSafety } from "@/src/runtime/safety";
-import { holdsWorkerLock } from "@/src/runtime/worker-lock";
-import { preTradeGate } from "@/src/runtime/controlled-run";
+import { workerLockAllowsTrading, preTradeGate } from "@/src/runtime/controlled-run";
+import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
 import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 
 /**
@@ -33,6 +33,7 @@ import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 export class KisBroker implements IBroker {
   readonly driver = "kis" as const;
   private readonly persistState: (state: import("@/lib/types").AppState) => Promise<void>;
+  private readonly safety?: TradingSafetyContext;
 
   constructor(
     private readonly box: StateBox,
@@ -41,26 +42,33 @@ export class KisBroker implements IBroker {
     private readonly source: OrderSource = "rule",
     private readonly sourceId?: string,
     private readonly intent?: IntentMeta,
-    opts: { persistState?: (state: import("@/lib/types").AppState) => Promise<void> } = {},
+    opts: {
+      persistState?: (state: import("@/lib/types").AppState) => Promise<void>;
+      safety?: TradingSafetyContext;
+    } = {},
   ) {
     this.persistState = opts.persistState ?? defaultPersistNow;
+    this.safety = opts.safety;
   }
 
   forRule(ruleKey: string): KisBroker {
     return new KisBroker(this.box, this.client, ruleKey, this.source, this.sourceId, this.intent, {
       persistState: this.persistState,
+      safety: this.safety,
     });
   }
 
   withSource(source: OrderSource, sourceId?: string): KisBroker {
     return new KisBroker(this.box, this.client, this.ruleKey, source, sourceId, this.intent, {
       persistState: this.persistState,
+      safety: this.safety,
     });
   }
 
   withIntent(meta: IntentMeta): KisBroker {
     return new KisBroker(this.box, this.client, this.ruleKey, this.source, this.sourceId, meta, {
       persistState: this.persistState,
+      safety: this.safety,
     });
   }
 
@@ -181,7 +189,7 @@ export class KisBroker implements IBroker {
           net: 0,
           reason: `지정가 ${price.toLocaleString("ko-KR")}원보다 현재가 ${last.toLocaleString("ko-KR")}원이 높아 미체결입니다.`,
         };
-        new OrderManager(this.box).observe(this.ruleKey, ticker, fill);
+        new OrderManager(this.box, this.safety).observe(this.ruleKey, ticker, fill);
         return fill;
       }
     } catch (err) {
@@ -214,7 +222,7 @@ export class KisBroker implements IBroker {
     limitPrice?: number,
     qtyOverride?: number,
   ): Promise<BrokerFill> {
-    const orders = new OrderManager(this.box);
+    const orders = new OrderManager(this.box, this.safety);
     const existing = this.existingIntentFill(orders);
     if (existing) return existing;
     const blocked = this.precheck(ticker, "buy");
@@ -279,7 +287,7 @@ export class KisBroker implements IBroker {
     ordDvsn: "market" | "limit" = "market",
     limitPrice?: number,
   ): Promise<BrokerFill> {
-    const orders = new OrderManager(this.box);
+    const orders = new OrderManager(this.box, this.safety);
     const existing = this.existingIntentFill(orders);
     if (existing) return existing;
     const blocked = this.precheck(ticker, "sell");
@@ -362,11 +370,11 @@ export class KisBroker implements IBroker {
       }
     }
     const liquidatingSell = this.box.current.settings.liquidating && side === "sell";
-    if (isLiveLike() && !holdsWorkerLock() && !liquidatingSell) {
+    if (isLiveLike() && !workerLockAllowsTrading(this.safety) && !liquidatingSell) {
       return this.reject(ticker, side, "트레이딩 워커 락이 없어 주문하지 않습니다.");
     }
     if (this.box.current.controlledRun) {
-      const soak = preTradeGate(this.box.current, { side, ticker, qty: 1 });
+      const soak = preTradeGate(this.box.current, { side, ticker, qty: 1 }, process.env, this.safety);
       if (!soak.ok) return this.reject(ticker, side, soak.blocked);
     }
     if (!this.client.configured) {
@@ -397,7 +405,7 @@ export class KisBroker implements IBroker {
     if (this.box.current.settings.liquidating && side === "sell") {
       return null;
     }
-    const halted = tradingBlocked(this.box.current);
+    const halted = tradingBlocked(this.box.current, this.safety);
     if (halted) return this.reject(ticker, side, halted);
     return null;
   }
@@ -445,7 +453,7 @@ export class KisBroker implements IBroker {
   }
 
   private peekIntent(): BrokerFill | null {
-    return this.existingIntentFill(new OrderManager(this.box));
+    return this.existingIntentFill(new OrderManager(this.box, this.safety));
   }
 
   private existingIntentFill(orders: OrderManager): BrokerFill | null {

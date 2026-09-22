@@ -17,6 +17,7 @@ export type QuantEngineDeps = {
   kisClient?: KisApi;
   persistState?: (state: AppState) => Promise<void>;
   ruleConfig?: RuleConfigFile;
+  safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
 };
 
 export class QuantEngine {
@@ -39,6 +40,7 @@ export class QuantEngine {
     const brokerOpts: CreateBrokerOpts = {
       kisClient: deps.kisClient,
       persistState: deps.persistState,
+      safety: deps.safety,
     };
     const root = createBroker(box, CASH_RULE_ID, brokerOpts);
     const rules = (deps.ruleConfig ?? getRuleConfig()).rules.filter((row) => row.enabled && row.ticker);
@@ -46,7 +48,7 @@ export class QuantEngine {
     for (const rule of rules) {
       const alloc = box.current.allocations.find((row) => row.ruleId === rule.id);
       if (!alloc || !alloc.enabled) continue;
-      const blocked = tradingBlocked(box.current);
+      const blocked = tradingBlocked(box.current, deps.safety);
       if (blocked) {
         box.current = {
           ...box.current,

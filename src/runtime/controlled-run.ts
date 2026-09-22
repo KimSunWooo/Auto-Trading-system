@@ -24,7 +24,24 @@ import {
 } from "@/src/risk/order-policy";
 import type { UserRule } from "@/src/rules/params";
 import { kisHttpAudit } from "@/src/runtime/kis-http-audit";
-import { holdsWorkerLock, workerLockHealthy } from "@/src/runtime/worker-lock";
+import { holdsWorkerLock, workerLockHealthy, defaultLockPath } from "@/src/runtime/worker-lock";
+import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
+
+/** Account path: file heartbeat on scope.lockPath. Bootstrap: in-memory held lock. */
+export function workerLockAllowsTrading(safety?: TradingSafetyContext): boolean {
+  if (safety?.workerLockPath) {
+    return workerLockHealthy({ filePath: safety.workerLockPath });
+  }
+  return holdsWorkerLock();
+}
+
+/** Account path: only that lock file. Bootstrap: held or default lock heartbeat. */
+export function workerLockLostForAutoStop(safety?: TradingSafetyContext): boolean {
+  if (safety?.workerLockPath) {
+    return !workerLockHealthy({ filePath: safety.workerLockPath });
+  }
+  return !holdsWorkerLock() && !workerLockHealthy({ filePath: defaultLockPath() });
+}
 import {
   allowLiveTrading,
   isLiveLike,
@@ -398,6 +415,7 @@ export function preTradeGate(
   state: AppState,
   input: { side: "buy" | "sell"; ticker: string; qty: number },
   env: EnvMap = process.env,
+  safety?: TradingSafetyContext,
 ): { ok: true } | { ok: false; blocked: string } {
   if (!isLiveLike(tradingMode(env)) || env.BROKER !== "kis") return { ok: true };
   const envBlock = domesticPaperControlledEnv(env);
@@ -406,7 +424,7 @@ export function preTradeGate(
   if (!clock.open) {
     return { ok: false, blocked: `정규장 아님 (${clock.sessionLabel}) — 신규 주문 거부` };
   }
-  if (!holdsWorkerLock()) {
+  if (!workerLockAllowsTrading(safety)) {
     return { ok: false, blocked: "트레이딩 워커 락이 없어 주문하지 않습니다." };
   }
   const run = state.controlledRun;
@@ -508,7 +526,11 @@ export function preTradeGate(
   return { ok: true };
 }
 
-export function autoStopReason(state: AppState, env: EnvMap = process.env): string | null {
+export function autoStopReason(
+  state: AppState,
+  env: EnvMap = process.env,
+  safety?: TradingSafetyContext,
+): string | null {
   const http = kisHttpAudit();
   if (http.realRequests > 0) return "REAL endpoint request";
   if (http.overseasOrders > 0) return "Overseas order HTTP";
@@ -523,7 +545,7 @@ export function autoStopReason(state: AppState, env: EnvMap = process.env): stri
   const run = state.controlledRun;
   const repeated = run ? repeatedInquiryStopReason(run) : null;
   if (repeated) return repeated;
-  if (isLiveLike(tradingMode(env)) && !holdsWorkerLock() && !workerLockHealthy()) {
+  if (isLiveLike(tradingMode(env)) && workerLockLostForAutoStop(safety)) {
     return "Worker lock lost";
   }
   const dailyCap = paperMaxBrokerSubmitsPerDay(env);

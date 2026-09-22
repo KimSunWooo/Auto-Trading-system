@@ -10,7 +10,7 @@ import type { StateBox } from "@/src/accounts/StateBox";
 import type { BrokerFill } from "@/src/brokers/IBroker";
 import { findStock } from "@/lib/universe";
 import type { Order, OrderSource } from "@/lib/types";
-import { applyAutoStop, preTradeGate, recordControlledEvent } from "@/src/runtime/controlled-run";
+import { applyAutoStop, preTradeGate, recordControlledEvent, workerLockAllowsTrading } from "@/src/runtime/controlled-run";
 import { openCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { RiskManager } from "@/src/risk/RiskManager";
 import { executionLocked } from "@/src/rules/disclaimer";
@@ -20,7 +20,7 @@ import { checkHardLimits, seoulDay } from "@/src/risk/limits";
 import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/runtime/intents";
 import { safetyOf, stopKey } from "@/src/runtime/safety";
 import { isLiveLike } from "@/src/runtime/trading-mode";
-import { holdsWorkerLock } from "@/src/runtime/worker-lock";
+import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
 import { nowMs } from "@/src/clock";
 import {
   bandLimitPrice,
@@ -43,7 +43,10 @@ export type OrderOpts = {
  * Gates every buy against the named cash bucket (user rule or 예수금).
  */
 export class OrderManager {
-  constructor(private readonly box: StateBox) {}
+  constructor(
+    private readonly box: StateBox,
+    private readonly safety?: TradingSafetyContext,
+  ) {}
 
   static sessionBlockReason = sessionBlockReason;
   static forbidsMarketOrder = forbidsMarketOrder;
@@ -59,7 +62,7 @@ export class OrderManager {
     if (this.box.current.settings.liquidating || this.box.current.circuit?.kind === "kill") {
       return { ok: false, reason: "긴급 정지로 신규 매수를 막았습니다." };
     }
-    if (isLiveLike() && !holdsWorkerLock()) {
+    if (isLiveLike() && !workerLockAllowsTrading(this.safety)) {
       return { ok: false, reason: "트레이딩 워커 락이 없어 주문하지 않습니다." };
     }
     const locked = executionLocked(this.box.current);
@@ -69,13 +72,13 @@ export class OrderManager {
       guardLog("정규장 아님", session);
       return { ok: false, reason: session };
     }
-    const blocked = tradingBlocked(this.box.current);
+    const blocked = tradingBlocked(this.box.current, this.safety);
     if (blocked) return { ok: false, reason: blocked };
     if (qty < 1) {
       return { ok: false, reason: "1주 미만이라 주문하지 않습니다." };
     }
     if (this.box.current.controlledRun) {
-      const soak = preTradeGate(this.box.current, { side: "buy", ticker, qty });
+      const soak = preTradeGate(this.box.current, { side: "buy", ticker, qty }, process.env, this.safety);
       if (!soak.ok) return { ok: false, reason: soak.blocked };
     }
     const { net } = feeBreakdown("buy", qty * price);
@@ -149,12 +152,12 @@ export class OrderManager {
       return { ok: false, reason: session };
     }
     if (!opts.liquidation) {
-      if (isLiveLike() && !holdsWorkerLock()) {
+      if (isLiveLike() && !workerLockAllowsTrading(this.safety)) {
         return { ok: false, reason: "트레이딩 워커 락이 없어 주문하지 않습니다." };
       }
       const locked = executionLocked(this.box.current);
       if (locked) return { ok: false, reason: locked };
-      const blocked = tradingBlocked(this.box.current);
+      const blocked = tradingBlocked(this.box.current, this.safety);
       if (blocked) return { ok: false, reason: blocked };
       const bucket = this.box.current.allocations.find((a) => a.ruleId === ruleId);
       const throttle = ruleThrottleReason(bucket, ticker);
@@ -184,7 +187,7 @@ export class OrderManager {
       }
     }
     if (this.box.current.controlledRun && !opts.liquidation) {
-      const soak = preTradeGate(this.box.current, { side: "sell", ticker, qty });
+      const soak = preTradeGate(this.box.current, { side: "sell", ticker, qty }, process.env, this.safety);
       if (!soak.ok) return { ok: false, reason: soak.blocked };
     }
     return { ok: true };

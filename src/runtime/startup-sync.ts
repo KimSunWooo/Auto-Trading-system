@@ -581,7 +581,11 @@ export function resetProcessBootStartupForTest(): void {
   processBootStartupVerified = isNodeTestProcess();
 }
 
-export function startupSyncBlocksTrading(state: AppState, env: EnvMap = process.env): string | null {
+export function startupSyncBlocksTrading(
+  state: AppState,
+  env: EnvMap = process.env,
+  opts: { bootVerified?: boolean } = {},
+): string | null {
   if (!usesPaperStartupSync(env)) return null;
   const sync = state.startupSync;
   // FAILED is always authoritative — do not hide behind process-boot message.
@@ -591,9 +595,14 @@ export function startupSyncBlocksTrading(state: AppState, env: EnvMap = process.
       ? `Startup Sync FAILED — ${detail} 신규 주문을 차단합니다.`
       : "Startup Sync FAILED — 신규 주문을 차단합니다.";
   }
-  // Persisted HEALTHY is historical — this process must still fresh-sync.
-  if (!processBootStartupVerified) {
-    return "Process boot Startup Sync가 끝나기 전에는 신규 주문을 하지 않습니다.";
+  // Account runtime must pass bootVerified explicitly; bootstrap uses process flag.
+  const bootVerified =
+    opts.bootVerified !== undefined ? opts.bootVerified : processBootStartupVerified;
+  // Persisted HEALTHY is historical — this process/account must still fresh-sync.
+  if (!bootVerified) {
+    return opts.bootVerified !== undefined
+      ? "Account Startup Sync가 끝나기 전에는 신규 주문을 하지 않습니다."
+      : "Process boot Startup Sync가 끝나기 전에는 신규 주문을 하지 않습니다.";
   }
   if (!sync || sync.status === "IDLE" || sync.status === "SYNCING") {
     return "Startup Sync가 끝나기 전에는 신규 주문을 하지 않습니다.";

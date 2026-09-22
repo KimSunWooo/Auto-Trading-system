@@ -1,5 +1,6 @@
 import { httpTickAllowed } from "@/src/runtime/trading-mode";
 import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
+import { isScopeStartupSyncDone } from "@/src/runtime/runtime-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,8 @@ export async function POST() {
           kisClient: rt.scope.kisClient,
           persistState: rt.scope.persistState,
           ruleConfig: rules,
+          startupSyncVerified: isScopeStartupSyncDone(rt.account.id),
+          workerLockPath: rt.scope.lockPath,
         },
       });
       return Response.json(state);

@@ -381,6 +381,13 @@ export type TickRuntimeDeps = {
    * Pre-trade paths still call refreshBrokerBalanceSnapshot forcefully.
    */
   forceBalanceSync?: boolean;
+  /**
+   * Account path: isScopeStartupSyncDone(id).
+   * Omit → bootstrap processBootStartupVerified.
+   */
+  startupSyncVerified?: boolean;
+  /** Account path: scope.lockPath. Omit → bootstrap holdsWorkerLock(). */
+  workerLockPath?: string;
 };
 
 export async function tickState(
@@ -397,7 +404,18 @@ export async function tickState(
 
   const kisClient = deps.kisClient ?? getSharedKisClient();
   const forceBalance = deps.forceBalanceSync ?? false;
-  const brokerOpts: CreateBrokerOpts = { kisClient, persistState: deps.persistState };
+  const safety = {
+    startupSyncVerified: deps.startupSyncVerified,
+    workerLockPath: deps.workerLockPath,
+  };
+  const brokerOpts: CreateBrokerOpts = {
+    kisClient,
+    persistState: deps.persistState,
+    safety:
+      deps.startupSyncVerified !== undefined || deps.workerLockPath
+        ? safety
+        : undefined,
+  };
   const ruleConfig = deps.ruleConfig;
 
   const clock = getMarketClock(now);
@@ -478,7 +496,9 @@ export async function tickState(
       });
     }
     box.current = resumeTransientUnknownStop(box.current);
-    const stop = box.current.controlledRun ? autoStopReason(box.current) : null;
+    const stop = box.current.controlledRun
+      ? autoStopReason(box.current, process.env, brokerOpts.safety)
+      : null;
     if (stop) {
       box.current = applyAutoStop(box.current, stop);
       liveReady = false;
@@ -494,7 +514,12 @@ export async function tickState(
   box.current = RiskManager.rollDay(box.current, now);
 
   const tradingOn = autoRunAllowed(box.current);
-  if (usesPaperStartupSync() && startupSyncBlocksTrading(box.current)) {
+  if (
+    usesPaperStartupSync() &&
+    startupSyncBlocksTrading(box.current, process.env, {
+      bootVerified: deps.startupSyncVerified,
+    })
+  ) {
     liveReady = false;
   }
   if (sessionOk && tradingOn) {
@@ -502,6 +527,7 @@ export async function tickState(
       kisClient,
       persistState: deps.persistState,
       ruleConfig,
+      safety: brokerOpts.safety,
     });
     box.current = RiskManager.checkDailyLoss(box.current);
   }
@@ -509,7 +535,7 @@ export async function tickState(
   const tradingAllowed =
     sessionOk &&
     tradingOn &&
-    !tradingBlocked(box.current) &&
+    !tradingBlocked(box.current, brokerOpts.safety) &&
     (root.driver !== "kis" || liveReady);
   if (tradingAllowed) {
     box.current = await evaluateConditions(box.current, clock.iso, brokerOpts);
@@ -518,6 +544,7 @@ export async function tickState(
       kisClient,
       persistState: deps.persistState,
       ruleConfig,
+      safety: brokerOpts.safety,
     });
   } else if (tradingOn && !clock.open) {
     const msg = `정규장 아님 (${clock.sessionLabel}) — 신규 주문 거부`;

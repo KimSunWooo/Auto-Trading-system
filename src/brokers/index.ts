@@ -11,6 +11,7 @@ import { CASH_RULE_ID } from "@/src/rules/params";
 export type CreateBrokerOpts = {
   kisClient?: KisApi;
   persistState?: (state: AppState) => Promise<void>;
+  safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
 };
 
 export function createBroker(
@@ -21,19 +22,26 @@ export function createBroker(
   if (brokerDriver() === "kis") {
     return new KisBroker(box, opts.kisClient ?? getSharedKisClient(), ruleKey, "rule", undefined, undefined, {
       persistState: opts.persistState,
+      safety: opts.safety,
     });
   }
   return new MockBroker(box, ruleKey);
 }
 
-/** Account RuntimeScope entry — uses injected KIS client + persister. */
+/** Account RuntimeScope entry — uses injected KIS client + persister + safety. */
 export function createBrokerForRuntime(
   box: StateBox,
-  opts: { kisClient: KisApi; persistState: (state: AppState) => Promise<void>; ruleKey?: string },
+  opts: {
+    kisClient: KisApi;
+    persistState: (state: AppState) => Promise<void>;
+    ruleKey?: string;
+    safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
+  },
 ): IBroker {
   return createBroker(box, opts.ruleKey ?? CASH_RULE_ID, {
     kisClient: opts.kisClient,
     persistState: opts.persistState,
+    safety: opts.safety,
   });
 }
 
