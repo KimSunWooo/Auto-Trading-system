@@ -1,5 +1,9 @@
 import mysql from "mysql2/promise";
-import { EXPECTED_OBJECTS } from "@/src/db/expected";
+import {
+  EXPECTED_BROKER_ACCOUNTS_COLUMNS,
+  EXPECTED_BROKER_ACCOUNTS_INDEXES,
+  EXPECTED_OBJECTS,
+} from "@/src/db/expected";
 import { loadDbConnection } from "@/src/db/config";
 import { loadLocalEnv } from "@/src/db/load-env";
 
@@ -37,7 +41,27 @@ async function main() {
     if (extra.length) {
       console.log(`extra (non-fatal): ${extra.join(", ")}`);
     }
-    if (!missing.length) {
+
+    // Additive PAPER physical ownership column / unique index (ensureAuthSchema applies).
+    if (names.includes("broker_accounts")) {
+      const [cols] = await conn.query<mysql.RowDataPacket[]>("SHOW COLUMNS FROM broker_accounts");
+      const colNames = cols.map((c) => String(c.Field));
+      const missingCols = EXPECTED_BROKER_ACCOUNTS_COLUMNS.filter((c) => !colNames.includes(c));
+      if (missingCols.length) {
+        console.error(`broker_accounts missing columns: ${missingCols.join(", ")}`);
+        console.error("Run app ensureAuthSchema / connect path once, or apply additive ALTER.");
+        process.exitCode = 1;
+      }
+      const [idx] = await conn.query<mysql.RowDataPacket[]>("SHOW INDEX FROM broker_accounts");
+      const idxNames = [...new Set(idx.map((r) => String(r.Key_name)))];
+      const missingIdx = EXPECTED_BROKER_ACCOUNTS_INDEXES.filter((n) => !idxNames.includes(n));
+      if (missingIdx.length) {
+        console.error(`broker_accounts missing indexes: ${missingIdx.join(", ")}`);
+        process.exitCode = 1;
+      }
+    }
+
+    if (!missing.length && !process.exitCode) {
       console.log("Existing RDS baseline: ADOPTED");
     }
   } finally {

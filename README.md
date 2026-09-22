@@ -30,6 +30,7 @@
 | Gate 3 / REAL | LOCKED |
 | Per-user RuntimeScope wiring | USER trading APIs → owned ACTIVE PAPER RuntimeScope (store/rules/KIS/lock). Bootstrap path preserved for operator soak. ADMIN presets = `users.role===ADMIN` only. |
 | PAPER runtime ownership | Exclusive `PAPER_RUNTIME_OWNER=bootstrap\|accounts\|disabled`. Bootstrap+account workers never start together. Same physical CANO → one ACTIVE broker_account. |
+| PAPER physical account uniqueness | DB unique HMAC fingerprint on `broker_accounts` (`uq_broker_accounts_paper_physical`). Concurrent connect → exactly one ACTIVE. Plaintext CANO not stored. |
 
 로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
 

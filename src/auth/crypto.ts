@@ -1,4 +1,5 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
+import { normalizePaperAccountIdentity } from "@/src/runtime/paper-account-identity";
 
 export type PaperCredentialSecret = {
   appKey: string;
@@ -6,12 +7,40 @@ export type PaperCredentialSecret = {
   accountNo: string;
 };
 
-function masterKey(): Buffer {
+function masterKeyMaterial(): string {
   const raw = process.env.BROKER_CREDENTIAL_MASTER_KEY?.trim();
   if (!raw || raw.length < 32) {
     throw new Error("BROKER_CREDENTIAL_MASTER_KEY must be set (>=32 chars)");
   }
-  return createHash("sha256").update(raw).digest();
+  return raw;
+}
+
+function masterKey(): Buffer {
+  return createHash("sha256").update(masterKeyMaterial()).digest();
+}
+
+/**
+ * Domain-separated HMAC key for PAPER physical-account fingerprints.
+ * Not the AES-GCM key bytes — derived via HMAC over the master secret + domain label.
+ */
+export function paperPhysicalAccountFingerprintKey(): Buffer {
+  return createHmac("sha256", masterKeyMaterial())
+    .update("mirae:hmac-key:paper-physical-account-fingerprint:v1")
+    .digest();
+}
+
+/**
+ * Deterministic keyed fingerprint of a normalized KIS PAPER account identity.
+ * Never log accountNo or the HMAC key. Returns 64 hex chars.
+ */
+export function paperPhysicalAccountFingerprint(accountNo: string): string {
+  const normalized = normalizePaperAccountIdentity(accountNo);
+  if (!normalized) {
+    throw new Error("account number required for physical account fingerprint");
+  }
+  return createHmac("sha256", paperPhysicalAccountFingerprintKey())
+    .update(`KIS:PAPER:PHYSICAL_ACCOUNT:${normalized}`)
+    .digest("hex");
 }
 
 export function encryptPaperCredentials(secret: PaperCredentialSecret): {

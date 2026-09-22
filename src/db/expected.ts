@@ -43,3 +43,27 @@ export const EXPECTED_TABLES = [
 export const EXPECTED_VIEWS = ["v_buy_history"] as const;
 
 export const EXPECTED_OBJECTS = [...EXPECTED_TABLES, ...EXPECTED_VIEWS] as const;
+
+/** Additive columns required on adopted RDS `broker_accounts`. */
+export const EXPECTED_BROKER_ACCOUNTS_COLUMNS = [
+  "id",
+  "user_id",
+  "broker",
+  "environment",
+  "display_name",
+  "account_number_masked",
+  "base_currency",
+  "status",
+  "is_default",
+  "credential_ref",
+  "physical_account_fingerprint",
+  "created_at",
+  "updated_at",
+] as const;
+
+export const EXPECTED_BROKER_ACCOUNTS_INDEXES = [
+  "PRIMARY",
+  "ix_broker_accounts_user_env",
+  "ix_broker_accounts_status",
+  "uq_broker_accounts_paper_physical",
+] as const;

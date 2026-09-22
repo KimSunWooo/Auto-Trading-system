@@ -29,12 +29,22 @@ export const brokerAccounts = mysqlTable(
     status: varchar("status", { length: 20 }).notNull().default("ACTIVE"),
     isDefault: boolean("is_default").notNull().default(false),
     credentialRef: varchar("credential_ref", { length: 255 }),
+    /**
+     * HMAC fingerprint of normalized KIS PAPER CANO. Set only for ACTIVE kis/PAPER.
+     * NULL for DISABLED (releases unique claim). Never stores plaintext account number.
+     */
+    physicalAccountFingerprint: varchar("physical_account_fingerprint", { length: 64 }),
     createdAt: datetime("created_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`),
     updatedAt: datetime("updated_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`).$onUpdate(() => sql`CURRENT_TIMESTAMP(6)`),
   },
   (table) => [
     index("ix_broker_accounts_status").on(table.status),
     index("ix_broker_accounts_user_env").on(table.userId, table.environment),
+    uniqueIndex("uq_broker_accounts_paper_physical").on(
+      table.broker,
+      table.environment,
+      table.physicalAccountFingerprint,
+    ),
   ],
 );
 

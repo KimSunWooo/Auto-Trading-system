@@ -1,15 +1,18 @@
 /**
  * PAPER broker account binding for authenticated users.
  * Read-only credential validation only — never places orders.
+ * ACTIVE physical ownership is enforced by DB unique fingerprint (authority)
+ * plus application precheck (convenience).
  */
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { getDb } from "@/src/db/client";
 import * as schema from "@/src/db/schema";
 import {
   decryptPaperCredentials,
   encryptPaperCredentials,
   maskAccountNumber,
+  paperPhysicalAccountFingerprint,
   type PaperCredentialSecret,
 } from "@/src/auth/crypto";
 import { ensureAuthSchema } from "@/src/auth/ensure-schema";
@@ -18,8 +21,10 @@ import { kisConfigFromPaperCredentials } from "@/src/brokers/kis-config";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import {
+  ACTIVE_PAPER_PHYSICAL_ALREADY_REGISTERED,
   findDuplicateActivePaperPhysicalAccount,
   normalizePaperAccountIdentity,
+  sanitizePaperPhysicalOwnershipError,
 } from "@/src/runtime/paper-physical-account";
 
 export type ConnectedAccountView = {
@@ -32,6 +37,11 @@ export type ConnectedAccountView = {
   appKeyRegistered: boolean;
   appSecretRegistered: boolean;
   dataDir: string;
+};
+
+export type ConnectPaperAccountOpts = {
+  /** Test only — skip live KIS inquireBalance. Never use for production connects. */
+  skipLiveValidation?: boolean;
 };
 
 function accountDataDir(brokerAccountId: string): string {
@@ -86,13 +96,16 @@ export async function listUserBrokerAccounts(userId: string): Promise<ConnectedA
   return out;
 }
 
-export async function connectPaperAccount(input: {
-  userId: string;
-  alias: string;
-  accountNo: string;
-  appKey: string;
-  appSecret: string;
-}): Promise<ConnectedAccountView> {
+export async function connectPaperAccount(
+  input: {
+    userId: string;
+    alias: string;
+    accountNo: string;
+    appKey: string;
+    appSecret: string;
+  },
+  opts: ConnectPaperAccountOpts = {},
+): Promise<ConnectedAccountView> {
   await ensureAuthSchema();
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL not configured");
@@ -103,59 +116,66 @@ export async function connectPaperAccount(input: {
     appSecret: input.appSecret.trim(),
     accountNo: input.accountNo.trim(),
   };
-  const validated = await validatePaperCredentials(secret);
-  if (!validated.ok) throw new Error(validated.error ?? "PAPER credential validation failed");
+  if (!opts.skipLiveValidation) {
+    const validated = await validatePaperCredentials(secret);
+    if (!validated.ok) throw new Error(validated.error ?? "PAPER credential validation failed");
+  }
 
-  await assertUniqueActivePaperPhysicalAccount(secret.accountNo);
+  const fingerprint = paperPhysicalAccountFingerprint(secret.accountNo);
+
+  // Convenience precheck (not authority — unique index is).
+  await assertUniqueActivePaperPhysicalAccount(secret.accountNo, undefined, fingerprint);
 
   const id = randomUUID();
   const enc = encryptPaperCredentials(secret);
   mkdirSync(accountDataDir(id), { recursive: true });
 
-  await db.insert(schema.brokerAccounts).values({
-    id,
-    userId: input.userId,
-    broker: "kis",
-    environment: "PAPER",
-    displayName: input.alias.trim() || "KIS PAPER",
-    accountNumberMasked: maskAccountNumber(secret.accountNo),
-    baseCurrency: "KRW",
-    status: "ACTIVE",
-    isDefault: true,
-    credentialRef: `local:${id}`,
-  });
-  await db.insert(schema.brokerCredentialRefs).values({
-    id: randomUUID(),
-    brokerAccountId: id,
-    secretProvider: "local_aes_gcm",
-    secretRef: `broker_secret_payloads:${id}`,
-    keyVersion: enc.keyVersion,
-  });
-  await db.insert(schema.brokerSecretPayloads).values({
-    id: randomUUID(),
-    brokerAccountId: id,
-    ciphertext: enc.ciphertext,
-    iv: enc.iv,
-    authTag: enc.authTag,
-    keyVersion: enc.keyVersion,
-  });
-  await db.insert(schema.tradingAccountState).values({
-    brokerAccountId: id,
-    autoTradingEnabled: false,
-    onboardingComplete: false,
-  });
+  try {
+    await db.transaction(async (tx) => {
+      await tx.insert(schema.brokerAccounts).values({
+        id,
+        userId: input.userId,
+        broker: "kis",
+        environment: "PAPER",
+        displayName: input.alias.trim() || "KIS PAPER",
+        accountNumberMasked: maskAccountNumber(secret.accountNo),
+        baseCurrency: "KRW",
+        status: "ACTIVE",
+        isDefault: true,
+        credentialRef: `local:${id}`,
+        physicalAccountFingerprint: fingerprint,
+      });
+      await tx.insert(schema.brokerCredentialRefs).values({
+        id: randomUUID(),
+        brokerAccountId: id,
+        secretProvider: "local_aes_gcm",
+        secretRef: `broker_secret_payloads:${id}`,
+        keyVersion: enc.keyVersion,
+      });
+      await tx.insert(schema.brokerSecretPayloads).values({
+        id: randomUUID(),
+        brokerAccountId: id,
+        ciphertext: enc.ciphertext,
+        iv: enc.iv,
+        authTag: enc.authTag,
+        keyVersion: enc.keyVersion,
+      });
+      await tx.insert(schema.tradingAccountState).values({
+        brokerAccountId: id,
+        autoTradingEnabled: false,
+        onboardingComplete: false,
+      });
 
-  // Mark other accounts non-default for this user.
-  const others = await db
-    .select()
-    .from(schema.brokerAccounts)
-    .where(eq(schema.brokerAccounts.userId, input.userId));
-  for (const other of others) {
-    if (other.id === id) continue;
-    await db
-      .update(schema.brokerAccounts)
-      .set({ isDefault: false })
-      .where(eq(schema.brokerAccounts.id, other.id));
+      // Mark other accounts non-default for this user.
+      await tx
+        .update(schema.brokerAccounts)
+        .set({ isDefault: false })
+        .where(
+          and(eq(schema.brokerAccounts.userId, input.userId), ne(schema.brokerAccounts.id, id)),
+        );
+    });
+  } catch (err) {
+    throw sanitizePaperPhysicalOwnershipError(err);
   }
 
   return {
@@ -171,13 +191,16 @@ export async function connectPaperAccount(input: {
   };
 }
 
-export async function rotatePaperCredentials(input: {
-  userId: string;
-  brokerAccountId: string;
-  appKey: string;
-  appSecret: string;
-  accountNo: string;
-}): Promise<{
+export async function rotatePaperCredentials(
+  input: {
+    userId: string;
+    brokerAccountId: string;
+    appKey: string;
+    appSecret: string;
+    accountNo: string;
+  },
+  opts: ConnectPaperAccountOpts = {},
+): Promise<{
   mode: "rotate" | "switch";
   brokerAccountId: string;
   previousBrokerAccountId?: string;
@@ -202,13 +225,16 @@ export async function rotatePaperCredentials(input: {
 
   // Same account number (or first-time credentials on this row) → rotate in place.
   if (!prevNo || normalizeAccountNo(prevNo) === normalizeAccountNo(nextNo)) {
-    await rotateCredentialsInPlace({
-      userId: input.userId,
-      brokerAccountId: input.brokerAccountId,
-      appKey: input.appKey,
-      appSecret: input.appSecret,
-      accountNo: nextNo,
-    });
+    await rotateCredentialsInPlace(
+      {
+        userId: input.userId,
+        brokerAccountId: input.brokerAccountId,
+        appKey: input.appKey,
+        appSecret: input.appSecret,
+        accountNo: nextNo,
+      },
+      opts,
+    );
     const { invalidateRuntimeScope, markScopeStartupSyncDone } = await import(
       "@/src/runtime/runtime-scope"
     );
@@ -231,21 +257,37 @@ export async function rotatePaperCredentials(input: {
     appSecret: input.appSecret.trim(),
     accountNo: nextNo,
   };
-  const validated = await validatePaperCredentials(secret);
-  if (!validated.ok) throw new Error(validated.error ?? "validation failed");
+  if (!opts.skipLiveValidation) {
+    const validated = await validatePaperCredentials(secret);
+    if (!validated.ok) throw new Error(validated.error ?? "validation failed");
+  }
 
-  await db
-    .update(schema.brokerAccounts)
-    .set({ status: "DISABLED", isDefault: false })
-    .where(eq(schema.brokerAccounts.id, input.brokerAccountId));
+  try {
+    await db.transaction(async (tx) => {
+      // Release fingerprint claim so new ACTIVE row can take ownership.
+      await tx
+        .update(schema.brokerAccounts)
+        .set({
+          status: "DISABLED",
+          isDefault: false,
+          physicalAccountFingerprint: null,
+        })
+        .where(eq(schema.brokerAccounts.id, input.brokerAccountId));
+    });
+  } catch (err) {
+    throw sanitizePaperPhysicalOwnershipError(err);
+  }
 
-  const created = await connectPaperAccount({
-    userId: input.userId,
-    alias: account.displayName || "KIS PAPER",
-    accountNo: secret.accountNo,
-    appKey: secret.appKey,
-    appSecret: secret.appSecret,
-  });
+  const created = await connectPaperAccount(
+    {
+      userId: input.userId,
+      alias: account.displayName || "KIS PAPER",
+      accountNo: secret.accountNo,
+      appKey: secret.appKey,
+      appSecret: secret.appSecret,
+    },
+    { skipLiveValidation: true },
+  );
 
   const { invalidateRuntimeScope, markScopeStartupSyncDone } = await import(
     "@/src/runtime/runtime-scope"
@@ -266,39 +308,59 @@ function normalizeAccountNo(value: string): string {
 }
 
 /**
- * Fail closed when another ACTIVE PAPER broker_account already owns this physical CANO.
- * Cross-user and same-user duplicates are both blocked.
+ * UX-friendly early detection. DB unique constraint remains the authority.
  */
 async function assertUniqueActivePaperPhysicalAccount(
   accountNo: string,
   excludeBrokerAccountId?: string,
+  nextFingerprint?: string,
 ): Promise<void> {
   const db = getDb();
   if (!db) return;
+  const fingerprint = nextFingerprint ?? paperPhysicalAccountFingerprint(accountNo);
+  const byFp = await db
+    .select({ id: schema.brokerAccounts.id })
+    .from(schema.brokerAccounts)
+    .where(
+      and(
+        eq(schema.brokerAccounts.environment, "PAPER"),
+        eq(schema.brokerAccounts.status, "ACTIVE"),
+        eq(schema.brokerAccounts.physicalAccountFingerprint, fingerprint),
+      ),
+    )
+    .limit(1);
+  if (byFp[0] && byFp[0].id !== excludeBrokerAccountId) {
+    throw new Error(ACTIVE_PAPER_PHYSICAL_ALREADY_REGISTERED);
+  }
+
+  // Legacy rows without fingerprint: decrypt compare (pre-unique only).
   const rows = await db
     .select()
     .from(schema.brokerAccounts)
-    .where(eq(schema.brokerAccounts.environment, "PAPER"));
-  const candidates: Array<{ id: string; identity: string; status: string; environment: string }> =
-    [];
+    .where(
+      and(
+        eq(schema.brokerAccounts.environment, "PAPER"),
+        eq(schema.brokerAccounts.status, "ACTIVE"),
+        sql`${schema.brokerAccounts.physicalAccountFingerprint} IS NULL`,
+      ),
+    );
+  const candidates = [];
   for (const row of rows) {
-    if (row.status !== "ACTIVE") continue;
     const secret = await loadPaperSecretForAccount(row.id);
     candidates.push({
       id: row.id,
       identity: secret?.accountNo ?? "",
       status: row.status,
       environment: row.environment,
+      fingerprint: row.physicalAccountFingerprint,
     });
   }
   const dup = findDuplicateActivePaperPhysicalAccount(candidates, accountNo, {
     excludeBrokerAccountId,
+    nextFingerprint: fingerprint,
   });
   if (dup) {
-    throw new Error(
-      `ACTIVE PAPER physical account already registered (brokerAccountId=${dup}). ` +
-        `Only one ACTIVE ownership is allowed per KIS PAPER CANO.`,
-    );
+    throw new Error(ACTIVE_PAPER_PHYSICAL_ALREADY_REGISTERED);
   }
 }
 
@@ -350,13 +412,16 @@ async function assertAccountSwitchSafe(brokerAccountId: string): Promise<void> {
   }
 }
 
-async function rotateCredentialsInPlace(input: {
-  userId: string;
-  brokerAccountId: string;
-  appKey: string;
-  appSecret: string;
-  accountNo: string;
-}): Promise<void> {
+async function rotateCredentialsInPlace(
+  input: {
+    userId: string;
+    brokerAccountId: string;
+    appKey: string;
+    appSecret: string;
+    accountNo: string;
+  },
+  opts: ConnectPaperAccountOpts = {},
+): Promise<void> {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL not configured");
   const secret: PaperCredentialSecret = {
@@ -364,38 +429,51 @@ async function rotateCredentialsInPlace(input: {
     appSecret: input.appSecret.trim(),
     accountNo: input.accountNo.trim(),
   };
-  const validated = await validatePaperCredentials(secret);
-  if (!validated.ok) throw new Error(validated.error ?? "validation failed");
+  if (!opts.skipLiveValidation) {
+    const validated = await validatePaperCredentials(secret);
+    if (!validated.ok) throw new Error(validated.error ?? "validation failed");
+  }
   const enc = encryptPaperCredentials(secret);
+  const fingerprint = paperPhysicalAccountFingerprint(secret.accountNo);
   const existing = await db
     .select()
     .from(schema.brokerSecretPayloads)
     .where(eq(schema.brokerSecretPayloads.brokerAccountId, input.brokerAccountId))
     .limit(1);
-  if (existing[0]) {
-    await db
-      .update(schema.brokerSecretPayloads)
-      .set({
-        ciphertext: enc.ciphertext,
-        iv: enc.iv,
-        authTag: enc.authTag,
-        keyVersion: enc.keyVersion,
-      })
-      .where(eq(schema.brokerSecretPayloads.brokerAccountId, input.brokerAccountId));
-  } else {
-    await db.insert(schema.brokerSecretPayloads).values({
-      id: randomUUID(),
-      brokerAccountId: input.brokerAccountId,
-      ciphertext: enc.ciphertext,
-      iv: enc.iv,
-      authTag: enc.authTag,
-      keyVersion: enc.keyVersion,
+  try {
+    await db.transaction(async (tx) => {
+      if (existing[0]) {
+        await tx
+          .update(schema.brokerSecretPayloads)
+          .set({
+            ciphertext: enc.ciphertext,
+            iv: enc.iv,
+            authTag: enc.authTag,
+            keyVersion: enc.keyVersion,
+          })
+          .where(eq(schema.brokerSecretPayloads.brokerAccountId, input.brokerAccountId));
+      } else {
+        await tx.insert(schema.brokerSecretPayloads).values({
+          id: randomUUID(),
+          brokerAccountId: input.brokerAccountId,
+          ciphertext: enc.ciphertext,
+          iv: enc.iv,
+          authTag: enc.authTag,
+          keyVersion: enc.keyVersion,
+        });
+      }
+      await tx
+        .update(schema.brokerAccounts)
+        .set({
+          accountNumberMasked: maskAccountNumber(secret.accountNo),
+          physicalAccountFingerprint: fingerprint,
+          status: "ACTIVE",
+        })
+        .where(eq(schema.brokerAccounts.id, input.brokerAccountId));
     });
+  } catch (err) {
+    throw sanitizePaperPhysicalOwnershipError(err);
   }
-  await db
-    .update(schema.brokerAccounts)
-    .set({ accountNumberMasked: maskAccountNumber(secret.accountNo) })
-    .where(eq(schema.brokerAccounts.id, input.brokerAccountId));
 }
 
 export async function loadPaperSecretForAccount(

@@ -99,7 +99,7 @@ export class MysqlSession implements LedgerSession {
         set: {
           displayName: row.displayName,
           accountNumberMasked: row.accountNumberMasked,
-          status: row.status,
+          // Do not force ACTIVE — preserves DISABLED physical-ownership releases.
           isDefault: row.isDefault,
           credentialRef: row.credentialRef,
         },
