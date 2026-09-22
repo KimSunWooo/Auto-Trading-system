@@ -51,12 +51,15 @@ test("Level10 preset cycles the six tickers on repeat apply", () => {
   assert.equal(third.ticker, "035720");
 });
 
-test("admin preset UI is off on a public host unless ADMIN_MODE is true", () => {
+test("admin preset UI helpers never grant authority via localhost or ADMIN_MODE env", () => {
   assert.equal(isLocalAdminHost("app.example.com"), false);
+  assert.equal(isLocalAdminHost("localhost"), false);
+  assert.equal(isLocalAdminHost("127.0.0.1"), false);
+  assert.equal(isLocalAdminHost("[::1]"), false);
   assert.equal(isAdminPresetUiEnabled("app.example.com", undefined), false);
   assert.equal(isAdminPresetUiEnabled("app.example.com", "false"), false);
-  assert.equal(isAdminPresetUiEnabled("app.example.com", "true"), true);
-  assert.equal(isAdminPresetUiEnabled("localhost", undefined), true);
-  assert.equal(isAdminPresetUiEnabled("127.0.0.1", "false"), true);
-  assert.equal(isAdminPresetUiEnabled("[::1]"), true);
+  assert.equal(isAdminPresetUiEnabled("app.example.com", "true"), false);
+  assert.equal(isAdminPresetUiEnabled("localhost", undefined), false);
+  assert.equal(isAdminPresetUiEnabled("127.0.0.1", "false"), false);
+  assert.equal(isAdminPresetUiEnabled("localhost", "true"), false);
 });

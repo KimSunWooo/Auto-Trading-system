@@ -2,14 +2,36 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  ADMIN_PRESETS,
-  applyAdminPreset,
-  isAdminPresetUiEnabled,
-  type AdminPlaybookId,
-  type AdminPresetDraft,
-} from "@/src/rules/admin-presets";
+import type { AdminPlaybookId, AdminPreset, AdminPresetDraft } from "@/src/rules/admin-presets";
 
+function nextUniverseTicker(universe: string[], current?: string): string {
+  if (universe.length === 0) return current ?? "";
+  const idx = current ? universe.indexOf(current) : -1;
+  if (idx < 0) return universe[0]!;
+  return universe[(idx + 1) % universe.length]!;
+}
+
+function applyFetchedPreset(
+  presets: AdminPreset[],
+  id: AdminPlaybookId,
+  currentTicker?: string,
+): AdminPresetDraft | null {
+  const preset = presets.find((row) => row.id === id);
+  if (!preset) return null;
+  const ticker = preset.universe
+    ? nextUniverseTicker(preset.universe, currentTicker)
+    : preset.draft.ticker;
+  const name =
+    preset.id === "Level10_Aggressive"
+      ? `공격형 · 변동성 돌파 ${ticker}`
+      : preset.draft.name;
+  return { ...preset.draft, ticker, name };
+}
+
+/**
+ * Visible only when /api/admin/presets returns 200 (users.role === ADMIN).
+ * localhost / NEXT_PUBLIC_ADMIN_MODE never authorize this UI.
+ */
 export function AdminPresetBar({
   currentTicker,
   onApply,
@@ -17,32 +39,52 @@ export function AdminPresetBar({
   currentTicker?: string;
   onApply: (next: AdminPresetDraft) => void;
 }) {
-  const envOn = process.env.NEXT_PUBLIC_ADMIN_MODE === "true";
-  const [visible, setVisible] = useState(envOn);
+  const [presets, setPresets] = useState<AdminPreset[] | null>(null);
 
   useEffect(() => {
-    setVisible(isAdminPresetUiEnabled(window.location.hostname));
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/admin/presets");
+        if (cancelled) return;
+        if (res.status === 401 || res.status === 403) {
+          setPresets(null);
+          return;
+        }
+        if (!res.ok) {
+          setPresets(null);
+          return;
+        }
+        const body = (await res.json()) as { presets?: AdminPreset[] };
+        setPresets(Array.isArray(body.presets) ? body.presets : null);
+      } catch {
+        if (!cancelled) setPresets(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  if (!visible) return null;
+  if (!presets?.length) return null;
 
   function apply(id: AdminPlaybookId) {
-    onApply(applyAdminPreset(id, { ticker: currentTicker ?? "" }));
+    const next = applyFetchedPreset(presets!, id, currentTicker);
+    if (next) onApply(next);
   }
 
   return (
     <div className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 px-3 py-3 sm:col-span-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-medium">🛠 관리자 프리셋</div>
+          <div className="text-sm font-medium">관리자 프리셋</div>
           <p className="text-xs text-muted-foreground">
-            로컬·ADMIN_MODE 전용. 일반 배포에는 이 영역이 렌더링되지 않습니다. 클릭하면 아래 입력칸만 채웁니다.
-            세 개를 모두 저장할 경우 기본 예수금 1,000만 원 기준 7M / 2M / 1M 으로 맞춰 두었습니다.
+            ADMIN 역할 전용입니다. 클릭하면 아래 입력칸만 채웁니다. 주문은 실행하지 않습니다.
           </p>
         </div>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
-        {ADMIN_PRESETS.map((preset) => (
+        {presets.map((preset) => (
           <Button
             key={preset.id}
             type="button"

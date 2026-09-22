@@ -97,22 +97,29 @@ export const ADMIN_PRESETS: readonly AdminPreset[] = [
 
 export const AGGRESSIVE_UNIVERSE = ADMIN_PRESETS[2]?.universe ?? [];
 
-export function isAdminModeEnv(value = process.env.NEXT_PUBLIC_ADMIN_MODE): boolean {
-  return value === "true";
+/**
+ * @deprecated Never use for authorization. ADMIN UI must gate on users.role === ADMIN
+ * via /api/admin/presets. Always returns false.
+ */
+export function isAdminModeEnv(_value = process.env.NEXT_PUBLIC_ADMIN_MODE): boolean {
+  return false;
 }
 
-export function isLocalAdminHost(hostname: string | undefined): boolean {
-  if (!hostname) return false;
-  const host = hostname.trim().toLowerCase().replace(/\.+$/, "");
-  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+/**
+ * @deprecated Never use for authorization. localhost is not ADMIN.
+ */
+export function isLocalAdminHost(_hostname: string | undefined): boolean {
+  return false;
 }
 
-/** True only for operator env or a local hostname. Production host + unset env → false. */
+/**
+ * @deprecated Never use for authorization. Always false — role is server-enforced.
+ */
 export function isAdminPresetUiEnabled(
-  hostname?: string,
-  envValue = process.env.NEXT_PUBLIC_ADMIN_MODE,
+  _hostname?: string,
+  _envValue = process.env.NEXT_PUBLIC_ADMIN_MODE,
 ): boolean {
-  return isAdminModeEnv(envValue) || isLocalAdminHost(hostname);
+  return false;
 }
 
 export function adminPresetById(id: AdminPlaybookId): AdminPreset {
