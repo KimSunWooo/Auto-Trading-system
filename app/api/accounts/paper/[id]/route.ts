@@ -15,7 +15,7 @@ export async function PUT(
       appKey?: string;
       appSecret?: string;
     };
-    await rotatePaperCredentials({
+    const result = await rotatePaperCredentials({
       userId: user.id,
       brokerAccountId: id,
       accountNo: body.accountNo ?? "",
@@ -24,7 +24,10 @@ export async function PUT(
     });
     return Response.json({
       ok: true,
-      note: "Credentials rotated. autoTrading OFF. Fresh Startup Sync required.",
+      mode: result.mode,
+      brokerAccountId: result.brokerAccountId,
+      previousBrokerAccountId: result.previousBrokerAccountId ?? null,
+      note: result.note,
     });
   } catch (err) {
     if (err instanceof AuthError) {

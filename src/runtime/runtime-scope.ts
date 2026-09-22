@@ -85,6 +85,12 @@ export function getRuntimeScope(brokerAccountId: string): RuntimeScope | undefin
   return scopes.get(brokerAccountId);
 }
 
+/** Drop cached scope after credential rotate / account switch so KIS client rebuilds. */
+export function invalidateRuntimeScope(brokerAccountId: string): void {
+  scopes.delete(brokerAccountId);
+  startupDoneByAccount.delete(brokerAccountId);
+}
+
 export function resetRuntimeScopesForTest(): void {
   scopes.clear();
   startupDoneByAccount.clear();

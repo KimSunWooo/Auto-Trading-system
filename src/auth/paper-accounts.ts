@@ -171,7 +171,12 @@ export async function rotatePaperCredentials(input: {
   appKey: string;
   appSecret: string;
   accountNo: string;
-}): Promise<void> {
+}): Promise<{
+  mode: "rotate" | "switch";
+  brokerAccountId: string;
+  previousBrokerAccountId?: string;
+  note: string;
+}> {
   await ensureAuthSchema();
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL not configured");
@@ -184,6 +189,133 @@ export async function rotatePaperCredentials(input: {
   if (!account || account.userId !== input.userId) {
     throw new Error("Broker account not owned by current user");
   }
+
+  const existingSecret = await loadPaperSecretForAccount(input.brokerAccountId);
+  const nextNo = input.accountNo.trim();
+  const prevNo = existingSecret?.accountNo?.trim() ?? "";
+
+  // Same account number (or first-time credentials on this row) → rotate in place.
+  if (!prevNo || normalizeAccountNo(prevNo) === normalizeAccountNo(nextNo)) {
+    await rotateCredentialsInPlace({
+      userId: input.userId,
+      brokerAccountId: input.brokerAccountId,
+      appKey: input.appKey,
+      appSecret: input.appSecret,
+      accountNo: nextNo,
+    });
+    const { invalidateRuntimeScope, markScopeStartupSyncDone } = await import(
+      "@/src/runtime/runtime-scope"
+    );
+    invalidateRuntimeScope(input.brokerAccountId);
+    markScopeStartupSyncDone(input.brokerAccountId, false);
+    await disableAutoTradingForAccount(input.brokerAccountId);
+    return {
+      mode: "rotate",
+      brokerAccountId: input.brokerAccountId,
+      note: "Same account number — credentials rotated. autoTrading OFF. Fresh Startup Sync required.",
+    };
+  }
+
+  // Different account number → create new broker account; preserve old history.
+  await assertAccountSwitchSafe(input.brokerAccountId);
+  await disableAutoTradingForAccount(input.brokerAccountId);
+
+  const secret: PaperCredentialSecret = {
+    appKey: input.appKey.trim(),
+    appSecret: input.appSecret.trim(),
+    accountNo: nextNo,
+  };
+  const validated = await validatePaperCredentials(secret);
+  if (!validated.ok) throw new Error(validated.error ?? "validation failed");
+
+  await db
+    .update(schema.brokerAccounts)
+    .set({ status: "DISABLED", isDefault: false })
+    .where(eq(schema.brokerAccounts.id, input.brokerAccountId));
+
+  const created = await connectPaperAccount({
+    userId: input.userId,
+    alias: account.displayName || "KIS PAPER",
+    accountNo: secret.accountNo,
+    appKey: secret.appKey,
+    appSecret: secret.appSecret,
+  });
+
+  const { invalidateRuntimeScope, markScopeStartupSyncDone } = await import(
+    "@/src/runtime/runtime-scope"
+  );
+  invalidateRuntimeScope(input.brokerAccountId);
+  markScopeStartupSyncDone(input.brokerAccountId, false);
+
+  return {
+    mode: "switch",
+    brokerAccountId: created.id,
+    previousBrokerAccountId: input.brokerAccountId,
+    note: "Different account number — new broker account created. Old account DISABLED; history preserved.",
+  };
+}
+
+function normalizeAccountNo(value: string): string {
+  return value.replace(/[\s-]/g, "");
+}
+
+async function disableAutoTradingForAccount(brokerAccountId: string): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  await db
+    .update(schema.tradingAccountState)
+    .set({ autoTradingEnabled: false })
+    .where(eq(schema.tradingAccountState.brokerAccountId, brokerAccountId));
+  try {
+    const { createTradingStateStore } = await import("@/src/runtime/trading-state-store");
+    const store = createTradingStateStore({
+      statePath: path.join(accountDataDir(brokerAccountId), "state.json"),
+    });
+    await store.mutateStore((state) => ({
+      ...state,
+      settings: { ...state.settings, autoTrading: false },
+    }));
+  } catch {
+    // State file may not exist yet.
+  }
+}
+
+async function assertAccountSwitchSafe(brokerAccountId: string): Promise<void> {
+  try {
+    const { createTradingStateStore } = await import("@/src/runtime/trading-state-store");
+    const store = createTradingStateStore({
+      statePath: path.join(accountDataDir(brokerAccountId), "state.json"),
+    });
+    const state = await store.getState();
+    if (state.settings.autoTrading) {
+      throw new Error("Turn off autoTrading before changing account number");
+    }
+    if (state.orders.some((o) => o.status === "unknown")) {
+      throw new Error("UNKNOWN orders present — resolve before changing account number");
+    }
+    if (state.orders.some((o) => o.status === "pending")) {
+      throw new Error("Pending/open orders present — resolve before changing account number");
+    }
+    if (state.startupSync?.status === "SYNCING") {
+      throw new Error("Startup Sync is running — wait before changing account number");
+    }
+  } catch (err) {
+    if (err instanceof Error && /autoTrading|UNKNOWN|Pending|Startup Sync/.test(err.message)) {
+      throw err;
+    }
+    // Missing state file is OK for a fresh account.
+  }
+}
+
+async function rotateCredentialsInPlace(input: {
+  userId: string;
+  brokerAccountId: string;
+  appKey: string;
+  appSecret: string;
+  accountNo: string;
+}): Promise<void> {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_URL not configured");
   const secret: PaperCredentialSecret = {
     appKey: input.appKey.trim(),
     appSecret: input.appSecret.trim(),
@@ -221,10 +353,6 @@ export async function rotatePaperCredentials(input: {
     .update(schema.brokerAccounts)
     .set({ accountNumberMasked: maskAccountNumber(secret.accountNo) })
     .where(eq(schema.brokerAccounts.id, input.brokerAccountId));
-  await db
-    .update(schema.tradingAccountState)
-    .set({ autoTradingEnabled: false })
-    .where(eq(schema.tradingAccountState.brokerAccountId, input.brokerAccountId));
 }
 
 export async function loadPaperSecretForAccount(
