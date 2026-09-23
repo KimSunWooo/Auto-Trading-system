@@ -1,0 +1,3 @@
+단축코드|표준코드|한글종목명|영문종목명|시장구분
+900110|KR7900110000|이스트아시아홀딩스|East Asia Holdings|KONEX
+900270|KR7900270002|헝셩그룹|Heng Sheng Group|KONEX

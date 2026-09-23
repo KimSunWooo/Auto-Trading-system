@@ -1,0 +1,5 @@
+단축코드	표준코드	한글종목명	영문종목명	시장구분
+247540	KR7247540008	에코프로비엠	EcoPro BM	KOSDAQ
+086520	KR7086520004	에코프로	EcoPro	KOSDAQ
+196170	KR7196170005	알테오젠	Alteogen	KOSDAQ
+041510	KR7041510009	에스엠	SM Entertainment	KOSDAQ

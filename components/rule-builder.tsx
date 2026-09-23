@@ -1,14 +1,15 @@
-"use client";
-
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import type { ConditionKind, UserRule } from "@/src/rules/params";
 import { blankRule } from "@/src/rules/params";
 import { AdminPresetBar } from "@/components/admin-preset-bar";
+import { InstrumentSearch } from "@/components/stock-select";
 
 export type RuleDraft = {
   ticker: string;
+  instrumentId?: string;
+  instrumentKey?: string;
   name: string;
   kind: ConditionKind;
   intervalSec: string;
@@ -25,6 +26,8 @@ export type RuleDraft = {
 export function emptyDraft(): RuleDraft {
   return {
     ticker: "",
+    instrumentId: undefined,
+    instrumentKey: undefined,
     name: "",
     kind: "interval",
     intervalSec: "",
@@ -44,6 +47,8 @@ export function ruleToDraft(rule?: Partial<UserRule> | null): RuleDraft {
   const base = blankRule(rule);
   return {
     ticker: base.ticker,
+    instrumentId: base.instrumentId,
+    instrumentKey: base.instrumentKey,
     name: base.name,
     kind: base.kind,
     intervalSec: String(Math.round(base.intervalMs / 1000)),
@@ -63,6 +68,8 @@ export function draftToRule(draft: RuleDraft, id?: string): UserRule {
     id,
     name: draft.name,
     ticker: draft.ticker,
+    instrumentId: draft.instrumentId,
+    instrumentKey: draft.instrumentKey,
     kind: draft.kind,
     intervalMs: Math.max(1, Number(draft.intervalSec) || 60) * 1000,
     fastMa: Number(draft.fastMa) || 5,
@@ -92,13 +99,19 @@ export function RuleBuilder({
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <AdminPresetBar currentTicker={value.ticker} onApply={(next) => onChange({ ...value, ...next })} />
-      <Field label="종목코드 (6자리)">
-        <Input
-          inputMode="numeric"
-          maxLength={6}
-          placeholder="직접 입력"
+      <Field label="종목 (코드·이름 검색)">
+        <InstrumentSearch
           value={value.ticker}
-          onChange={(event) => patch({ ticker: event.target.value.replace(/\D/g, "").slice(0, 6) })}
+          legacySixDigitOnly
+          country="KR"
+          placeholder="종목코드 6자리 또는 종목명"
+          onChange={(ticker, pick) =>
+            patch({
+              ticker,
+              instrumentId: pick?.instrumentId,
+              instrumentKey: pick?.instrumentKey,
+            })
+          }
         />
       </Field>
       <Field label="조건식 이름 (선택)">

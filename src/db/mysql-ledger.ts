@@ -81,28 +81,70 @@ export class MysqlSession implements LedgerSession {
   }
 
   async upsertBrokerAccount(row: BrokerAccountRow): Promise<BrokerAccountRow> {
+    if (
+      row.broker.toLowerCase() === "kis" &&
+      row.environment.toUpperCase() === "PAPER" &&
+      row.status === "ACTIVE" &&
+      (row.physicalAccountFingerprint == null || row.physicalAccountFingerprint === "")
+    ) {
+      throw new Error("ACTIVE kis/PAPER broker_account requires physicalAccountFingerprint");
+    }
+
+    const insertValues: {
+      id: string;
+      userId: string;
+      broker: string;
+      environment: string;
+      displayName: string;
+      accountNumberMasked: string | null;
+      baseCurrency: string;
+      status: string;
+      isDefault: boolean;
+      credentialRef: string | null;
+      physicalAccountFingerprint?: string | null;
+    } = {
+      id: row.id,
+      userId: row.userId,
+      broker: row.broker,
+      environment: row.environment,
+      displayName: row.displayName,
+      accountNumberMasked: row.accountNumberMasked,
+      baseCurrency: row.baseCurrency,
+      status: row.status,
+      isDefault: row.isDefault,
+      credentialRef: row.credentialRef,
+    };
+    if (row.physicalAccountFingerprint !== undefined) {
+      insertValues.physicalAccountFingerprint = row.physicalAccountFingerprint;
+    }
+
+    const updateSet: {
+      displayName: string;
+      accountNumberMasked: string | null;
+      isDefault: boolean;
+      credentialRef: string | null;
+      status?: string;
+      physicalAccountFingerprint?: string | null;
+    } = {
+      displayName: row.displayName,
+      accountNumberMasked: row.accountNumberMasked,
+      // Do not force ACTIVE — preserves DISABLED physical-ownership releases.
+      isDefault: row.isDefault,
+      credentialRef: row.credentialRef,
+    };
+    // Mirror accounts-owner path may force DISABLED on the bootstrap row.
+    if (row.status === "DISABLED") {
+      updateSet.status = "DISABLED";
+    }
+    if (row.physicalAccountFingerprint !== undefined) {
+      updateSet.physicalAccountFingerprint = row.physicalAccountFingerprint;
+    }
+
     await this.db
       .insert(schema.brokerAccounts)
-      .values({
-        id: row.id,
-        userId: row.userId,
-        broker: row.broker,
-        environment: row.environment,
-        displayName: row.displayName,
-        accountNumberMasked: row.accountNumberMasked,
-        baseCurrency: row.baseCurrency,
-        status: row.status,
-        isDefault: row.isDefault,
-        credentialRef: row.credentialRef,
-      })
+      .values(insertValues)
       .onDuplicateKeyUpdate({
-        set: {
-          displayName: row.displayName,
-          accountNumberMasked: row.accountNumberMasked,
-          // Do not force ACTIVE — preserves DISABLED physical-ownership releases.
-          isDefault: row.isDefault,
-          credentialRef: row.credentialRef,
-        },
+        set: updateSet,
       });
     return row;
   }
@@ -120,6 +162,7 @@ export class MysqlSession implements LedgerSession {
       status: row.status,
       isDefault: Boolean(row.isDefault),
       credentialRef: row.credentialRef,
+      physicalAccountFingerprint: row.physicalAccountFingerprint ?? null,
     }));
   }
 
@@ -144,6 +187,8 @@ export class MysqlSession implements LedgerSession {
         market: row.market,
         symbol: row.symbol,
         displayName: row.displayName,
+        koreanName: row.koreanName ?? null,
+        englishName: row.englishName ?? null,
         currency: row.currency,
         kisExchangeCode: row.kisExchangeCode,
         instrumentType: row.instrumentType,
@@ -152,6 +197,8 @@ export class MysqlSession implements LedgerSession {
       .onDuplicateKeyUpdate({
         set: {
           displayName: row.displayName,
+          koreanName: row.koreanName ?? null,
+          englishName: row.englishName ?? null,
           kisExchangeCode: row.kisExchangeCode,
           isActive: row.isActive,
         },
@@ -169,6 +216,8 @@ export class MysqlSession implements LedgerSession {
       market: row.market,
       symbol: row.symbol,
       displayName: row.displayName,
+      koreanName: row.koreanName ?? null,
+      englishName: row.englishName ?? null,
       currency: row.currency,
       kisExchangeCode: row.kisExchangeCode,
       instrumentType: row.instrumentType,

@@ -4,6 +4,10 @@ export type UserRule = {
   id: string;
   name: string;
   ticker: string;
+  /** Optional instrument master id (UUID). Additive — legacy rules omit it. */
+  instrumentId?: string;
+  /** Optional canonical key e.g. KR:KOSPI:005930. Additive. */
+  instrumentKey?: string;
   kind: ConditionKind;
   /** 실행 주기 (interval 조건식). */
   intervalMs: number;
@@ -60,7 +64,7 @@ export function isLegacyPlaybookId(id: string | undefined): boolean {
 }
 
 export function blankRule(partial: Partial<UserRule> = {}): UserRule {
-  return {
+  const rule: UserRule = {
     id: partial.id ?? crypto.randomUUID(),
     name: partial.name ?? "",
     ticker: partial.ticker ?? "",
@@ -76,6 +80,9 @@ export function blankRule(partial: Partial<UserRule> = {}): UserRule {
     enabled: partial.enabled ?? true,
     budget: partial.budget ?? 0,
   };
+  if (partial.instrumentId) rule.instrumentId = partial.instrumentId;
+  if (partial.instrumentKey) rule.instrumentKey = partial.instrumentKey;
+  return rule;
 }
 
 function parseKind(value: unknown): ConditionKind {
@@ -94,10 +101,20 @@ export function parseUserRule(raw: unknown, fallbackId?: string): UserRule | nul
   const kind = parseKind(input.kind);
   const fastMa = Math.round(asPositive(input.fastMa) ?? 5);
   const slowMa = Math.round(asPositive(input.slowMa) ?? 20);
+  const instrumentId =
+    typeof input.instrumentId === "string" && input.instrumentId.trim()
+      ? input.instrumentId.trim()
+      : undefined;
+  const instrumentKey =
+    typeof input.instrumentKey === "string" && input.instrumentKey.trim()
+      ? input.instrumentKey.trim()
+      : undefined;
   return {
     id,
     name: typeof input.name === "string" ? input.name.trim() : "",
     ticker,
+    ...(instrumentId ? { instrumentId } : {}),
+    ...(instrumentKey ? { instrumentKey } : {}),
     kind,
     intervalMs: Math.round(asPositive(input.intervalMs) ?? 60_000),
     fastMa,

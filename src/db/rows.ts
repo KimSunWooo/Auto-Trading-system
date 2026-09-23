@@ -19,6 +19,13 @@ export type BrokerAccountRow = {
   status: string;
   isDefault: boolean;
   credentialRef: string | null;
+  /**
+   * UPSERT semantics:
+   * - undefined → leave existing fingerprint unchanged
+   * - null → explicit release (DISABLED / claim drop)
+   * - string → store fingerprint
+   */
+  physicalAccountFingerprint?: string | null;
 };
 
 export type InstrumentRow = {
@@ -27,6 +34,8 @@ export type InstrumentRow = {
   market: string;
   symbol: string;
   displayName: string;
+  koreanName?: string | null;
+  englishName?: string | null;
   currency: string;
   kisExchangeCode: string | null;
   instrumentType: string;
