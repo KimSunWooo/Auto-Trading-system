@@ -33,6 +33,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StockSelect } from "@/components/stock-select";
+import type { InstrumentPick } from "@/components/stock-select";
 import { Price } from "@/components/price";
 import { api } from "@/hooks/use-trading";
 import {
@@ -61,6 +62,8 @@ export function ConditionsPanel({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [code, setCode] = useState("");
+  const [instrumentId, setInstrumentId] = useState<string | undefined>();
+  const [instrumentKey, setInstrumentKey] = useState<string | undefined>();
   const [side, setSide] = useState<Side>("buy");
   const [watchBasis, setWatchBasis] = useState<WatchBasis>("last");
   const [operator, setOperator] = useState<CompareOp>("lte");
@@ -81,9 +84,11 @@ export function ConditionsPanel({
     return `${quote.name} ${basisLabel(watchBasis)}가 ${formatWon(Number(price) || quote.price)} ${opLabel(operator)}이면 ${sideLabel(side)} ${qty}주`;
   }, [operator, qty, quote, side, triggerPrice, watchBasis]);
 
-  function resetForm(nextCode = code) {
+  function resetForm(nextCode = code, pick?: InstrumentPick) {
     const next = state.quotes[nextCode];
     setCode(nextCode);
+    setInstrumentId(pick?.instrumentId);
+    setInstrumentKey(pick?.instrumentKey);
     setTriggerPrice(next ? String(next.price) : "");
     setLimitPrice(next ? String(next.price) : "");
     setQty("10");
@@ -102,6 +107,8 @@ export function ConditionsPanel({
         method: "POST",
         body: JSON.stringify({
           code,
+          instrumentId,
+          instrumentKey,
           side,
           watchBasis,
           operator,
@@ -285,8 +292,10 @@ export function ConditionsPanel({
               <StockSelect
                 value={code}
                 quotes={state.quotes}
-                onChange={(nextCode) => {
+                onChange={(nextCode, pick) => {
                   setCode(nextCode);
+                  setInstrumentId(pick?.instrumentId);
+                  setInstrumentKey(pick?.instrumentKey);
                   const next = state.quotes[nextCode];
                   if (next) {
                     setTriggerPrice(String(next.price));

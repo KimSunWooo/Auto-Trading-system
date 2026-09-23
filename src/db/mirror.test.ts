@@ -41,6 +41,8 @@ function paperEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     BROKER: "kis",
     KIS_MODE: "paper",
     TRADING_MODE: "paper",
+    // Mirror tests project ledger rows; accounts-owner keeps bootstrap non-ACTIVE.
+    PAPER_RUNTIME_OWNER: "accounts",
     ...extra,
   };
 }

@@ -24,6 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StockSelect } from "@/components/stock-select";
+import type { InstrumentPick } from "@/components/stock-select";
 import { api } from "@/hooks/use-trading";
 import { formatSeoul, formatWon, intervalLabel } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
@@ -44,6 +45,7 @@ export function DcaPanel({
   onState: (next: PublicState) => void;
 }) {
   const [code, setCode] = useState("");
+  const [instrumentPick, setInstrumentPick] = useState<InstrumentPick | undefined>();
   const [amount, setAmount] = useState("100000");
   const [intervalSec, setIntervalSec] = useState("60");
   const [busy, setBusy] = useState(false);
@@ -56,6 +58,8 @@ export function DcaPanel({
           method: "POST",
           body: JSON.stringify({
             code,
+            instrumentId: instrumentPick?.instrumentId,
+            instrumentKey: instrumentPick?.instrumentKey,
             amountKrw: Number(amount),
             intervalSec: Number(intervalSec),
           }),
@@ -81,7 +85,14 @@ export function DcaPanel({
         <CardContent className="space-y-3 pt-4">
           <div className="space-y-1.5">
             <Label>종목</Label>
-            <StockSelect value={code} quotes={state.quotes} onChange={setCode} />
+            <StockSelect
+              value={code}
+              quotes={state.quotes}
+              onChange={(next, pick) => {
+                setCode(next);
+                setInstrumentPick(pick);
+              }}
+            />
           </div>
           <div className="space-y-1.5">
             <Label>회차 금액</Label>

@@ -8,6 +8,8 @@ export const dynamic = "force-dynamic";
 
 type Body = {
   code?: string;
+  instrumentId?: string;
+  instrumentKey?: string;
   side?: Side;
   watchBasis?: WatchBasis;
   operator?: CompareOp;
@@ -43,6 +45,8 @@ export async function POST(request: Request) {
     const cond: AutoCondition = {
       id: crypto.randomUUID(),
       code: stock.code,
+      instrumentId: body.instrumentId,
+      instrumentKey: body.instrumentKey,
       name: stock.name,
       side: body.side === "sell" ? "sell" : "buy",
       watchBasis: body.watchBasis ?? "last",

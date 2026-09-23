@@ -47,6 +47,33 @@
 ## 아키텍처
 
 ```
+Login → Session → PAPER Account Binding Verification
+      → Fresh Broker Balance (pagination complete)
+      → Startup Sync → Exact Position Match
+      → Reconciliation → Trading Ready
+      → Risk → Intent → Order → Execution → Position
+```
+
+Instrument / quote 경계:
+
+```
+Instrument Master (DB)     → searchable catalog (KOSPI/KOSDAQ/KONEX + overseas)
+Search                     → metadata only · 0 KIS REST · 0 WS subscribe
+User Selection             → Rule / Condition / DCA (instrumentId/Key additive)
+Realtime Subscription      → enabled rule · condition · DCA · held · working only
+Representative Dashboard   → Priority 3 · failure = stale card · never blocks trading
+Execution                  → existing safe trading core (H0STCNT0 / Risk / Intent)
+```
+
+AI 경계 (이번 repo 범위 밖):
+
+```
+AI_Trading_Management (future) → instrumentId / recommended condition
+                ↓
+Auto-Trading-system            → user-selected / externally proposed → safe execution
+```
+
+```
                   KIS PAPER
                      │
        ┌─────────────┴─────────────┐
@@ -66,9 +93,12 @@ Strategy / Risk / Intent / KisBroker → REST ORDER
 
 PAPER authority 분리:
 
-- Broker money: `dnca_tot_amt` (예수금) · `ord_psbl_cash` (주문가능)
+- Broker money: `dnca_tot_amt` (**KIS 예수금**) · `ord_psbl_cash` (**KIS 주문가능금액**)
 - Market price: H0STCNT0 WebSocket (freshAt ≤ 15s, connected)
-- Strategy budget: rule allocation only
+- Strategy budget: **전략 배정 잔액** (`state.cash`) — local allocation only · never labeled as KIS 예수금
+
+ACTIVE kis/PAPER `broker_accounts` must carry non-null `physical_account_fingerprint`.
+`PAPER_RUNTIME_OWNER=accounts` → bootstrap mirror stays DISABLED (never reactivated ACTIVE).
 
 ```
 src/
@@ -76,14 +106,22 @@ src/
     IBroker.ts          # getCurrentPrice / buyMarket / buyLimit / sellMarket / sellLimit
     MockBroker.ts       # 로컬 페이퍼 북
     KisBroker.ts        # 한국투자증권 Open API
+  instruments/
+    sync.ts / parsers   # Master download→validate→stage→apply (source-isolated)
+    search.ts           # DB-only autocomplete
+    dashboard.ts        # Representative tickers (config, not UI hardcode)
   market-data/
     h0stcnt0.ts         # Official H0STCNT0 columns + parser
-    kis-realtime-quote-hub.ts  # Persistent WS session
+    kis-realtime-quote-hub.ts  # Persistent WS session · priority eviction
     kis-realtime-registry.ts   # AppKey-scoped shared hub
     ws-quote-feed.ts    # Project WS → AppState (no REST price poll)
+    quote-priority.ts   # execution > preview > dashboard
   accounts/
     OrderManager.ts     # 버킷 게이트 · 정규장 락 · 면책 락 · 룰 쿨다운
     execution-policy.ts # 정규장 검증 · ±3% 지정가 밴드 · 분할
+  auth/
+    select-paper-account.ts  # strict default/ACTIVE selection (no ambiguous fallback)
+    paper-account-verify.ts  # fresh KIS balance + fingerprint chain
   rules/
     params.ts           # UserRule · 빈 설정 · 면책 문구
     config.ts           # data/strategy-config.json 로드/저장
@@ -106,6 +144,12 @@ src/
 - Next가 죽어도 `npm run emergency:stop` 으로 신규 주문을 막고 KIS 미체결을 취소할 수 있습니다. 포지션 청산은 `npm run emergency:flatten` 입니다. 두 명령은 섞이지 않습니다.
 
 로컬 장부(`data/paper-account.json`)는 한도와 UI용입니다. KIS 모의·실전 잔고·수수료와 숫자가 다를 수 있습니다.
+
+APIs:
+
+- `GET /api/instruments/search` — Master DB only
+- `GET /api/instruments/dashboard` — representative cards (no trading circuit)
+- `GET /api/accounts/current/verify` — strict PAPER binding + fresh balance (read-only)
 
 ## 실행 (로컬 모의)
 

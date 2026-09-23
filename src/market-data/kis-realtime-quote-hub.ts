@@ -24,6 +24,7 @@ import {
   type ApprovalFetch,
 } from "@/src/market-data/kis-approval";
 import { createServerWebSocketFactory } from "@/src/market-data/kis-ws-node";
+import { isLowPriorityConsumer } from "@/src/market-data/quote-priority";
 
 export type RealtimeQuoteSnapshot = {
   ticker: string;
@@ -201,11 +202,21 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
     }
 
     const prevUnion = this.unionDesired();
-    const provisional = this.computeUnionWith(id, nextConsumer);
+    let provisional = this.computeUnionWith(id, nextConsumer);
     if (provisional.size > this.limit) {
-      this.subscribeErrors += 1;
-      const overflow = [...provisional].find((t) => !prevUnion.has(t)) ?? [...provisional][this.limit]!;
-      throw new SubscriptionCapacityError(overflow, this.limit);
+      // Execution: evict dashboard/preview unique tickers first (WS5).
+      // Low-priority: soft-fail — never open trading circuit for dashboard failure (WS4).
+      if (!isLowPriorityConsumer(id)) {
+        this.evictLowPriorityForCapacity(provisional.size - this.limit, id, nextConsumer);
+        provisional = this.computeUnionWith(id, nextConsumer);
+      }
+      if (provisional.size > this.limit) {
+        if (isLowPriorityConsumer(id)) return;
+        this.subscribeErrors += 1;
+        const overflow =
+          [...provisional].find((t) => !prevUnion.has(t)) ?? [...provisional][this.limit]!;
+        throw new SubscriptionCapacityError(overflow, this.limit);
+      }
     }
 
     if (nextConsumer.size === 0) this.consumerSubscriptions.delete(id);
@@ -216,6 +227,41 @@ export class KisRealtimeQuoteHub implements RealtimeQuoteHub {
 
     if (nextUnion.size > 0 && this.state !== "CONNECTED" && this.state !== "CONNECTING") {
       await this.start();
+    }
+  }
+
+  /** Drop tickers unique to dashboard:/preview: consumers until `need` slots free. */
+  private evictLowPriorityForCapacity(
+    need: number,
+    requestingId: string,
+    requestingTickers: Set<string>,
+  ): void {
+    if (need <= 0) return;
+    let remaining = need;
+    for (const [cid, set] of [...this.consumerSubscriptions.entries()]) {
+      if (remaining <= 0) break;
+      if (cid === requestingId || !isLowPriorityConsumer(cid)) continue;
+      const next = new Set(set);
+      for (const t of [...next]) {
+        if (remaining <= 0) break;
+        if (requestingTickers.has(t)) {
+          // Still needed by execution — remove only from low-priority bookkeeping.
+          next.delete(t);
+          continue;
+        }
+        let heldElsewhere = false;
+        for (const [otherId, otherSet] of this.consumerSubscriptions) {
+          if (otherId === cid) continue;
+          if (otherSet.has(t)) {
+            heldElsewhere = true;
+            break;
+          }
+        }
+        next.delete(t);
+        if (!heldElsewhere) remaining -= 1;
+      }
+      if (next.size === 0) this.consumerSubscriptions.delete(cid);
+      else this.consumerSubscriptions.set(cid, next);
     }
   }
 

@@ -30,6 +30,7 @@ import { useTrading, api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
 import { OnboardingWizard } from "@/components/onboarding-wizard";
+import { PaperAccountVerifyBanner } from "@/components/paper-account-verify";
 import { toast } from "sonner";
 
 const TABS = [
@@ -100,12 +101,12 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             <div className="hidden text-right sm:block">
               {state.kisBalance ? (
                 <>
-                  <div className="text-[11px] text-muted-foreground">예수금 (KIS)</div>
+                  <div className="text-[11px] text-muted-foreground">KIS 예수금</div>
                   <div className="text-sm tabular-nums font-medium">
                     {formatWon(state.kisBalance.cash)}
                   </div>
                   <div className="text-[10px] tabular-nums text-muted-foreground">
-                    주문가능{" "}
+                    KIS 주문가능{" "}
                     {state.kisBalance.orderableCash != null
                       ? formatWon(state.kisBalance.orderableCash)
                       : "—"}
@@ -123,6 +124,7 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
       </header>
 
       <RuntimeStatusStrip state={state} />
+      <PaperAccountVerifyBanner />
 
       <div className="border-b bg-muted/40">
         <p className="mx-auto w-full max-w-7xl px-4 py-2 text-xs text-muted-foreground">

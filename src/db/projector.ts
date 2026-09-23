@@ -27,6 +27,10 @@ import { money, moneyNumber } from "@/src/db/money";
 import { mysqlDateUtc, toMysqlUtc } from "@/src/db/time";
 import { applyExecutionToTrade, openTrade } from "@/src/db/trade-cycle";
 import type { ExecutionRow, OrderRow, PositionRow, ReconItemRow } from "@/src/db/rows";
+import {
+  assertActivePaperFingerprint,
+  planMirrorPaperBrokerAccount,
+} from "@/src/db/mirror-paper-ownership";
 import { findOrderByIntent } from "@/src/runtime/intents";
 import {
   domesticCashRowsFromState,
@@ -177,6 +181,13 @@ export async function projectAppState(
       createdAt: now,
       updatedAt: now,
     });
+    const paperPlan = planMirrorPaperBrokerAccount(broker, environment, env);
+    assertActivePaperFingerprint(
+      broker,
+      environment,
+      paperPlan.status,
+      paperPlan.physicalAccountFingerprint,
+    );
     const brokerAccount = await tx.upsertBrokerAccount({
       id: stableId("broker-account", `${user.id}:${broker}:${environment}`),
       userId: user.id,
@@ -185,9 +196,10 @@ export async function projectAppState(
       displayName: `${broker} ${environment}`,
       accountNumberMasked: maskedAccount(env),
       baseCurrency: "KRW",
-      status: "ACTIVE",
-      isDefault: true,
+      status: paperPlan.status,
+      isDefault: paperPlan.isDefault,
       credentialRef: credentialRef(env),
+      physicalAccountFingerprint: paperPlan.physicalAccountFingerprint,
     });
     if (brokerAccount.credentialRef) {
       await tx.upsertCredentialRef(brokerAccount.id, brokerAccount.credentialRef);

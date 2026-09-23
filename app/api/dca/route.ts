@@ -9,6 +9,8 @@ export async function POST(request: Request) {
   return withUserTradingRuntime(async (rt) => {
     const body = (await request.json()) as {
       code?: string;
+      instrumentId?: string;
+      instrumentKey?: string;
       amountKrw?: number;
       intervalSec?: number;
     };
@@ -30,6 +32,8 @@ export async function POST(request: Request) {
     const plan: DcaPlan = {
       id: crypto.randomUUID(),
       code: stock.code,
+      instrumentId: body.instrumentId,
+      instrumentKey: body.instrumentKey,
       name: stock.name,
       amountKrw: Math.round(amountKrw),
       intervalSec,

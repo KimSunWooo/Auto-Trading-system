@@ -178,16 +178,16 @@ export function InstrumentSearch({
   );
 }
 
-/** @deprecated Prefer InstrumentSearch — kept as alias for gradual migration. */
+/** Prefer InstrumentSearch — kept as alias for conditions/DCA with pick metadata. */
 export function StockSelect(props: {
   value: string;
-  onChange: (code: string) => void;
+  onChange: (code: string, pick?: InstrumentPick) => void;
   quotes?: Record<string, Quote>;
 }) {
   return (
     <InstrumentSearch
       value={props.value}
-      onChange={(code) => props.onChange(code)}
+      onChange={(code, pick) => props.onChange(code, pick)}
       quotes={props.quotes}
       legacySixDigitOnly
       country="KR"

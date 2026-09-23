@@ -241,8 +241,36 @@ export class MemorySession implements LedgerSession {
   }
 
   async upsertBrokerAccount(row: BrokerAccountRow): Promise<BrokerAccountRow> {
+    if (
+      row.broker.toLowerCase() === "kis" &&
+      row.environment.toUpperCase() === "PAPER" &&
+      row.status === "ACTIVE" &&
+      (row.physicalAccountFingerprint == null || row.physicalAccountFingerprint === "")
+    ) {
+      throw new Error("ACTIVE kis/PAPER broker_account requires physicalAccountFingerprint");
+    }
     const existing = this.state.brokerAccounts.get(row.id);
-    const next = { ...(existing ?? row), ...row };
+    if (!existing) {
+      const inserted: BrokerAccountRow = {
+        ...row,
+        physicalAccountFingerprint:
+          row.physicalAccountFingerprint === undefined ? null : row.physicalAccountFingerprint,
+      };
+      this.state.brokerAccounts.set(inserted.id, inserted);
+      return inserted;
+    }
+    const next: BrokerAccountRow = {
+      ...existing,
+      displayName: row.displayName,
+      accountNumberMasked: row.accountNumberMasked,
+      isDefault: row.isDefault,
+      credentialRef: row.credentialRef,
+      // Do not force ACTIVE over DISABLED (mirror must not reactivate released bootstrap).
+      status: row.status === "DISABLED" ? "DISABLED" : existing.status,
+    };
+    if (row.physicalAccountFingerprint !== undefined) {
+      next.physicalAccountFingerprint = row.physicalAccountFingerprint;
+    }
     this.state.brokerAccounts.set(next.id, next);
     return next;
   }

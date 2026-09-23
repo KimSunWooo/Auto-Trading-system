@@ -2,14 +2,16 @@
  * Resolve authenticated user → owned PAPER account → RuntimeScope + stores.
  * Never falls back to bootstrap owner for normal USER requests.
  */
-import { and, eq } from "drizzle-orm";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { getDb } from "@/src/db/client";
 import * as schema from "@/src/db/schema";
 import { AuthError, requireUser } from "@/src/auth/guards";
 import type { AuthUser } from "@/src/auth/session";
 import { accountDataDir } from "@/src/auth/paper-accounts";
+import {
+  findDefaultPaperAccount,
+  PaperAccountSelectionError,
+} from "@/src/auth/select-paper-account";
 import {
   createAccountRuntimeScope,
   createBootstrapRuntimeScope,
@@ -42,36 +44,7 @@ export class AccountNotConnectedError extends Error {
   }
 }
 
-export async function findDefaultPaperAccount(userId: string) {
-  const db = getDb();
-  if (!db) throw new AuthError(503, "Database unavailable");
-  const rows = await db
-    .select()
-    .from(schema.brokerAccounts)
-    .where(
-      and(
-        eq(schema.brokerAccounts.userId, userId),
-        eq(schema.brokerAccounts.status, "ACTIVE"),
-        eq(schema.brokerAccounts.environment, "PAPER"),
-        eq(schema.brokerAccounts.isDefault, true),
-      ),
-    )
-    .limit(1);
-  if (rows[0]) return rows[0];
-  // Fallback: any ACTIVE PAPER for this user
-  const any = await db
-    .select()
-    .from(schema.brokerAccounts)
-    .where(
-      and(
-        eq(schema.brokerAccounts.userId, userId),
-        eq(schema.brokerAccounts.status, "ACTIVE"),
-        eq(schema.brokerAccounts.environment, "PAPER"),
-      ),
-    )
-    .limit(1);
-  return any[0] ?? null;
-}
+export { findDefaultPaperAccount, PaperAccountSelectionError };
 
 async function buildScopeForAccount(
   user: AuthUser,
@@ -100,10 +73,18 @@ async function buildScopeForAccount(
 /** Authenticated USER path — never bootstrap fallback. */
 export async function resolveCurrentTradingRuntime(): Promise<ResolvedTradingRuntime> {
   const user = await requireUser();
-  const account = await findDefaultPaperAccount(user.id);
-  if (!account) throw new AccountNotConnectedError();
-  const { scope, store, rules } = await buildScopeForAccount(user, account);
-  return { user, account, scope, store, rules };
+  try {
+    const account = await findDefaultPaperAccount(user.id);
+    if (!account) throw new AccountNotConnectedError();
+    const { scope, store, rules } = await buildScopeForAccount(user, account);
+    return { user, account, scope, store, rules };
+  } catch (err) {
+    if (err instanceof PaperAccountSelectionError) {
+      if (err.code === "ACCOUNT_NOT_CONNECTED") throw new AccountNotConnectedError(err.message);
+      throw err;
+    }
+    throw err;
+  }
 }
 
 /** Background worker path — resolve by owned ACTIVE PAPER account row (no session cookie). */
@@ -112,6 +93,9 @@ export async function resolveTradingRuntimeForAccount(
 ): Promise<Omit<ResolvedTradingRuntime, "user"> & { userId: string }> {
   if (account.status !== "ACTIVE" || account.environment !== "PAPER") {
     throw new AccountNotConnectedError("Broker account is not an ACTIVE PAPER account");
+  }
+  if (!account.physicalAccountFingerprint) {
+    throw new AccountNotConnectedError("ACTIVE PAPER account missing physical fingerprint");
   }
   const stubUser: AuthUser = {
     id: account.userId,
@@ -144,6 +128,12 @@ export function runtimeJsonError(err: unknown): Response {
     return Response.json({ error: err.message }, { status: err.status });
   }
   if (err instanceof AccountNotConnectedError) {
+    return Response.json(
+      { error: err.message, code: err.code },
+      { status: 409 },
+    );
+  }
+  if (err instanceof PaperAccountSelectionError) {
     return Response.json(
       { error: err.message, code: err.code },
       { status: 409 },

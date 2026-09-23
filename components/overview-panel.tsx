@@ -28,6 +28,7 @@ import {
   quoteDisplayKind,
   quoteFreshnessLabel,
 } from "@/src/runtime/quote-policy";
+import { RepresentativeDashboardPanel } from "@/components/paper-account-verify";
 
 function holdingRows(state: PublicState) {
   const rows = new Map<string, { name: string; kisQty: number; localQty: number }>();
@@ -118,6 +119,8 @@ export function OverviewPanel({
           hint={stats.winRatePct == null ? "청산된 매도가 없습니다" : "당일 매도 기준"}
         />
       </div>
+
+      <RepresentativeDashboardPanel />
 
       {state.controlledRun || state.runtime?.soakStatus ? (
         <Card size="sm" className="border-primary/30">
@@ -243,11 +246,11 @@ export function OverviewPanel({
           <CardContent className="space-y-3 pt-4 text-sm">
             <div className="grid gap-3 sm:grid-cols-3">
               <div>
-                <div className="text-xs text-muted-foreground">예수금 (dnca_tot_amt)</div>
+                <div className="text-xs text-muted-foreground">KIS 예수금 (dnca_tot_amt)</div>
                 <div className="tabular-nums font-medium">{formatWon(state.kisBalance.cash)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground">주문가능 (ord_psbl_cash)</div>
+                <div className="text-xs text-muted-foreground">KIS 주문가능금액 (ord_psbl_cash)</div>
                 <div className="tabular-nums font-medium">
                   {state.kisBalance.orderableCash != null
                     ? formatWon(state.kisBalance.orderableCash)

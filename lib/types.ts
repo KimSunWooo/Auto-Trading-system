@@ -60,6 +60,9 @@ export type Allocation = {
 export type AutoCondition = {
   id: string;
   code: string;
+  /** Additive master link — legacy conditions omit these. */
+  instrumentId?: string;
+  instrumentKey?: string;
   name: string;
   side: Side;
   watchBasis: WatchBasis;
@@ -84,6 +87,9 @@ export type AutoCondition = {
 export type DcaPlan = {
   id: string;
   code: string;
+  /** Additive master link — legacy DCA plans omit these. */
+  instrumentId?: string;
+  instrumentKey?: string;
   name: string;
   amountKrw: number;
   intervalSec: number;

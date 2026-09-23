@@ -48,6 +48,7 @@ export function createMysqlPool(env: EnvMap = process.env): mysql.Pool | null {
     database: cfg.database,
     waitForConnections: true,
     connectionLimit: 8,
+    connectTimeout: 5_000,
     enableKeepAlive: true,
     timezone: "Z",
     dateStrings: true,

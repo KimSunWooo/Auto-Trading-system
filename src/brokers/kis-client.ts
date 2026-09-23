@@ -103,6 +103,9 @@ export type KisAccountBalance = {
   /** 가수도정산금액 `prvs_rcdl_excc_amt`. Not orderable cash. */
   d2Cash: number;
   holdings: KisHolding[];
+  /** True only when continuation tokens were exhausted without hitting page cap. */
+  paginationComplete?: boolean;
+  pagesFetched?: number;
   nxdyExccAmt?: number;
   bfdyBuyAmt?: number;
   thdtBuyAmt?: number;
@@ -158,6 +161,7 @@ export interface KisApi {
   readonly liveEnabled: boolean;
   readonly issues: string[];
   readonly cano?: string;
+  readonly productCode?: string;
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
   inquireDailyCcld(): Promise<KisDayOrder[]>;
@@ -306,6 +310,10 @@ export class KisClient implements KisApi {
 
   get cano(): string {
     return this.config.cano;
+  }
+
+  get productCode(): string {
+    return this.config.productCode;
   }
 
   get host(): string {
@@ -536,8 +544,18 @@ export class KisClient implements KisApi {
     let thdtTlexAmt = 0;
     let fk = "";
     let nk = "";
+    const maxPages = 10;
+    let pagesFetched = 0;
+    let paginationComplete = false;
+    const seenTokens = new Set<string>();
 
-    for (let page = 0; page < 10; page += 1) {
+    for (let page = 0; page < maxPages; page += 1) {
+      const tokenKey = `${fk}|${nk}`;
+      if (page > 0 && seenTokens.has(tokenKey)) {
+        throw new Error("BALANCE_PAGINATION_INCOMPLETE: repeated continuation token");
+      }
+      if (page > 0) seenTokens.add(tokenKey);
+
       const json = await this.uapi(
         "GET",
         "/uapi/domestic-stock/v1/trading/inquire-balance",
@@ -559,6 +577,7 @@ export class KisClient implements KisApi {
           },
         },
       );
+      pagesFetched += 1;
       const raw1 = json.output1 ?? json.output ?? [];
       const rows = Array.isArray(raw1) ? (raw1 as Array<Record<string, unknown>>) : [];
       for (const row of rows) {
@@ -588,13 +607,27 @@ export class KisClient implements KisApi {
       }
       nk = String(json.ctx_area_nk100 ?? json.CTX_AREA_NK100 ?? "").trim();
       fk = String(json.ctx_area_fk100 ?? json.CTX_AREA_FK100 ?? "").trim();
-      if (!nk) break;
+      if (!nk) {
+        paginationComplete = true;
+        break;
+      }
+      if (rows.length === 0) {
+        throw new Error("BALANCE_PAGINATION_INCOMPLETE: empty page with continuation token");
+      }
+    }
+
+    if (!paginationComplete) {
+      throw new Error(
+        `BALANCE_PAGINATION_INCOMPLETE: page cap ${maxPages} reached with continuation token present`,
+      );
     }
 
     return {
       cash,
       d2Cash,
       holdings: [...holdings.values()],
+      paginationComplete: true,
+      pagesFetched,
       nxdyExccAmt,
       bfdyBuyAmt,
       thdtBuyAmt,
