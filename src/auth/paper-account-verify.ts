@@ -212,12 +212,23 @@ export async function verifyPaperAccountForUser(input: {
       if (!paginationComplete) {
         blockers.push("BALANCE_PAGINATION_INCOMPLETE");
       }
-      // Preflight one-shot orderable cash (PAPER). Uses Samsung as PDNO reference only.
+      // Preflight one-shot orderable cash (PAPER). Prefer a held ticker; else 005930.
+      // Uses local fresh KIS quote when present to avoid an extra REST price call.
       try {
-        const price = await client.inquirePrice("005930");
+        const refTicker =
+          holdings.find((h) => /^\d{6}$/.test(h.ticker))?.ticker ?? "005930";
+        const local = input.state?.quotes?.[refTicker];
+        let px =
+          local && local.source === "kis" && local.price > 0
+            ? Math.round(local.price)
+            : 0;
+        if (px < 1) {
+          const price = await client.inquirePrice(refTicker);
+          px = Math.max(1, Math.round(price.price || 1));
+        }
         const psbl = await client.inquirePsblOrder({
-          ticker: "005930",
-          price: Math.max(1, Math.round(price.price || 1)),
+          ticker: refTicker,
+          price: px,
         });
         orderableCash = psbl.orderableCash;
       } catch {
@@ -230,6 +241,12 @@ export async function verifyPaperAccountForUser(input: {
         blockers.push("BALANCE_PAGINATION_INCOMPLETE");
       } else {
         blockers.push("BROKER_BALANCE_QUERY_FAILED");
+        // Sanitized short detail for operators (no secrets / full account).
+        const short = msg
+          .replace(/[A-Za-z0-9+/_=-]{24,}/g, "[REDACTED]")
+          .replace(/\d{8,}/g, "[REDACTED]")
+          .slice(0, 120);
+        if (short) blockers.push(`BROKER_DETAIL:${short}`);
       }
     }
   } else if (input.skipLiveQuery) {
