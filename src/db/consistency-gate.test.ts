@@ -42,6 +42,8 @@ function paperEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     BROKER: "kis",
     KIS_MODE: "paper",
     TRADING_MODE: "paper",
+    // Mirror projection under test is not the trading owner — avoid ACTIVE+fingerprint requirement.
+    PAPER_RUNTIME_OWNER: "accounts",
     ...extra,
   };
 }

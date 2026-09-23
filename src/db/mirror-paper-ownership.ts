@@ -4,7 +4,6 @@
  */
 import { paperPhysicalAccountFingerprint } from "@/src/auth/crypto";
 import { loadKisConfig } from "@/src/brokers/kis-config";
-import { resolvePaperRuntimeOwner } from "@/src/runtime/paper-runtime-owner";
 
 export type EnvMap = Record<string, string | undefined>;
 
@@ -28,6 +27,9 @@ export class MirrorPaperOwnershipError extends Error {
  * Decide status/fingerprint for the env-backed bootstrap mirror row.
  * - PAPER_RUNTIME_OWNER=accounts|disabled → never ACTIVE; fingerprint null
  * - PAPER_RUNTIME_OWNER=bootstrap → ACTIVE only with computed fingerprint
+ *
+ * Uses the provided env snapshot only (does not consult process owner lock).
+ * Projection must remain deterministic for the env being mirrored.
  */
 export function planMirrorPaperBrokerAccount(
   broker: string,
@@ -43,17 +45,27 @@ export function planMirrorPaperBrokerAccount(
     };
   }
 
-  const resolved = resolvePaperRuntimeOwner(env, { freeze: false });
-  if (!resolved.ok) {
-    throw new MirrorPaperOwnershipError(resolved.error);
+  const raw = env.PAPER_RUNTIME_OWNER;
+  const hasExplicit = raw != null && String(raw).trim() !== "";
+  let owner: "bootstrap" | "accounts" | "disabled";
+  if (hasExplicit) {
+    const parsed = String(raw).trim().toLowerCase();
+    if (parsed !== "bootstrap" && parsed !== "accounts" && parsed !== "disabled") {
+      throw new MirrorPaperOwnershipError(
+        `Invalid PAPER_RUNTIME_OWNER=${JSON.stringify(String(raw))}; allowed: bootstrap|accounts|disabled`,
+      );
+    }
+    owner = parsed;
+  } else {
+    owner = "bootstrap";
   }
 
-  if (resolved.owner === "accounts" || resolved.owner === "disabled") {
+  if (owner === "accounts" || owner === "disabled") {
     return {
       status: "DISABLED",
       isDefault: false,
       physicalAccountFingerprint: null,
-      reason: `PAPER_RUNTIME_OWNER=${resolved.owner} — bootstrap mirror is not the trading owner`,
+      reason: `PAPER_RUNTIME_OWNER=${owner} — bootstrap mirror is not the trading owner`,
     };
   }
 
