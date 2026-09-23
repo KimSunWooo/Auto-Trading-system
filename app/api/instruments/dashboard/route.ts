@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     let kisClient = null;
     try {
       const rt = await resolveCurrentTradingRuntime();
-      const state = rt.store.readState();
+      const state = await rt.store.getState();
       localQuotes = state.quotes ?? {};
       kisClient = rt.scope.kisClient ?? null;
     } catch {

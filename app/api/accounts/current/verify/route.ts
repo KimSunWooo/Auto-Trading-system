@@ -16,7 +16,7 @@ export async function GET() {
     let state = null;
     try {
       const runtime = await resolveCurrentTradingRuntime();
-      state = runtime.store.readState();
+      state = await runtime.store.getState();
     } catch {
       state = null;
     }

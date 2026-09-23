@@ -8,6 +8,7 @@ function paperCfg(): KisConfig {
     environment: "paper",
     mode: "paper",
     host: "https://openapivts.koreainvestment.com:29443",
+    websocketUrl: "ws://ops.koreainvestment.com:31000",
     appKey: "k".repeat(20),
     appSecret: "s".repeat(20),
     cano: "50123456",
@@ -16,8 +17,9 @@ function paperCfg(): KisConfig {
     configured: true,
     liveEnabled: false,
     issues: [],
-    tokenCacheKey: "test",
-  } as KisConfig;
+    tokenCacheKey: "kis:token:paper",
+    credentialSet: "paper",
+  };
 }
 
 test("BV6 page cap + continuation token → FAIL", async () => {

@@ -107,7 +107,7 @@ async function main(): Promise<void> {
 
   const dir = accountDataDir(account.id);
   const store = createTradingStateStore({ statePath: path.join(dir, "state.json") });
-  let state = store.readState();
+  let state = await store.getState();
 
   const pre = await verifyPaperAccountForUser({ userId, state: null });
   console.log("\n--- Fresh Broker Query ---");
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
   }
 
   const post = await verifyPaperAccountForUser({ userId, state });
-  const localCount = state.positions.filter((p) => p.qty > 0).length;
+  const localCount = state.positions.filter((p: { qty: number }) => p.qty > 0).length;
   console.log("\n--- Post-Sync Recheck ---");
   console.log("Local Position Count:", localCount);
   console.log("Exact Position Match:", post.localPositionsMatched ? "YES" : "NO");
