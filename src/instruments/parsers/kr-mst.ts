@@ -49,7 +49,8 @@ export function parseKrMstBinary(
         currency: "KRW",
         kisExchangeCode: "KRX",
         instrumentType,
-        aliases: isin ? [{ alias: isin, aliasType: "ISIN" }] : [],
+        // Adopted RDS ck_instrument_alias_type: SYMBOL|KOREAN|ENGLISH|SEARCH
+        aliases: isin ? [{ alias: isin, aliasType: "SEARCH" }] : [],
       }),
     );
   }

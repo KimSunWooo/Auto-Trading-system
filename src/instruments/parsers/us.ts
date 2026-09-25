@@ -44,7 +44,7 @@ export function parseUsMaster(text: string, defaultMarket?: string): ParsedMaste
         englishName,
         currency: "USD",
         instrumentType,
-        aliases: englishName !== symbol ? [{ alias: englishName, aliasType: "ENGLISH_NAME" }] : [],
+        aliases: englishName !== symbol ? [{ alias: englishName, aliasType: "ENGLISH" }] : [],
       }),
     );
   }

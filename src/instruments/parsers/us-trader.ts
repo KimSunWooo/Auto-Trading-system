@@ -42,7 +42,7 @@ export function parseOtherListed(text: string): {
           englishName: name,
           currency: "USD",
           instrumentType,
-          aliases: name !== symbol ? [{ alias: name, aliasType: "ENGLISH_NAME" }] : [],
+          aliases: name !== symbol ? [{ alias: name, aliasType: "ENGLISH" }] : [],
         }),
       );
     } else if (exch === "A") {
@@ -51,7 +51,7 @@ export function parseOtherListed(text: string): {
           englishName: name,
           currency: "USD",
           instrumentType,
-          aliases: name !== symbol ? [{ alias: name, aliasType: "ENGLISH_NAME" }] : [],
+          aliases: name !== symbol ? [{ alias: name, aliasType: "ENGLISH" }] : [],
         }),
       );
     }
@@ -91,7 +91,7 @@ function parsePipeListing(
         englishName: name,
         currency: "USD",
         instrumentType,
-        aliases: name !== symbol ? [{ alias: name, aliasType: "ENGLISH_NAME" }] : [],
+        aliases: name !== symbol ? [{ alias: name, aliasType: "ENGLISH" }] : [],
       }),
     );
   }

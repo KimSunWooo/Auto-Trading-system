@@ -39,10 +39,10 @@ export function parseKrMaster(text: string, defaultMarket?: string): ParsedMaste
     const displayName = koreanName || englishName || symbol;
     const aliases: ParsedMasterRow["aliases"] = [];
     if (englishName && englishName !== displayName) {
-      aliases.push({ alias: englishName, aliasType: "ENGLISH_NAME" });
+      aliases.push({ alias: englishName, aliasType: "ENGLISH" });
     }
     if (koreanName && koreanName !== displayName) {
-      aliases.push({ alias: koreanName, aliasType: "KOREAN_NAME" });
+      aliases.push({ alias: koreanName, aliasType: "KOREAN" });
     }
 
     rows.push(

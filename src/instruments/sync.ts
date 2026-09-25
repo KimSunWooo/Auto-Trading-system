@@ -68,6 +68,52 @@ export const PRODUCTION_MASTER_URLS = {
   OTHER: "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
 } as const;
 
+/**
+ * Map parser/API alias types onto adopted RDS `ck_instrument_alias_type`
+ * (SYMBOL | KOREAN | ENGLISH | SEARCH).
+ */
+export function toDbAliasType(aliasType: string): "SYMBOL" | "KOREAN" | "ENGLISH" | "SEARCH" {
+  switch (aliasType) {
+    case "SYMBOL":
+    case "KOREAN":
+    case "ENGLISH":
+    case "SEARCH":
+      return aliasType;
+    case "ISIN":
+      return "SEARCH";
+    case "ENGLISH_NAME":
+      return "ENGLISH";
+    case "KOREAN_NAME":
+      return "KOREAN";
+    default:
+      return "SEARCH";
+  }
+}
+
+/**
+ * Map sync result statuses onto adopted RDS `ck_instrument_sync_status`
+ * (RUNNING | PASS | FAIL | DEGRADED). Result objects keep SUCCESS/FAILED for callers.
+ */
+export function toDbSyncRunStatus(
+  status: "SUCCESS" | "FAILED" | "SKIPPED" | "RUNNING" | "PASS" | "FAIL" | "DEGRADED",
+): "RUNNING" | "PASS" | "FAIL" | "DEGRADED" {
+  switch (status) {
+    case "SUCCESS":
+    case "PASS":
+      return "PASS";
+    case "FAILED":
+    case "FAIL":
+      return "FAIL";
+    case "SKIPPED":
+    case "DEGRADED":
+      return "DEGRADED";
+    case "RUNNING":
+      return "RUNNING";
+    default:
+      return "FAIL";
+  }
+}
+
 export type InstrumentSyncRunResult = {
   source: string;
   country: string;
@@ -287,6 +333,7 @@ export function createMysqlSyncStore(db: AppDb): InstrumentSyncStore {
           for (const alias of row.aliases) {
             const normalizedAlias = normalizeAlias(alias.alias);
             if (!normalizedAlias) continue;
+            const aliasType = toDbAliasType(alias.aliasType);
             await tx
               .insert(schema.instrumentAliases)
               .values({
@@ -294,10 +341,10 @@ export function createMysqlSyncStore(db: AppDb): InstrumentSyncStore {
                 instrumentId,
                 alias: alias.alias,
                 normalizedAlias,
-                aliasType: alias.aliasType,
+                aliasType,
               })
               .onDuplicateKeyUpdate({
-                set: { alias: alias.alias, aliasType: alias.aliasType },
+                set: { alias: alias.alias, aliasType },
               });
           }
         }
@@ -335,13 +382,14 @@ export function createMysqlSyncStore(db: AppDb): InstrumentSyncStore {
       return { inserted, updated, deactivated };
     },
     async writeSyncRun(args) {
+      const status = toDbSyncRunStatus(args.status);
       await db
         .insert(schema.instrumentSyncRuns)
         .values({
           id: args.id,
           country: args.country,
           source: args.source,
-          status: args.status,
+          status,
           totalCount: args.totalCount,
           insertedCount: args.insertedCount,
           updatedCount: args.updatedCount,
@@ -352,7 +400,7 @@ export function createMysqlSyncStore(db: AppDb): InstrumentSyncStore {
         })
         .onDuplicateKeyUpdate({
           set: {
-            status: args.status,
+            status,
             totalCount: args.totalCount,
             insertedCount: args.insertedCount,
             updatedCount: args.updatedCount,
