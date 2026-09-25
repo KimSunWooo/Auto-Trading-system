@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "MIRAEMAESU_TEST=1 tsx --test --test-concurrency=1 lib/*.test.ts src/accounts/*.test.ts src/auth/*.test.ts src/rules/*.test.ts src/brokers/*.test.ts src/risk/*.test.ts src/backtest/*.test.ts src/runtime/*.test.ts src/markets/overseas/*.test.ts src/db/*.test.ts src/market-data/*.test.ts src/instruments/*.test.ts",
     "instruments:sync": "tsx scripts/instruments-sync.ts",
+    "credentials:rebind-paper": "tsx scripts/rebind-paper-credential.ts",
     "emergency:stop": "tsx scripts/emergency-stop.ts",
     "emergency:flatten": "tsx scripts/emergency-flatten.ts",
     "vts:overseas-a": "tsx scripts/vts-overseas-a.ts",
