@@ -1,16 +1,12 @@
 /**
- * NOTE (kis-only runtime): Product MockBroker is being retired.
- * Tests must import FakeBroker from `@/src/test-support/fake-broker` (or `@/src/test-support`).
- * Parent agent will delete this file after production createBroker / RiskManager refs are gone.
- * Do not add new production imports of this module.
+ * Test-only local paper broker. NOT imported by production runtime.
+ * Replaces deleted product MockBroker for unit tests of OrderManager / intent safety.
  */
-
 import { OrderManager } from "@/src/accounts/OrderManager";
 import { bookReportedFill } from "@/src/accounts/fills";
 import type { StateBox } from "@/src/accounts/StateBox";
 import type { BrokerFill, BrokerQuote, IBroker, IntentMeta } from "@/src/brokers/IBroker";
 import { canFillLimit } from "@/src/accounts/fills";
-import { findStock } from "@/lib/universe";
 import type { OrderSource } from "@/lib/types";
 import { CASH_RULE_ID } from "@/src/rules/params";
 import {
@@ -19,14 +15,38 @@ import {
 } from "@/src/accounts/execution-policy";
 import { findOrderByIntent } from "@/src/runtime/intents";
 
+export type FakeBrokerMode =
+  | "instant"
+  | "delayed"
+  | "reject"
+  | "timeout"
+  | "unknown"
+  | "partial";
+
+/** Test env: FAKE_BROKER_MODE preferred; MOCK_BROKER_MODE accepted for back-compat in tests only. */
+export function fakeBrokerMode(
+  env: Record<string, string | undefined> = process.env,
+): FakeBrokerMode {
+  const raw = String(env.FAKE_BROKER_MODE ?? env.MOCK_BROKER_MODE ?? "instant")
+    .trim()
+    .toLowerCase();
+  if (
+    raw === "delayed" ||
+    raw === "reject" ||
+    raw === "timeout" ||
+    raw === "unknown" ||
+    raw === "partial"
+  ) {
+    return raw;
+  }
+  return "instant";
+}
+
 /**
- * Local paper broker. Quotes come from the simulated book; fills go through
- * OrderManager so each user rule only spends its own sub-account.
- * Default MOCK_BROKER_MODE=instant keeps the original immediate fill.
- *
- * @deprecated Tests: use FakeBroker from `@/src/test-support`. Production path pending removal.
+ * Local book filler for unit tests. driver reports "kis" so production
+ * BrokerDriver union stays kis-only; this class must never ship in product paths.
  */
-export class MockBroker implements IBroker {
+export class FakeBroker implements IBroker {
   readonly driver = "kis" as const;
 
   constructor(
@@ -37,22 +57,20 @@ export class MockBroker implements IBroker {
     private readonly intent?: IntentMeta,
   ) {}
 
-  forRule(ruleKey: string): MockBroker {
-    return new MockBroker(this.box, ruleKey, this.source, this.sourceId, this.intent);
+  forRule(ruleKey: string): FakeBroker {
+    return new FakeBroker(this.box, ruleKey, this.source, this.sourceId, this.intent);
   }
 
-  withSource(source: OrderSource, sourceId?: string): MockBroker {
-    return new MockBroker(this.box, this.ruleKey, source, sourceId, this.intent);
+  withSource(source: OrderSource, sourceId?: string): FakeBroker {
+    return new FakeBroker(this.box, this.ruleKey, source, sourceId, this.intent);
   }
 
-  withIntent(meta: IntentMeta): MockBroker {
-    return new MockBroker(this.box, this.ruleKey, this.source, this.sourceId, meta);
+  withIntent(meta: IntentMeta): FakeBroker {
+    return new FakeBroker(this.box, this.ruleKey, this.source, this.sourceId, meta);
   }
 
   async getQuote(ticker: string): Promise<BrokerQuote | null> {
     const quote = this.box.current.quotes[ticker];
-    const stock = findStock(ticker);
-    if (!quote && !stock) return null;
     if (!quote) return null;
     return {
       ticker: quote.code,
@@ -71,9 +89,7 @@ export class MockBroker implements IBroker {
 
   async getCurrentPrice(ticker: string): Promise<number> {
     const quote = await this.getQuote(ticker);
-    if (!quote) {
-      throw new Error(`${ticker} 시세가 없습니다.`);
-    }
+    if (!quote) throw new Error(`${ticker} 시세가 없습니다.`);
     return quote.price;
   }
 
@@ -148,20 +164,9 @@ export class MockBroker implements IBroker {
             liquidation: this.box.current.settings.liquidating,
           });
     if (!gate.ok) return orders.gateReject(this.ruleKey, ticker, side, gate.reason);
-    // Temporary until this file is deleted — tests should use FakeBroker + fakeBrokerMode.
-    const raw = String(process.env.FAKE_BROKER_MODE ?? process.env.MOCK_BROKER_MODE ?? "instant")
-      .trim()
-      .toLowerCase();
-    const mode =
-      raw === "delayed" ||
-      raw === "reject" ||
-      raw === "timeout" ||
-      raw === "unknown" ||
-      raw === "partial"
-        ? raw
-        : "instant";
+    const mode = fakeBrokerMode();
     if (mode === "reject") {
-      return orders.gateReject(this.ruleKey, ticker, side, "MOCK reject");
+      return orders.gateReject(this.ruleKey, ticker, side, "FAKE reject");
     }
     if (mode === "timeout" || mode === "unknown") {
       const pending = orders.begin(this.ruleKey, ticker, side, qty, price, opts);
@@ -170,7 +175,7 @@ export class MockBroker implements IBroker {
       }
       return orders.unknown(
         pending.id,
-        mode === "timeout" ? "주문 응답 시간 초과" : "MOCK unknown",
+        mode === "timeout" ? "주문 응답 시간 초과" : "FAKE unknown",
       );
     }
     if (mode === "delayed") {
@@ -178,19 +183,19 @@ export class MockBroker implements IBroker {
       if (pending.brokerOrderNo || pending.status === "unknown" || pending.status === "filled") {
         return orders.toFill(pending);
       }
-      return orders.ackWorking(pending.id, `MOCK-${pending.id}`, "지연 체결 시뮬 · 접수만 반영");
+      return orders.ackWorking(pending.id, `FAKE-${pending.id}`, "지연 체결 시뮬 · 접수만 반영");
     }
     if (mode === "partial") {
       const pending = orders.begin(this.ruleKey, ticker, side, qty, price, opts);
       if (pending.brokerOrderNo || pending.status === "unknown" || pending.status === "filled") {
         return orders.toFill(pending);
       }
-      orders.ackWorking(pending.id, `MOCK-${pending.id}`, "부분체결 시뮬");
+      orders.ackWorking(pending.id, `FAKE-${pending.id}`, "부분체결 시뮬");
       const half = Math.max(1, Math.floor(qty / 2));
       const booked = bookReportedFill(this.box.current, pending.id, {
         filledQty: Math.min(half, qty),
         avgPrice: price,
-        brokerOrderNo: `MOCK-${pending.id}`,
+        brokerOrderNo: `FAKE-${pending.id}`,
       });
       this.box.current = booked.state;
       const live = this.box.current.orders.find((row) => row.id === pending.id) ?? booked.parent;
@@ -217,3 +222,6 @@ export class MockBroker implements IBroker {
     return fill;
   }
 }
+
+/** @deprecated Use FakeBroker — alias for gradual test migration. */
+export const MockBroker = FakeBroker;

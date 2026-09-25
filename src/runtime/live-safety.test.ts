@@ -3,10 +3,10 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, afterEach, before, test } from "node:test";
-import { createPaperState, tickState } from "@/lib/engine";
+import { tickState } from "@/lib/engine";
 import { hydratePersistedState } from "@/lib/store";
 import { OrderManager } from "@/src/accounts/OrderManager";
-import { MockBroker } from "@/src/brokers/MockBroker";
+import { FakeBroker, makeTestPaperState } from "@/src/test-support";
 import { KisBroker } from "@/src/brokers/KisBroker";
 import type {
   KisApi,
@@ -40,6 +40,7 @@ after(() => {
 });
 afterEach(() => {
   delete process.env.TRADING_MODE;
+  delete process.env.FAKE_BROKER_MODE;
   delete process.env.MOCK_BROKER_MODE;
   delete process.env.BROKER;
   delete process.env.ALLOW_LIVE_TRADING;
@@ -126,8 +127,8 @@ class FakeKis implements KisApi {
 }
 
 test("1. 동일 signalId → 주문 1회", async () => {
-  const box = { current: createPaperState() };
-  const broker = new MockBroker(box, "cash").withIntent({
+  const box = { current: makeTestPaperState() };
+  const broker = new FakeBroker(box, "cash").withIntent({
     intentId: "sig:interval:r1:005930:1",
     signalId: "sig:interval:r1:005930:1",
   });
@@ -139,7 +140,7 @@ test("1. 동일 signalId → 주문 1회", async () => {
 });
 
 test("2. 동일 intentId → 주문 1회", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const orders = new OrderManager(box);
   const a = orders.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
   const b = orders.buy("cash", "005930", 1, 70_000, { intentId: "intent-dup" });
@@ -149,23 +150,23 @@ test("2. 동일 intentId → 주문 1회", async () => {
 });
 
 test("3. timeout → UNKNOWN", async () => {
-  process.env.MOCK_BROKER_MODE = "timeout";
-  const box = { current: createPaperState() };
-  const fill = await new MockBroker(box, "cash").buyMarket("005930", 140_000);
+  process.env.FAKE_BROKER_MODE = "timeout";
+  const box = { current: makeTestPaperState() };
+  const fill = await new FakeBroker(box, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.status, "unknown");
   assert.match(tradingBlocked(box.current) ?? "", /미확인|확인하지/);
 });
 
 test("4. UNKNOWN → 자동 재주문 금지", async () => {
-  process.env.MOCK_BROKER_MODE = "timeout";
-  const box = { current: createPaperState() };
-  const broker = new MockBroker(box, "cash").withIntent({ intentId: "sig:once" });
+  process.env.FAKE_BROKER_MODE = "timeout";
+  const box = { current: makeTestPaperState() };
+  const broker = new FakeBroker(box, "cash").withIntent({ intentId: "sig:once" });
   await broker.buyMarket("005930", 140_000);
-  process.env.MOCK_BROKER_MODE = "instant";
+  process.env.FAKE_BROKER_MODE = "instant";
   const again = await broker.buyMarket("005930", 140_000);
   assert.equal(again.status, "unknown");
   assert.equal(box.current.orders.filter((row) => !row.parentOrderId).length, 1);
-  const other = await new MockBroker(box, "cash").withIntent({ intentId: "sig:other" }).buyMarket("005930", 140_000);
+  const other = await new FakeBroker(box, "cash").withIntent({ intentId: "sig:other" }).buyMarket("005930", 140_000);
   assert.equal(other.ok, false);
   assert.match(other.reason ?? "", /미확인|확인하지|서킷/);
 });
@@ -173,7 +174,7 @@ test("4. UNKNOWN → 자동 재주문 금지", async () => {
 test("5. KIS quote 실패 → 주문 금지", async () => {
   process.env.TRADING_MODE = "live_test";
   tryAcquireWorkerLock("test-quote");
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   client.failQuote = true;
   const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
@@ -190,7 +191,7 @@ test("6. balance 조회 실패 → 주문 금지", async () => {
   const client = new FakeKis();
   client.failBalance = true;
   setSharedKisClientForTest(client);
-  const next = await tickState(createPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
+  const next = await tickState(makeTestPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
   assert.match(tradingBlocked(next) ?? "", /잔고|조회|증권사|balance/i);
   const fill = await new KisBroker({ current: next }, client, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
@@ -206,7 +207,7 @@ test("7. execution 조회 실패 → 주문 금지", async () => {
   client.failCcld = true;
   client.failOpen = true;
   setSharedKisClientForTest(client);
-  const next = await tickState(createPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
+  const next = await tickState(makeTestPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
   assert.match(tradingBlocked(next) ?? "", /조회|체결|미체결|대조|open orders/i);
   const fill = await new KisBroker({ current: next }, client, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
@@ -221,14 +222,14 @@ test("8. reconciliation 실패 → 주문 금지", async () => {
   const client = new FakeKis();
   client.failOpen = true;
   setSharedKisClientForTest(client);
-  const next = await tickState(createPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
+  const next = await tickState(makeTestPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
   assert.equal(next.safety?.kind, "reconciliation_unavailable");
   assert.ok(tradingBlocked(next));
   releaseWorkerLock("test-recon");
 });
 
 test("9. 외부 KIS 주문 발견 → local recovery", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   client.open = [
     {
@@ -249,7 +250,7 @@ test("9. 외부 KIS 주문 발견 → local recovery", async () => {
 });
 
 test("10. 서버 재시작 → 상태 recovery, duplicate 없음", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   client.open = [
     {
@@ -269,7 +270,7 @@ test("10. 서버 재시작 → 상태 recovery, duplicate 없음", async () => {
 });
 
 test("11. 손절 후 같은 tick 재매수 금지", async () => {
-  const state = createPaperState();
+  const state = makeTestPaperState();
   const quote = state.quotes["005930"]!;
   quote.price = 70_000;
   quote.prevClose = 70_000;
@@ -286,7 +287,7 @@ test("11. 손절 후 같은 tick 재매수 금지", async () => {
 });
 
 test("12. Kill Switch → 신규 주문 금지", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   await RiskManager.emergencyStop(box, { kis: null });
   const buy = new OrderManager(box).buy("cash", "005930", 1, 70_000);
   assert.equal(buy.ok, false);
@@ -306,7 +307,7 @@ test("13. Worker lock 중복 실행 방지", () => {
 test("13b. lock 없는 LIVE_TEST 워커는 주문 금지", () => {
   process.env.TRADING_MODE = "live_test";
   resetWorkerLockForTest();
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const buy = new OrderManager(box).buy("cash", "005930", 1, 70_000);
   assert.equal(buy.ok, false);
   assert.match(buy.reason ?? "", /워커 락/);
@@ -326,10 +327,10 @@ test("14. corrupted JSON → 초기화하지 않고 recovery", async () => {
 });
 
 test("15. Mock instant → 기존처럼 정상 체결", async () => {
-  process.env.MOCK_BROKER_MODE = "instant";
-  const box = { current: createPaperState() };
+  process.env.FAKE_BROKER_MODE = "instant";
+  const box = { current: makeTestPaperState() };
   const before = box.current.cash;
-  const fill = await new MockBroker(box, "cash").buyMarket("005930", 140_000);
+  const fill = await new FakeBroker(box, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.ok, true);
   assert.equal(fill.status, "filled");
   assert.ok(box.current.cash < before);
@@ -337,17 +338,17 @@ test("15. Mock instant → 기존처럼 정상 체결", async () => {
 });
 
 test("16. Mock delayed → pending 처리", async () => {
-  process.env.MOCK_BROKER_MODE = "delayed";
-  const box = { current: createPaperState() };
-  const fill = await new MockBroker(box, "cash").buyMarket("005930", 140_000);
+  process.env.FAKE_BROKER_MODE = "delayed";
+  const box = { current: makeTestPaperState() };
+  const fill = await new FakeBroker(box, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.status, "pending");
   assert.equal(box.current.positions.length, 0);
 });
 
 test("17. Mock partial → partial fill 처리", async () => {
-  process.env.MOCK_BROKER_MODE = "partial";
-  const box = { current: createPaperState() };
-  const fill = await new MockBroker(box, "cash").buyMarket("005930", 280_000);
+  process.env.FAKE_BROKER_MODE = "partial";
+  const box = { current: makeTestPaperState() };
+  const fill = await new FakeBroker(box, "cash").buyMarket("005930", 280_000);
   assert.ok((fill.qty ?? 0) >= 1);
   const parent = box.current.orders.find((row) => !row.parentOrderId);
   assert.ok(parent);
@@ -356,14 +357,14 @@ test("17. Mock partial → partial fill 처리", async () => {
 });
 
 test("18. Mock timeout → unknown 처리", async () => {
-  process.env.MOCK_BROKER_MODE = "timeout";
-  const box = { current: createPaperState() };
-  const fill = await new MockBroker(box, "cash").buyMarket("005930", 140_000);
+  process.env.FAKE_BROKER_MODE = "timeout";
+  const box = { current: makeTestPaperState() };
+  const fill = await new FakeBroker(box, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.status, "unknown");
 });
 
 test("19. Risk limit 초과 → 주문 생성 금지", () => {
-  const state = createPaperState();
+  const state = makeTestPaperState();
   const reason = checkHardLimits(state, { side: "buy", ticker: "005930", qty: 50, price: 70_000 });
   assert.ok(reason);
   const box = { current: state };
@@ -375,7 +376,7 @@ test("19. Risk limit 초과 → 주문 생성 금지", () => {
 test("20. LIVE_TEST에서 limit 초과 → 주문 생성 금지", () => {
   process.env.TRADING_MODE = "live_test";
   tryAcquireWorkerLock("test-live-cap");
-  const state = createPaperState();
+  const state = makeTestPaperState();
   const reason = checkHardLimits(state, { side: "buy", ticker: "005930", qty: 1, price: 70_000 });
   assert.match(reason ?? "", /한도/);
   const fill = new OrderManager({ current: state }).buy("cash", "005930", 1, 70_000);
@@ -384,18 +385,18 @@ test("20. LIVE_TEST에서 limit 초과 → 주문 생성 금지", () => {
 });
 
 test("SCENARIO 1 정상 매수 Quote→Fill→Position→Balance", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const quote = box.current.quotes["005930"];
   assert.ok(quote);
   const before = box.current.cash;
-  const fill = await new MockBroker(box, "cash").buyMarket("005930", 140_000);
+  const fill = await new FakeBroker(box, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.ok, true);
   assert.ok(box.current.positions[0]?.qty);
   assert.ok(box.current.cash < before);
 });
 
 test("SCENARIO 2 주문 timeout → UNKNOWN → 재주문 차단 → reconciliation", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   const timeout = new Error("timeout");
   timeout.name = "TimeoutError";
@@ -429,7 +430,7 @@ test("SCENARIO 2 주문 timeout → UNKNOWN → 재주문 차단 → reconciliat
 });
 
 test("SCENARIO 3 crash 후 KIS 주문 조회 → local recovery", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   client.open = [
     {
@@ -457,7 +458,7 @@ test("SCENARIO 4 KIS quote failure → 주문 없음", async () => {
   tryAcquireWorkerLock("s4");
   const client = new FakeKis();
   client.failQuote = true;
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(client.orders.length, 0);
   releaseWorkerLock("s4");
@@ -470,14 +471,14 @@ test("SCENARIO 5 Reconciliation failure → strategy 중단", async () => {
   const client = new FakeKis();
   client.failBalance = true;
   setSharedKisClientForTest(client);
-  const next = await tickState(createPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
+  const next = await tickState(makeTestPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
   assert.ok(tradingBlocked(next));
   assert.equal(next.orders.length, 0);
   releaseWorkerLock("s5");
 });
 
 test("SCENARIO 6 손절 후 same tick BUY 차단", async () => {
-  const state = createPaperState();
+  const state = makeTestPaperState();
   state.quotes["005930"]!.price = 70_000;
   state.positions = [{ code: "005930", name: "삼성전자", qty: 2, avgPrice: 80_000, ruleId: "cash" }];
   const box = { current: state };
@@ -495,7 +496,7 @@ test("SCENARIO 7 두 Worker 동시 실행", () => {
 });
 
 test("SCENARIO 8 동일 signal 10회 → intent 1 · broker order 1", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   const broker = new KisBroker(box, client, "cash").withIntent({ intentId: "sig:ten" });
   for (let i = 0; i < 10; i += 1) {
@@ -527,7 +528,7 @@ test("LIVE_TEST rejects real-host KisBroker orders", async () => {
   tryAcquireWorkerLock("vts-real-block");
   const client = new FakeKis();
   client.mode = "real";
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 10_000);
   assert.equal(fill.ok, false);
   assert.match(fill.reason ?? "", /모의투자|KIS_MODE=paper|KIS_PAPER/);
@@ -538,7 +539,7 @@ test("LIVE_TEST rejects real-host KisBroker orders", async () => {
 test("emergency flatten can sell without a worker lock", async () => {
   process.env.TRADING_MODE = "live_test";
   resetWorkerLockForTest();
-  const state = createPaperState();
+  const state = makeTestPaperState();
   state.positions = [{ code: "005930", name: "삼성전자", qty: 1, avgPrice: 70_000, ruleId: "cash" }];
   state.allocations = state.allocations.map((row) =>
     row.ruleId === "cash" ? { ...row, balance: row.balance - 70_000 } : row,

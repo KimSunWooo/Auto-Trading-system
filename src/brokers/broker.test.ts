@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { KisBroker } from "./KisBroker";
-import { MockBroker } from "./MockBroker";
 import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "./kis-client";
 import { padOdno, sameOdno } from "./kis-client";
-import { createPaperState } from "@/lib/engine";
+import { FakeBroker, makeTestPaperState } from "@/src/test-support";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
@@ -119,7 +118,7 @@ test("sameOdno matches padded KIS order numbers", () => {
 });
 
 test("KisBroker without credentials refuses orders and does not hit KIS", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis({
     configured: false,
     liveEnabled: false,
@@ -132,7 +131,7 @@ test("KisBroker without credentials refuses orders and does not hit KIS", async 
 });
 
 test("KisBroker treats ODNO as working, not a full fill", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const before = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   const client = new FakeKis();
   const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
@@ -153,7 +152,7 @@ test("KisBroker treats ODNO as working, not a full fill", async () => {
 });
 
 test("KisBroker books a fill only after daily ccld reports qty", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const before = box.current.allocations.find((a) => a.ruleId === "cash")!.balance;
   const client = new FakeKis();
   client.autoFill = true;
@@ -169,7 +168,7 @@ test("KisBroker books a fill only after daily ccld reports qty", async () => {
 });
 
 test("KisBroker checks the bucket before calling KIS", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const level1 = box.current.allocations.find((a) => a.ruleId === "cash")!;
   level1.balance = 1_000;
   const client = new FakeKis();
@@ -180,7 +179,7 @@ test("KisBroker checks the bucket before calling KIS", async () => {
 });
 
 test("KisBroker blocks live orders when confirm is missing", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis({ liveEnabled: false });
   const fill = await new KisBroker(box, client).buyMarket("005930", 140_000);
   assert.equal(fill.ok, false);
@@ -189,7 +188,7 @@ test("KisBroker blocks live orders when confirm is missing", async () => {
 });
 
 test("timeout after orderCash marks unknown and blocks the next buy", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   client.orderCash = async () => {
     const err = new Error("timeout");
@@ -208,7 +207,7 @@ test("timeout after orderCash marks unknown and blocks the next buy", async () =
 });
 
 test("hard limit blocks a ticket before it reaches KIS", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 3_000_000);
   assert.equal(fill.ok, false);
@@ -217,7 +216,7 @@ test("hard limit blocks a ticket before it reaches KIS", async () => {
 });
 
 test("pending working order blocks another buy of the same ticker", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   const first = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(first.status, "pending");
@@ -228,7 +227,7 @@ test("pending working order blocks another buy of the same ticker", async () => 
 });
 
 test("settleOpenOrders books only the reported partial fill", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
@@ -257,7 +256,7 @@ test("settleOpenOrders books only the reported partial fill", async () => {
 });
 
 test("settleOpenOrders cancels remaining qty after the timeout", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
@@ -285,7 +284,7 @@ test("settleOpenOrders cancels remaining qty after the timeout", async () => {
 });
 
 test("settleOpenOrders cancels a still-unfilled ticket with no fills", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
@@ -312,7 +311,7 @@ test("settleOpenOrders cancels a still-unfilled ticket with no fills", async () 
 });
 
 test("settleOpenOrders does not mark cancelled until KIS nccs drops the ODNO", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   client.keepOpenAfterCancel = true;
   await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
@@ -336,7 +335,7 @@ test("settleOpenOrders does not mark cancelled until KIS nccs drops the ODNO", a
 });
 
 test("settleOpenOrders leaves UNKNOWN when post-cancel inquiry fails", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   const parent = box.current.orders.find((o) => o.status === "pending")!;
@@ -359,15 +358,15 @@ test("settleOpenOrders leaves UNKNOWN when post-cancel inquiry fails", async () 
   assert.match(live.reason ?? "", /미체결 조회/);
 });
 
-test("MockBroker getCurrentPrice reads the paper book", async () => {
-  const box = { current: createPaperState() };
-  const broker = new MockBroker(box, "cash");
+test("FakeBroker getCurrentPrice reads the paper book", async () => {
+  const box = { current: makeTestPaperState() };
+  const broker = new FakeBroker(box, "cash");
   const price = await broker.getCurrentPrice("005930");
   assert.ok(price > 0);
 });
 
 test("KisBroker converts any market buy to a ±3% limit band", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const client = new FakeKis();
   const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
   assert.equal(fill.status, "pending");
@@ -379,7 +378,7 @@ test("KisBroker converts any market buy to a ±3% limit band", async () => {
 
 test("KisBroker rejects a new order during closing auction", async () => {
   await withNow(Date.UTC(2026, 8, 15, 6, 20, 0), async () => {
-    const box = { current: createPaperState() };
+    const box = { current: makeTestPaperState() };
     const client = new FakeKis();
     const fill = await new KisBroker(box, client, "cash").buyMarket("005930", 140_000);
     assert.equal(fill.ok, false);
@@ -389,7 +388,7 @@ test("KisBroker rejects a new order during closing auction", async () => {
 });
 
 test("KisBroker sellLimit sends a limit cash order", async () => {
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   box.current.positions = [
     { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, ruleId: "cash" },
   ];

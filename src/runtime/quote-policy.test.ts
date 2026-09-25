@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, test } from "node:test";
-import { createPaperState, ensureUniverseQuotes, advanceQuotes, seedQuote } from "@/lib/engine";
+import { ensureUniverseQuotes, advanceQuotes } from "@/lib/engine";
 import { KisBroker } from "@/src/brokers/KisBroker";
 import { createBroker } from "@/src/brokers/index";
 import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisPrice } from "@/src/brokers/kis-client";
 import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
 import { setNowMs, nowMs } from "@/src/clock";
 import type { Quote } from "@/lib/types";
+import { makeTestQuote, makeTestPaperState } from "@/src/test-support";
 import {
   filterDashboardQuotes,
   invalidateNonKisQuotes,
@@ -39,7 +40,7 @@ function liveKisEnv() {
 
 function mockQuote(code = "035720", price = 41_150): Quote {
   return {
-    ...seedQuote(code),
+    ...makeTestQuote(code),
     price,
     source: "mock",
     freshAt: undefined,
@@ -47,12 +48,12 @@ function mockQuote(code = "035720", price = 41_150): Quote {
 }
 
 function seedBookQuote(code = "035720"): Quote {
-  return { ...seedQuote(code), source: "seed" };
+  return { ...makeTestQuote(code), source: "seed" };
 }
 
 function kisQuote(code = "035720", price = 33_400, freshAt = nowMs()): Quote {
   return {
-    ...seedQuote(code),
+    ...makeTestQuote(code),
     price,
     source: "kis",
     freshAt,
@@ -132,7 +133,7 @@ test("B. live_test + kis: persisted seed quote is not a valid live quote", () =>
 
 test("C. KIS getQuote success → source=kis and freshAt set", async () => {
   liveKisEnv();
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   box.current.quotes = { "035720": mockQuote() };
   const client = new FakeKis();
   const broker = new KisBroker(box, client);
@@ -149,7 +150,7 @@ test("C. KIS getQuote success → source=kis and freshAt set", async () => {
 
 test("D. KIS quote failure → no mock fallback", async () => {
   liveKisEnv();
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   box.current.quotes = { "035720": mockQuote(undefined, 99_999) };
   const client = new FakeKis();
   client.failPrice = new Error("inquirePrice down");
@@ -164,7 +165,7 @@ test("D. KIS quote failure → no mock fallback", async () => {
 
 test("E. getCurrentPrice with source=mock → reject", async () => {
   liveKisEnv();
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   box.current.quotes = { "035720": mockQuote() };
   const client = new FakeKis();
   const broker = new KisBroker(box, client);
@@ -198,7 +199,7 @@ test("E2. mock/seed books are never orderable under live kis", () => {
 
 test("F. getCurrentPrice with stale source=kis >15s → reject", async () => {
   liveKisEnv();
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const staleAt = nowMs() - LIVE_KIS_QUOTE_FRESH_MS - 1;
   box.current.quotes = { "035720": kisQuote("035720", 33_400, staleAt) };
   assert.equal(isFreshKisQuote(box.current.quotes["035720"]), false);
@@ -241,7 +242,7 @@ test("H. UI live-like mode: source=mock not shown as valid current quote", () =>
 
 test("I. manual createBroker with BROKER=kis → KisBroker path", () => {
   liveKisEnv();
-  const box = { current: createPaperState() };
+  const box = { current: makeTestPaperState() };
   const broker = createBroker(box).withSource("manual");
   assert.equal(broker.driver, "kis");
   assert.ok(broker instanceof KisBroker);
@@ -269,7 +270,7 @@ test("K. REAL request count stays 0 in FakeKis order path for this suite", async
 
 test("ensureUniverseQuotes strips mock/seed under live kis and does not seed", () => {
   liveKisEnv();
-  const state = createPaperState();
+  const state = makeTestPaperState();
   state.quotes = { "035720": mockQuote(), "005930": kisQuote("005930") };
   const next = ensureUniverseQuotes(state);
   assert.equal(next.quotes["035720"], undefined);

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { OrderManager } from "./OrderManager";
 import type { StateBox } from "./StateBox";
-import { createInitialState, createPaperState } from "@/lib/engine";
-import { MockBroker } from "@/src/brokers/MockBroker";
+import { createInitialState } from "@/lib/engine";
+import { FakeBroker, makeTestPaperState } from "@/src/test-support";
 import { setNowMs, withNow } from "@/src/clock";
 import {
   SEOUL_CLOSING_AUCTION_MS,
@@ -25,7 +25,7 @@ before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
 after(() => setNowMs(null));
 
 test("OrderManager rejects a buy that exceeds the rule bucket", () => {
-  const box: StateBox = { current: createPaperState() };
+  const box: StateBox = { current: makeTestPaperState() };
   const tiny = box.current.allocations.find((a) => a.ruleId === "cash");
   assert.ok(tiny);
   tiny.balance = 1_000;
@@ -38,7 +38,7 @@ test("OrderManager rejects a buy that exceeds the rule bucket", () => {
 });
 
 test("OrderManager fills inside the named bucket only", () => {
-  const box: StateBox = { current: createPaperState() };
+  const box: StateBox = { current: makeTestPaperState() };
   box.current.allocations = [
     { ruleId: "cash", budget: 1_000_000, balance: 1_000_000, enabled: true },
     { ruleId: "rule-a", budget: 7_000_000, balance: 7_000_000, enabled: true },
@@ -64,7 +64,7 @@ test("OrderManager locks buys until the user accepts the disclaimer", () => {
 
 test("session interceptor blocks mock orders even when ignoreMarketHours is on", async () => {
   await withNow(SEOUL_CLOSING_AUCTION_MS, () => {
-    const box: StateBox = { current: createPaperState() };
+    const box: StateBox = { current: makeTestPaperState() };
     box.current.settings.ignoreMarketHours = true;
     const reason = sessionBlockReason(box.current);
     assert.match(reason ?? "", /09:00~15:20/);
@@ -77,19 +77,19 @@ test("session interceptor blocks mock orders even when ignoreMarketHours is on",
 
 test("session interceptor rejects opening auction, weekends, and KRX holidays", async () => {
   await withNow(SEOUL_OPENING_AUCTION_MS, () => {
-    const box: StateBox = { current: createPaperState() };
+    const box: StateBox = { current: makeTestPaperState() };
     const fill = new OrderManager(box).buy("cash", "005930", 1, 70_000);
     assert.equal(fill.ok, false);
     assert.match(fill.reason ?? "", /동시호가|정규장/);
   });
   await withNow(SEOUL_WEEKEND_MS, () => {
-    const box: StateBox = { current: createPaperState() };
+    const box: StateBox = { current: makeTestPaperState() };
     const fill = new OrderManager(box).buy("cash", "005930", 1, 70_000);
     assert.equal(fill.ok, false);
     assert.match(fill.reason ?? "", /주말|정규장/);
   });
   await withNow(SEOUL_HOLIDAY_MS, () => {
-    const box: StateBox = { current: createPaperState() };
+    const box: StateBox = { current: makeTestPaperState() };
     const fill = new OrderManager(box).buy("cash", "005930", 1, 70_000);
     assert.equal(fill.ok, false);
     assert.match(fill.reason ?? "", /공휴일|정규장/);
@@ -118,19 +118,19 @@ test("all names forbid naked market orders", () => {
   assert.equal(OrderManager.forbidsMarketOrder("086520"), true);
 });
 
-test("MockBroker rewrites a 247540 market buy to a limit band", async () => {
-  const box: StateBox = { current: createPaperState() };
+test("FakeBroker rewrites a 247540 market buy to a limit band", async () => {
+  const box: StateBox = { current: makeTestPaperState() };
   const last = box.current.quotes["247540"]!.price;
-  const fill = await new MockBroker(box, "cash").buyMarket("247540", last * 2);
+  const fill = await new FakeBroker(box, "cash").buyMarket("247540", last * 2);
   assert.equal(fill.ok, true);
   assert.equal(box.current.orders[0]?.ordDvsn, "limit");
   assert.ok((box.current.orders[0]?.price ?? 0) >= last);
 });
 
-test("MockBroker rewrites a 005930 market buy to a ±3% limit", async () => {
-  const box: StateBox = { current: createPaperState() };
+test("FakeBroker rewrites a 005930 market buy to a ±3% limit", async () => {
+  const box: StateBox = { current: makeTestPaperState() };
   const last = box.current.quotes["005930"]!.price;
-  const fill = await new MockBroker(box, "cash").buyMarket("005930", last * 2);
+  const fill = await new FakeBroker(box, "cash").buyMarket("005930", last * 2);
   assert.equal(fill.ok, true);
   assert.equal(box.current.orders[0]?.ordDvsn, "limit");
   assert.equal(fill.qty, 2);
@@ -140,7 +140,7 @@ test("MockBroker rewrites a 005930 market buy to a ±3% limit", async () => {
 });
 
 test("two consecutive rule rejects lock the rule for 3 minutes", () => {
-  const box: StateBox = { current: createPaperState() };
+  const box: StateBox = { current: makeTestPaperState() };
   const cash = box.current.allocations.find((a) => a.ruleId === "cash")!;
   cash.balance = 1_000;
   cash.budget = 1_000;
@@ -158,7 +158,7 @@ test("two consecutive rule rejects lock the rule for 3 minutes", () => {
 });
 
 test("a fill clears the rule fail streak", () => {
-  const box: StateBox = { current: createPaperState() };
+  const box: StateBox = { current: makeTestPaperState() };
   const orders = new OrderManager(box);
   box.current.allocations = box.current.allocations.map((row) =>
     row.ruleId === "cash" ? { ...row, balance: 1_000 } : row,
@@ -180,7 +180,7 @@ test("a fill clears the rule fail streak", () => {
 });
 
 test("rule cooldown expires after 3 minutes", async () => {
-  const box: StateBox = { current: createPaperState() };
+  const box: StateBox = { current: makeTestPaperState() };
   const cash = box.current.allocations.find((a) => a.ruleId === "cash")!;
   cash.balance = 1_000;
   const orders = new OrderManager(box);

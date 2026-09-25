@@ -38,6 +38,7 @@ after(() => {
 afterEach(() => {
   delete process.env.TRADING_MODE;
   delete process.env.BROKER;
+  delete process.env.FAKE_BROKER_MODE;
   delete process.env.MOCK_BROKER_MODE;
   resetWorkerLockForTest();
   setSharedKisClientForTest(null);

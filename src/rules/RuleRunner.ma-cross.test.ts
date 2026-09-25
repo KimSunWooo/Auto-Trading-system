@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, afterEach, test } from "node:test";
-import { createPaperState } from "@/lib/engine";
 import type { Quote } from "@/lib/types";
-import { MockBroker } from "@/src/brokers/MockBroker";
+import { FakeBroker, makeTestPaperState } from "@/src/test-support";
 import { toBucket } from "@/src/accounts/AccountBucket";
 import { blankRule } from "@/src/rules/params";
 import { setRuleConfigForTest, syncAllocationsToRules } from "@/src/rules/config";
@@ -79,7 +78,7 @@ async function runOnce(opts: {
 }) {
   const rule = soakRule({ enabled: true }); // execute path only; config file stays disabled
   setRuleConfigForTest({ rules: [soakRule({ enabled: false })] });
-  const state = syncAllocationsToRules(createPaperState(), [rule]);
+  const state = syncAllocationsToRules(makeTestPaperState(), [rule]);
   state.quotes[TICKER] = quoteFor(opts.history);
   if (opts.positions) state.positions = opts.positions;
   const box = { current: state };
@@ -88,7 +87,7 @@ async function runOnce(opts: {
     ...toBucket(alloc, box.current.positions),
     meta: { ...(alloc.meta ?? {}), ...(opts.meta ?? {}) },
   };
-  const after = await RuleRunner.execute(new MockBroker(box, RULE_ID), bucket, rule);
+  const after = await RuleRunner.execute(new FakeBroker(box, RULE_ID), bucket, rule);
   return { after, box, fast: sma(opts.history, 5)!, slow: sma(opts.history, 20)! };
 }
 

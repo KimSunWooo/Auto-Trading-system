@@ -14,9 +14,9 @@ import {
   setRuleConfigForTest,
   syncAllocationsToRules,
 } from "@/src/rules/config";
-import { createInitialState, createPaperState } from "@/lib/engine";
+import { createInitialState } from "@/lib/engine";
 import { RuleRunner } from "@/src/rules/RuleRunner";
-import { MockBroker } from "@/src/brokers/MockBroker";
+import { FakeBroker, makeTestPaperState } from "@/src/test-support";
 import { toBucket } from "@/src/accounts/AccountBucket";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
@@ -125,12 +125,12 @@ test("RuleRunner interval buy uses the ticker from the user rule", async () => {
       budget: 7_000_000,
     });
     setRuleConfigForTest({ rules: [rule] });
-    const state = createPaperState();
+    const state = makeTestPaperState();
     const synced = syncAllocationsToRules(state, [rule]);
     const box = { current: synced };
     const alloc = box.current.allocations.find((row) => row.ruleId === "r-interval")!;
     const after = await RuleRunner.execute(
-      new MockBroker(box, "r-interval"),
+      new FakeBroker(box, "r-interval"),
       { ...toBucket(alloc, box.current.positions), lastRunAt: new Date(0).toISOString() },
       rule,
     );
@@ -146,7 +146,7 @@ test("RuleRunner interval buy uses the ticker from the user rule", async () => {
 test("QuantEngine does nothing when the rule list is empty", async () => {
   setRuleConfigForTest({ rules: [] });
   try {
-    const after = await QuantEngine.run(createPaperState());
+    const after = await QuantEngine.run(makeTestPaperState());
     assert.equal(after.orders.length, 0);
     assert.equal(after.positions.length, 0);
   } finally {
