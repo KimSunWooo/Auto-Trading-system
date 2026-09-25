@@ -276,77 +276,108 @@ export function createMysqlSyncStore(db: AppDb): InstrumentSyncStore {
       }));
     },
     async applySourceBatch({ country, market, rows }) {
+      const CHUNK = 200;
+      const now = mysqlDateUtc();
+
+      // One read for insert/update accounting — avoids per-row SELECTs over RDS.
+      const existingRows = await db
+        .select({ id: schema.instruments.id, symbol: schema.instruments.symbol })
+        .from(schema.instruments)
+        .where(and(eq(schema.instruments.country, country), eq(schema.instruments.market, market)));
+      const existingBySymbol = new Map(existingRows.map((r) => [r.symbol, r.id]));
+
       let inserted = 0;
       let updated = 0;
       let deactivated = 0;
       const symbols: string[] = [];
+      const instrumentValues: Array<{
+        id: string;
+        country: string;
+        market: string;
+        symbol: string;
+        displayName: string;
+        koreanName: string | null;
+        englishName: string | null;
+        currency: string;
+        kisExchangeCode: string | null;
+        instrumentType: string;
+        isActive: boolean;
+        masterUpdatedAt: string;
+      }> = [];
+      const aliasValues: Array<{
+        id: string;
+        instrumentId: string;
+        alias: string;
+        normalizedAlias: string;
+        aliasType: "SYMBOL" | "KOREAN" | "ENGLISH" | "SEARCH";
+      }> = [];
+
+      for (const row of rows) {
+        symbols.push(row.symbol);
+        const key = makeInstrumentKey(row.country, row.market, row.symbol);
+        const id = existingBySymbol.get(row.symbol) ?? stableId("instrument", key);
+        if (existingBySymbol.has(row.symbol)) updated++;
+        else inserted++;
+        instrumentValues.push({
+          id,
+          country: row.country,
+          market: row.market,
+          symbol: row.symbol,
+          displayName: row.displayName,
+          koreanName: row.koreanName ?? null,
+          englishName: row.englishName ?? null,
+          currency: row.currency,
+          kisExchangeCode: row.kisExchangeCode ?? null,
+          instrumentType: row.instrumentType,
+          isActive: true,
+          masterUpdatedAt: now,
+        });
+        for (const alias of row.aliases) {
+          const normalizedAlias = normalizeAlias(alias.alias);
+          if (!normalizedAlias) continue;
+          const aliasType = toDbAliasType(alias.aliasType);
+          aliasValues.push({
+            id: stableId("alias", `${id}:${normalizedAlias}`),
+            instrumentId: id,
+            alias: alias.alias,
+            normalizedAlias,
+            aliasType,
+          });
+        }
+      }
 
       await db.transaction(async (tx) => {
-        for (const row of rows) {
-          symbols.push(row.symbol);
-          const key = makeInstrumentKey(row.country, row.market, row.symbol);
-          const id = stableId("instrument", key);
-          const existing = await tx
-            .select({ id: schema.instruments.id })
-            .from(schema.instruments)
-            .where(
-              and(
-                eq(schema.instruments.country, row.country),
-                eq(schema.instruments.market, row.market),
-                eq(schema.instruments.symbol, row.symbol),
-              ),
-            )
-            .limit(1);
-          const isNew = existing.length === 0;
+        for (let i = 0; i < instrumentValues.length; i += CHUNK) {
+          const chunk = instrumentValues.slice(i, i + CHUNK);
           await tx
             .insert(schema.instruments)
-            .values({
-              id,
-              country: row.country,
-              market: row.market,
-              symbol: row.symbol,
-              displayName: row.displayName,
-              koreanName: row.koreanName ?? null,
-              englishName: row.englishName ?? null,
-              currency: row.currency,
-              kisExchangeCode: row.kisExchangeCode ?? null,
-              instrumentType: row.instrumentType,
-              isActive: true,
-              masterUpdatedAt: mysqlDateUtc(),
-            })
+            .values(chunk)
             .onDuplicateKeyUpdate({
               set: {
-                displayName: row.displayName,
-                koreanName: row.koreanName ?? null,
-                englishName: row.englishName ?? null,
-                currency: row.currency,
-                kisExchangeCode: row.kisExchangeCode ?? null,
-                instrumentType: row.instrumentType,
-                isActive: true,
-                masterUpdatedAt: mysqlDateUtc(),
+                displayName: sql`VALUES(display_name)`,
+                koreanName: sql`VALUES(korean_name)`,
+                englishName: sql`VALUES(english_name)`,
+                currency: sql`VALUES(currency)`,
+                kisExchangeCode: sql`VALUES(kis_exchange_code)`,
+                instrumentType: sql`VALUES(instrument_type)`,
+                isActive: sql`VALUES(is_active)`,
+                masterUpdatedAt: sql`VALUES(master_updated_at)`,
               },
             });
-          if (isNew) inserted++;
-          else updated++;
+        }
 
-          const instrumentId = existing[0]?.id ?? id;
-          for (const alias of row.aliases) {
-            const normalizedAlias = normalizeAlias(alias.alias);
-            if (!normalizedAlias) continue;
-            const aliasType = toDbAliasType(alias.aliasType);
-            await tx
-              .insert(schema.instrumentAliases)
-              .values({
-                id: stableId("alias", `${instrumentId}:${normalizedAlias}`),
-                instrumentId,
-                alias: alias.alias,
-                normalizedAlias,
-                aliasType,
-              })
-              .onDuplicateKeyUpdate({
-                set: { alias: alias.alias, aliasType },
-              });
-          }
+        for (let i = 0; i < aliasValues.length; i += CHUNK) {
+          const chunk = aliasValues.slice(i, i + CHUNK);
+          if (!chunk.length) continue;
+          await tx
+            .insert(schema.instrumentAliases)
+            .values(chunk)
+            .onDuplicateKeyUpdate({
+              set: {
+                alias: sql`VALUES(alias)`,
+                aliasType: sql`VALUES(alias_type)`,
+              },
+            });
         }
 
         // Source-isolated: only deactivate within this country+market.
