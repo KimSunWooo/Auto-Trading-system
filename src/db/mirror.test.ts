@@ -100,6 +100,12 @@ test("mirror writes JSON and ledger together", async () => {
   const ledger = new MemoryLedger();
   setMirrorLedgerForTest(ledger);
   process.env.PERSISTENCE_MODE = "mirror";
+  process.env.PAPER_RUNTIME_OWNER = "bootstrap";
+  process.env.KIS_MODE = "paper";
+  process.env.KIS_PAPER_ACCOUNT_NO = "11111111-01";
+  process.env.KIS_PAPER_APP_KEY = "paper-key";
+  process.env.KIS_PAPER_APP_SECRET = "paper-secret";
+  process.env.BROKER_CREDENTIAL_MASTER_KEY = "test-broker-credential-master-key-32chars!!";
   const dir = mkdtempSync(path.join(os.tmpdir(), "mirae-mirror-"));
   const file = path.join(dir, "paper-account.json");
   try {
@@ -116,6 +122,11 @@ test("mirror writes JSON and ledger together", async () => {
     resetStateStoreForTest();
     setMirrorLedgerForTest(null);
     process.env.PERSISTENCE_MODE = "json";
+    delete process.env.PAPER_RUNTIME_OWNER;
+    delete process.env.KIS_PAPER_ACCOUNT_NO;
+    delete process.env.KIS_PAPER_APP_KEY;
+    delete process.env.KIS_PAPER_APP_SECRET;
+    delete process.env.BROKER_CREDENTIAL_MASTER_KEY;
     rmSync(dir, { recursive: true, force: true });
   }
 });

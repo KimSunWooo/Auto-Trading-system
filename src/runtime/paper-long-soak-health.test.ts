@@ -7,6 +7,7 @@ import { QuantEngine } from "@/src/engine/QuantEngine";
 import { blankRule, type UserRule } from "@/src/rules/params";
 import { setRuleConfigForTest, syncAllocationsToRules } from "@/src/rules/config";
 import { emptyStartupSync } from "@/src/runtime/startup-sync";
+import { FakeBroker } from "@/src/test-support";
 import {
   LONG_SOAK_RULE_ID,
   LONG_SOAK_TICKER,

@@ -6,6 +6,7 @@ import { withNow } from "@/src/clock";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 import { tradingBlocked } from "@/src/risk/circuit";
 import { RiskManager } from "@/src/risk/RiskManager";
+import { BacktestExecutionModel } from "@/src/backtest/BacktestExecutionModel";
 import {
   generateDailyCandles,
   quoteFromCandle,
@@ -159,10 +160,14 @@ export class BacktestRunner {
         state = RiskManager.rollDay(state, new Date(t));
         state = applyDay(state, candles, i);
         const box = { current: state };
-        await new RiskManager(box).enforceStops();
+        await new RiskManager(box).enforceStops({
+          createTestBroker: (live) => new BacktestExecutionModel(live),
+        });
         box.current = RiskManager.checkDailyLoss(box.current);
         if (box.current.settings.autoTrading && box.current.settings.disclaimerAccepted && !tradingBlocked(box.current)) {
-          box.current = await QuantEngine.run(box.current);
+          box.current = await QuantEngine.run(box.current, {
+            createTestBroker: (live) => new BacktestExecutionModel(live),
+          });
         }
         state = box.current;
       });

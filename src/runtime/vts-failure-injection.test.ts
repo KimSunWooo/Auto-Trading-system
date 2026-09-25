@@ -375,12 +375,15 @@ test("SIMULATED emergency stop blocks buys and does not flatten", async () => {
   assert.equal(box.current.positions[0]?.qty, 1);
 });
 
-test("SIMULATED emergency flatten is local-only without flatten opt-in", async () => {
+test("SIMULATED emergency flatten without KisClient fails closed", async () => {
   assert.notEqual(process.env.RUN_KIS_VTS_FLATTEN_TEST, "true");
   const box = { current: createPaperState() };
   box.current.positions = [
     { code: "005930", name: "삼성전자", qty: 1, avgPrice: 100, ruleId: "cash" },
   ];
-  await RiskManager.emergencyFlatten(box, { kis: null });
-  assert.equal(box.current.settings.autoTrading, false);
+  await assert.rejects(
+    () => RiskManager.emergencyFlatten(box, { kis: null }),
+    (err: unknown) => err instanceof Error && /KIS_PAPER_RUNTIME_NOT_READY|not ready/.test(err.message),
+  );
+  assert.equal(box.current.positions.length, 1);
 });

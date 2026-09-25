@@ -426,6 +426,12 @@ test("Gate 19-20: JSON save survives RDS failure and recovers without duplicates
   let brokerSubmits = 0;
   const memory = new MemoryLedger();
   process.env.PERSISTENCE_MODE = "mirror";
+  process.env.PAPER_RUNTIME_OWNER = "bootstrap";
+  process.env.KIS_MODE = "paper";
+  process.env.KIS_PAPER_ACCOUNT_NO = "11111111-01";
+  process.env.KIS_PAPER_APP_KEY = "paper-key";
+  process.env.KIS_PAPER_APP_SECRET = "paper-secret";
+  process.env.BROKER_CREDENTIAL_MASTER_KEY = "test-broker-credential-master-key-32chars!!";
   resetDatabaseStatusForTest();
   const dir = mkdtempSync(path.join(os.tmpdir(), "mirae-gate-"));
   const file = path.join(dir, "paper-account.json");
@@ -455,6 +461,11 @@ test("Gate 19-20: JSON save survives RDS failure and recovers without duplicates
   } finally {
     setMirrorLedgerForTest(null);
     process.env.PERSISTENCE_MODE = "json";
+    delete process.env.PAPER_RUNTIME_OWNER;
+    delete process.env.KIS_PAPER_ACCOUNT_NO;
+    delete process.env.KIS_PAPER_APP_KEY;
+    delete process.env.KIS_PAPER_APP_SECRET;
+    delete process.env.BROKER_CREDENTIAL_MASTER_KEY;
     rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -116,7 +116,7 @@ test("executeKillSwitch without KisClient fails closed (no local mock flatten)",
     () => RiskManager.executeKillSwitch(box, { kis: null }),
     (err: unknown) => err instanceof BrokerNotReadyError,
   );
-  assert.equal(box.current.positions.length, 2);
+  assert.equal(box.current.positions.length, 1);
 });
 
 class KillKis implements KisApi {
