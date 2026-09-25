@@ -95,7 +95,7 @@ export function toDbAliasType(aliasType: string): "SYMBOL" | "KOREAN" | "ENGLISH
  * (RUNNING | PASS | FAIL | DEGRADED). Result objects keep SUCCESS/FAILED for callers.
  */
 export function toDbSyncRunStatus(
-  status: "SUCCESS" | "FAILED" | "SKIPPED" | "RUNNING" | "PASS" | "FAIL" | "DEGRADED",
+  status: string,
 ): "RUNNING" | "PASS" | "FAIL" | "DEGRADED" {
   switch (status) {
     case "SUCCESS":
