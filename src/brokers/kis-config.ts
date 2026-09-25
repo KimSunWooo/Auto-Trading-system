@@ -1,11 +1,11 @@
 import type { BrokerDriver, BrokerPublicStatus } from "@/lib/types";
 import { realKisOrdersLocked } from "@/src/runtime/trading-mode";
 
-/** KIS REST/WS environment. MOCK is a broker driver, not a KIS host. */
+/** KIS REST/WS environment. Broker driver is always KIS — PAPER vs REAL is KisEnvironment. */
 export type KisEnvironment = "paper" | "real";
 /** @deprecated Use KisEnvironment. `demo` env alias still maps to paper. */
 export type KisMode = KisEnvironment;
-export type TradingEnvironment = "mock" | "paper" | "real";
+export type TradingEnvironment = "paper" | "real";
 
 export const KIS_LIVE_CONFIRM_VALUE = "I_UNDERSTAND";
 
@@ -107,13 +107,15 @@ export class KisCredentialError extends Error {
   }
 }
 
-export function brokerDriver(env: EnvMap = process.env): BrokerDriver {
-  return env.BROKER === "kis" ? "kis" : "mock";
+/**
+ * Production always uses KIS. Legacy BROKER env is ignored — never selects a local mock book.
+ */
+export function brokerDriver(_env: EnvMap = process.env): BrokerDriver {
+  return "kis";
 }
 
-/** MOCK when BROKER!=kis. PAPER/REAL from KIS_MODE (demo|paper → paper, real → real). */
+/** PAPER/REAL from KIS_MODE (demo|paper → paper, real → real). */
 export function resolveTradingEnvironment(env: EnvMap = process.env): TradingEnvironment {
-  if (brokerDriver(env) !== "kis") return "mock";
   return resolveKisEnvironment(env);
 }
 
@@ -234,9 +236,6 @@ export function getKisConfig(
   environment: TradingEnvironment,
   env: EnvMap = process.env,
 ): KisConfig {
-  if (environment === "mock") {
-    throw new KisCredentialError("MockBroker는 KIS credential이 필요하지 않습니다.");
-  }
   const keys = environment === "real" ? REAL_KEYS : PAPER_KEYS;
   const creds = readSet(env, keys);
   const cfg = buildConfig(environment, creds, env);
@@ -278,18 +277,6 @@ export function loadKisConfig(env: EnvMap = process.env): KisConfig {
 export function getBrokerPublicStatus(
   env: EnvMap = process.env,
 ): BrokerPublicStatus {
-  const driver = brokerDriver(env);
-  if (driver === "mock") {
-    return {
-      driver: "mock",
-      mode: null,
-      configured: true,
-      liveEnabled: false,
-      accountMasked: null,
-      message: "로컬 페이퍼 북으로 체결합니다. 실제 주문은 나가지 않습니다.",
-    };
-  }
-
   const kis = loadKisConfig(env);
   if (!kis.configured) {
     return {
@@ -298,7 +285,7 @@ export function getBrokerPublicStatus(
       configured: false,
       liveEnabled: false,
       accountMasked: null,
-      message: kis.issues[0] ?? "한국투자증권 앱키가 설정되지 않았습니다.",
+      message: kis.issues[0] ?? "한국투자증권 PAPER 계좌가 연결되지 않았습니다.",
     };
   }
 

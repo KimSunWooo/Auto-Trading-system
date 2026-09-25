@@ -1,15 +1,17 @@
 import type { Quote } from "@/lib/types";
-import { brokerDriver } from "@/src/brokers/kis-config";
-import { isLiveLike, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
+import { type EnvMap } from "@/src/runtime/trading-mode";
 import { nowMs } from "@/src/clock";
 import { formatSeoulTime } from "@/lib/format";
 
 /** Keep in sync with CONTROLLED_RUN_QUOTE_FRESH_MS — do not import controlled-run (client-safe). */
 export const LIVE_KIS_QUOTE_FRESH_MS = 15_000;
 
-/** LIVE_TEST|LIVE + BROKER=kis — only KIS quotes are valid current prices. */
-export function usesLiveKisQuotes(env: EnvMap = process.env): boolean {
-  return isLiveLike(tradingMode(env)) && brokerDriver(env) === "kis";
+/**
+ * Production is KIS-only: only fresh KIS quotes are valid current prices.
+ * Trading mode paper still uses KIS quotes (never a local mock book).
+ */
+export function usesLiveKisQuotes(_env: EnvMap = process.env): boolean {
+  return true;
 }
 
 export function isMockOrSeedQuote(quote: Quote | null | undefined): boolean {
@@ -66,14 +68,13 @@ export function quoteDisplayKind(
 }
 
 /**
- * Strip persisted mock/seed quotes from the current book under live KIS.
+ * Drop persisted non-KIS quotes from the book (legacy mock/seed discarded).
  * Does not touch orders, intents, positions, or other ledger fields.
  */
 export function invalidateNonKisQuotes(
   quotes: Record<string, Quote>,
-  env: EnvMap = process.env,
+  _env?: EnvMap,
 ): Record<string, Quote> {
-  if (!usesLiveKisQuotes(env)) return quotes;
   const next: Record<string, Quote> = {};
   for (const [code, quote] of Object.entries(quotes)) {
     if (quote.source === "kis") next[code] = quote;

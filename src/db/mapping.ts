@@ -1,6 +1,6 @@
 import type { AppState, Order, OrderIntent, OrderStatus, Side } from "@/lib/types";
 import { intentStatusFromOrder } from "@/src/risk/kis-balance-semantics";
-import { brokerDriver, loadKisConfig, maskAccountNo, parseAccountNo, resolveKisEnvironment } from "@/src/brokers/kis-config";
+import { loadKisConfig, maskAccountNo, parseAccountNo, resolveKisEnvironment } from "@/src/brokers/kis-config";
 import { tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { UNIVERSE } from "@/lib/universe";
 import { US_SEED_UNIVERSE } from "@/src/markets/overseas/instruments";
@@ -14,7 +14,6 @@ export type DbEnv = "MOCK" | "PAPER" | "REAL";
 export type DbBroker = "MOCK" | "KIS";
 
 export function ledgerEnvironment(env: EnvMap = process.env): DbEnv {
-  if (brokerDriver(env) !== "kis") return "MOCK";
   try {
     return resolveKisEnvironment(env) === "real" ? "REAL" : "PAPER";
   } catch {
@@ -22,8 +21,8 @@ export function ledgerEnvironment(env: EnvMap = process.env): DbEnv {
   }
 }
 
-export function ledgerBroker(env: EnvMap = process.env): DbBroker {
-  return brokerDriver(env) === "kis" ? "KIS" : "MOCK";
+export function ledgerBroker(_env: EnvMap = process.env): DbBroker {
+  return "KIS";
 }
 
 export function instrumentIdFor(code: string): string {
@@ -114,7 +113,6 @@ export function executionKeyFor(order: Order, parent: Order | undefined, cumulat
 }
 
 export function maskedAccount(env: EnvMap = process.env): string | null {
-  if (brokerDriver(env) !== "kis") return null;
   const kis = loadKisConfig(env);
   const parsed = parseAccountNo(kis.accountNo);
   if (!parsed) return null;
@@ -122,9 +120,7 @@ export function maskedAccount(env: EnvMap = process.env): string | null {
 }
 
 export function credentialRef(env: EnvMap = process.env): string | null {
-  const broker = ledgerBroker(env);
   const environment = ledgerEnvironment(env);
-  if (broker === "MOCK") return "env:MOCK";
   if (environment === "REAL") return "env:KIS_REAL";
   return "env:KIS_PAPER";
 }

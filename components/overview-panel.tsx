@@ -57,7 +57,7 @@ export function OverviewPanel({
 }) {
   const stats = dashboardStats(state);
   const pnl = stats.pnl;
-  const liveKis = state.broker?.driver === "kis" && state.runtime?.tradingMode !== "mock";
+  const liveKis = state.broker?.driver === "kis";
   const quotes = useMemo(() => {
     const symbols = state.runtime?.currentSymbols ?? [];
     const rows = filterDashboardQuotes(state.quotes, {
@@ -610,8 +610,8 @@ async function buySell(
 }
 
 export function BrokerBadge({ state }: { state: PublicState }) {
-  if (state.broker?.driver !== "kis") {
-    return <Badge variant="secondary">로컬 모의</Badge>;
+  if (!state.broker?.configured) {
+    return <Badge variant="outline">KIS 미연결</Badge>;
   }
   if (state.broker.mode === "real" && state.broker.liveEnabled) {
     return <Badge variant="destructive">KIS 실전</Badge>;
@@ -619,7 +619,7 @@ export function BrokerBadge({ state }: { state: PublicState }) {
   if (state.broker.mode === "real") {
     return <Badge variant="outline">KIS 실전 · 주문잠금</Badge>;
   }
-  return <Badge variant="secondary">KIS 모의투자</Badge>;
+  return <Badge variant="secondary">KIS PAPER</Badge>;
 }
 
 export function MarketBadge({ state }: { state: PublicState }) {

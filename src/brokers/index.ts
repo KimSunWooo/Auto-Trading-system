@@ -1,8 +1,6 @@
 import type { StateBox } from "@/src/accounts/StateBox";
 import { KisBroker } from "@/src/brokers/KisBroker";
-import { MockBroker } from "@/src/brokers/MockBroker";
 import type { IBroker } from "@/src/brokers/IBroker";
-import { brokerDriver } from "@/src/brokers/kis-config";
 import { getSharedKisClient, type KisApi } from "@/src/brokers/kis-client";
 import type { AppState } from "@/lib/types";
 
@@ -16,22 +14,45 @@ export type CreateBrokerOpts = {
   quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
 };
 
+export class BrokerNotReadyError extends Error {
+  readonly code: "KIS_PAPER_RUNTIME_NOT_READY" | "KIS_PAPER_ACCOUNT_NOT_CONNECTED";
+  constructor(
+    code: "KIS_PAPER_RUNTIME_NOT_READY" | "KIS_PAPER_ACCOUNT_NOT_CONNECTED",
+    message: string,
+  ) {
+    super(message);
+    this.name = "BrokerNotReadyError";
+    this.code = code;
+  }
+}
+
+/**
+ * Production broker factory — KisBroker only.
+ * Never falls back to a local mock book.
+ */
 export function createBroker(
   box: StateBox,
   ruleKey = CASH_RULE_ID,
   opts: CreateBrokerOpts = {},
 ): IBroker {
-  if (brokerDriver() === "kis") {
-    return new KisBroker(box, opts.kisClient ?? getSharedKisClient(), ruleKey, "rule", undefined, undefined, {
-      persistState: opts.persistState,
-      safety: opts.safety,
-      quoteHub: opts.quoteHub,
-    });
+  const client = opts.kisClient ?? getSharedKisClient();
+  if (!client?.configured) {
+    throw new BrokerNotReadyError(
+      "KIS_PAPER_RUNTIME_NOT_READY",
+      "KIS PAPER runtime is not ready — local mock book is not available",
+    );
   }
-  return new MockBroker(box, ruleKey);
+  return new KisBroker(box, client, ruleKey, "rule", undefined, undefined, {
+    persistState: opts.persistState,
+    safety: opts.safety,
+    quoteHub: opts.quoteHub,
+  });
 }
 
-/** Account RuntimeScope entry — uses injected KIS client + persister + safety. */
+/**
+ * Account RuntimeScope entry — uses injected KIS client only.
+ * Does not re-read global BROKER env.
+ */
 export function createBrokerForRuntime(
   box: StateBox,
   opts: {
@@ -42,17 +63,35 @@ export function createBrokerForRuntime(
     quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
   },
 ): IBroker {
-  return createBroker(box, opts.ruleKey ?? CASH_RULE_ID, {
-    kisClient: opts.kisClient,
-    persistState: opts.persistState,
-    safety: opts.safety,
-    quoteHub: opts.quoteHub,
-  });
+  if (!opts.kisClient?.configured) {
+    throw new BrokerNotReadyError(
+      "KIS_PAPER_ACCOUNT_NOT_CONNECTED",
+      "KIS PAPER account client is not configured",
+    );
+  }
+  return new KisBroker(
+    box,
+    opts.kisClient,
+    opts.ruleKey ?? CASH_RULE_ID,
+    "rule",
+    undefined,
+    undefined,
+    {
+      persistState: opts.persistState,
+      safety: opts.safety,
+      quoteHub: opts.quoteHub,
+    },
+  );
 }
 
 export type { IBroker, BrokerFill, BrokerQuote } from "@/src/brokers/IBroker";
 export type { BrokerPublicStatus } from "@/lib/types";
-export { MockBroker } from "@/src/brokers/MockBroker";
 export { KisBroker } from "@/src/brokers/KisBroker";
-export { brokerDriver, getBrokerPublicStatus, getKisConfig, loadKisConfig, KIS_TR, KIS_OVERSEAS_TR } from "@/src/brokers/kis-config";
+export {
+  getBrokerPublicStatus,
+  getKisConfig,
+  loadKisConfig,
+  KIS_TR,
+  KIS_OVERSEAS_TR,
+} from "@/src/brokers/kis-config";
 export { KisClient, getSharedKisClient } from "@/src/brokers/kis-client";

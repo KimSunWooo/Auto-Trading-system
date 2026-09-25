@@ -9,9 +9,10 @@ export type IntentMeta = {
 /**
  * Broker adapter contract.
  *
- * MockBroker fills the local paper book. KisBroker talks to 한국투자증권
- * Open API (모의 VTS / 실전), keeps the ticket pending until daily ccld
- * reports filled qty, then mirrors only that qty onto the local risk buckets.
+ * KisBroker talks to 한국투자증권 Open API (모의 VTS / 실전),
+ * keeps the ticket pending until daily ccld reports filled qty,
+ * then mirrors only that qty onto the local risk buckets.
+ * Production never uses a local mock book.
  */
 export interface BrokerQuote {
   ticker: string;
@@ -42,7 +43,7 @@ export interface BrokerFill {
 }
 
 export interface IBroker {
-  readonly driver: "mock" | "kis";
+  readonly driver: "kis";
   forRule(ruleKey: string): IBroker;
   withSource(source: OrderSource, sourceId?: string): IBroker;
   withIntent(meta: IntentMeta): IBroker;

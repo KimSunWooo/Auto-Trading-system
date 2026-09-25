@@ -7,7 +7,7 @@ import type { Allocation, AppState, PaperBrokerBaseline } from "@/lib/types";
 import { CASH_RULE_ID } from "@/src/rules/params";
 import { seoulDay } from "@/src/risk/limits";
 import { usesPaperBrokerBalanceSemantics } from "@/src/risk/kis-balance-semantics";
-import { brokerDriver, type EnvMap } from "@/src/brokers/kis-config";
+import { type EnvMap } from "@/src/brokers/kis-config";
 import { emptyCircuit } from "@/src/risk/circuit";
 import { emptySafety } from "@/src/runtime/safety";
 import { DEFAULT_PRODUCT_RISK } from "@/src/risk/product";
@@ -77,7 +77,7 @@ export function createPaperAccountResetState(): AppState {
     settings: {
       ignoreMarketHours: true,
       startingCash: 0,
-      broker: brokerDriver(),
+      broker: "kis",
       autoTrading: false,
       onboardingComplete: false,
       liquidating: false,

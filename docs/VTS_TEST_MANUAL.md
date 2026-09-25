@@ -2,12 +2,13 @@
 
 이 문서는 **한국투자증권 모의투자(VTS)** 에서 주문 생명주기를 확인하기 위한 절차입니다. 실전(`KIS_MODE=real`) 주문은 포함하지 않습니다.
 
-기본 개발 실행은 항상 Mock입니다.
+기본 개발 실행은 KIS PAPER입니다. 로컬 mock 브로커 제품 기능은 없습니다.
 
 ```
-BROKER=mock
-TRADING_MODE=MOCK
+PAPER_RUNTIME_OWNER=accounts
+TRADING_MODE=live_test
 ALLOW_LIVE_TRADING=false
+KIS_MODE=paper
 ```
 
 ---
@@ -15,7 +16,7 @@ ALLOW_LIVE_TRADING=false
 ## 코드 경로 (실제 파일)
 
 ```
-시세        KisBroker.getQuote / MockBroker.getQuote
+시세        KisBroker.getQuote
             lib/engine.ts refreshLiveQuotes
 전략        evaluateConditions, evaluateDca, QuantEngine.run
 시그널      src/rules/RuleRunner.ts makeSignalId
@@ -27,7 +28,7 @@ Intent      src/runtime/intents.ts upsertIntent
 멱등        KisBroker.existingIntentFill, OrderManager.begin
 주문        src/accounts/OrderManager.ts begin
 브로커      src/brokers/IBroker.ts
-            src/brokers/MockBroker.ts
+            src/test-support/fake-broker.ts (FakeBroker, tests only)
             src/brokers/KisBroker.ts placeBuy/placeSell
 KIS         src/brokers/kis-client.ts orderCash, inquireDailyCcld, inquireOpenOrders
 체결        src/accounts/fills.ts bookReportedFill (ODNO only)
@@ -132,7 +133,7 @@ REAL / 비-PAPER LIVE_TEST 서버 한도: 1건 10,000원, 하루 매수 30,000�
 
 **목적:** 일부만 체결되면 잔량은 pending으로 남고 포지션은 체결수량만 반영.
 
-**사전조건:** 지정가가 체결되기 어려운 가격이거나 수량이 나뉘는 상황. VTS에서 재현 안 되면 MOCK `MOCK_BROKER_MODE=partial`로 로컬 확인 후 VTS는 NOT VERIFIED.
+**사전조건:** 지정가가 체결되기 어려운 가격이거나 수량이 나뉘는 상황. VTS에서 재현 안 되면 unit FakeBroker(`FAKE_BROKER_MODE=partial`)로 로컬 확인 후 VTS는 NOT VERIFIED.
 
 **실행방법:** 주문 후 HTS에서 일부 체결을 확인. 워커 틱.
 

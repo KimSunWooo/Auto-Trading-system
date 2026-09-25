@@ -2,11 +2,11 @@
 
 사용자가 종목·조건·금액·손절/익절을 직접 입력하고, 그 조건식만 기계적으로 API 매매하는 B2C 소프트웨어 도구.
 
-기존 백엔드 경계는 유지한다. `IBroker` → `OrderManager` → 조건식 버킷, `MockBroker` / `KisBroker` 어댑터, `QuantEngine` 틱 루프를 우회하거나 대체하지 않는다.
+기존 백엔드 경계는 유지한다. `IBroker` → `OrderManager` → 조건식 버킷, `KisBroker` 어댑터, `QuantEngine` 틱 루프를 우회하거나 대체하지 않는다. 로컬 mock 브로커 제품 기능은 없다 (unit test FakeBroker만 `src/test-support/`).
 
 ## 핵심 가치
 
-- 회사가 종목이나 조건식을 미리 정해 주지 않는다.
+- 회사가 종목이나 조건식을 미리 정해 두지 않는다.
 - 자산·체결이 한눈에 보이도록 한다.
 - 일일 손실·종목 비중·긴급 정지로 사고를 막는다.
 - 이용 동의 전에는 엔진과 KIS 주문을 잠근다.
@@ -18,8 +18,8 @@
         │
         ▼
      IBroker
-   ┌────┴────┐
-MockBroker  KisBroker
+        │
+     KisBroker  (KIS PAPER; REAL locked)
         │
         ▼
   OrderManager  →  RiskManager (상품 한도) + HARD_LIMITS (최후 캡)
@@ -43,11 +43,10 @@ MockBroker  KisBroker
 
 ## 온보딩
 
-1. 증권사 연결
-2. 예수금
-3. 매매 룰 직접 입력
-4. 면책 동의
-5. 시작 (체크박스 true 일 때만 KIS/엔진 가동)
+1. PAPER 계좌 확인
+2. 매매 룰 직접 입력
+3. 면책 동의
+4. 시작 (체크박스 true 일 때만 KIS/엔진 가동)
 
 ## 화면
 

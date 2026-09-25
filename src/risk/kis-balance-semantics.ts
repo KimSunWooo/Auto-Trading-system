@@ -1,13 +1,12 @@
 import type { AppState, KisBalanceSnapshot, Order } from "@/lib/types";
-import { brokerDriver, resolveKisEnvironment, type EnvMap } from "@/src/brokers/kis-config";
+import { resolveKisEnvironment, type EnvMap } from "@/src/brokers/kis-config";
 import type { KisAccountBalance, KisPsblOrder } from "@/src/brokers/kis-client";
 
 /**
- * PAPER/VTS only. Explicit KIS_MODE=paper|demo + BROKER=kis.
+ * PAPER/VTS only. Explicit KIS_MODE=paper|demo.
  * Empty KIS_MODE and REAL flags never select this path.
  */
 export function usesPaperBrokerBalanceSemantics(env: EnvMap = process.env): boolean {
-  if (brokerDriver(env) !== "kis") return false;
   const raw = String(env.KIS_MODE ?? "").trim().toLowerCase();
   if (raw !== "paper" && raw !== "demo") return false;
   if (String(env.TRADING_MODE ?? "").trim().toLowerCase() === "live") return false;

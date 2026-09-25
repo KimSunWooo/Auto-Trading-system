@@ -1,4 +1,4 @@
-import { clampDailyLimit, roundToTick, tickSize } from "./tick-size";
+import { roundToTick, tickSize } from "./tick-size";
 import type { AppState, AutoCondition, DcaPlan, Quote } from "./types";
 import { findStock } from "./universe";
 import { getMarketClock } from "./market-hours";
@@ -6,7 +6,7 @@ import { canFillLimit } from "@/src/accounts/fills";
 import { cashFromAllocations, DEFAULT_ALLOCATIONS, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
 import { accountValue } from "@/src/accounts/portfolio";
 import type { StateBox } from "@/src/accounts/StateBox";
-import { createBroker, brokerDriver, type CreateBrokerOpts } from "@/src/brokers/index";
+import { createBroker, BrokerNotReadyError, type CreateBrokerOpts } from "@/src/brokers/index";
 import type { IBroker } from "@/src/brokers/IBroker";
 import { QuantEngine } from "@/src/engine/QuantEngine";
 import { emptyCircuit, tradingBlocked } from "@/src/risk/circuit";
@@ -37,7 +37,7 @@ import {
   syncHttpAudit,
 } from "@/src/runtime/controlled-run";
 import { startupSyncBlocksTrading, usesPaperStartupSync } from "@/src/runtime/startup-sync";
-import { invalidateNonKisQuotes, usesLiveKisQuotes } from "@/src/runtime/quote-policy";
+import { invalidateNonKisQuotes } from "@/src/runtime/quote-policy";
 import {
   refreshQuotesFromWebSocket,
   peekPaperQuoteHub,
@@ -50,25 +50,11 @@ const HISTORY_LEN = 40;
 
 export { applyFill, canFillLimit, feeBreakdown, findPosition } from "@/src/accounts/fills";
 
-export function seedQuote(code: string, prevClose = 10_000, name?: string): Quote {
-  const stock = findStock(code);
-  const price = roundToTick(stock?.prevClose ?? prevClose);
-  const tick = tickSize(price);
-  return {
-    code,
-    name: name ?? stock?.name ?? code,
-    market: stock?.market ?? "KOSPI",
-    price,
-    prevClose: stock?.prevClose ?? price,
-    open: price,
-    high: price,
-    low: price,
-    volume: 1,
-    bid: roundToTick(Math.max(tick, price - tick)),
-    ask: roundToTick(price + tick),
-    history: Array.from({ length: HISTORY_LEN }, () => price),
-    source: "seed",
-  };
+/** @deprecated Removed from production — use makeTestQuote from src/test-support. */
+export function seedQuote(code: string, _prevClose = 10_000, _name?: string): Quote {
+  throw new Error(
+    `seedQuote(${code}) removed from production runtime — use makeTestQuote in tests`,
+  );
 }
 
 export function createInitialQuotes(): Record<string, Quote> {
@@ -81,9 +67,9 @@ export function createInitialState(): AppState {
     updatedAt: new Date().toISOString(),
     tickCount: 0,
     settings: {
-      ignoreMarketHours: true,
+      ignoreMarketHours: false,
       startingCash: TOTAL_DEPOSIT,
-      broker: brokerDriver(),
+      broker: "kis",
       autoTrading: false,
       onboardingComplete: false,
       liquidating: false,
@@ -106,17 +92,52 @@ export function createInitialState(): AppState {
   };
 }
 
-/** Paper book with consent already recorded — unit tests only. */
+/** Unit-test helper — builds a consented state with KIS-sourced fixture quotes. Prefer makeTestPaperState. */
 export function createPaperState(): AppState {
   const state = createInitialState();
   state.settings.disclaimerAccepted = true;
   state.settings.autoTrading = true;
-  state.quotes = {
-    "005930": seedQuote("005930", 74_800),
-    "035720": seedQuote("035720", 42_150),
-    "247540": seedQuote("247540", 142_700),
+  state.settings.ignoreMarketHours = true;
+  const mk = (code: string, prev: number): Quote => {
+    const stock = findStock(code);
+    const price = roundToTick(stock?.prevClose ?? prev);
+    const tick = tickSize(price);
+    return {
+      code,
+      name: stock?.name ?? code,
+      market: stock?.market ?? "KOSPI",
+      price,
+      prevClose: stock?.prevClose ?? price,
+      open: price,
+      high: price,
+      low: price,
+      volume: 1,
+      bid: roundToTick(Math.max(tick, price - tick)),
+      ask: roundToTick(price + tick),
+      history: Array.from({ length: HISTORY_LEN }, () => price),
+      source: "kis",
+      transport: "ws",
+      freshAt: Date.now(),
+    };
   };
-  // Unit fixtures skip the live Startup Sync gate; production JSON load stays IDLE until sync.
+  state.quotes = {
+    "005930": mk("005930", 74_800),
+    "035720": mk("035720", 42_150),
+    "247540": mk("247540", 142_700),
+  };
+  state.cash = 10_000_000;
+  state.totalDeposit = 10_000_000;
+  state.allocations = [
+    {
+      ruleId: CASH_RULE_ID,
+      budget: 10_000_000,
+      balance: 10_000_000,
+      enabled: true,
+      lastMessage: "test fixture strategy cash",
+    },
+  ];
+  state.dayStart = { date: seoulDay(), equity: 10_000_000 };
+  state.equityHistory = [10_000_000];
   state.startupSync = {
     status: "HEALTHY",
     lastSyncedAt: new Date().toISOString(),
@@ -129,49 +150,17 @@ export function createPaperState(): AppState {
   return state;
 }
 
+/** Drop mock/seed; never invent prices. KIS WS is the only quote authority. */
 export function ensureUniverseQuotes(state: AppState): AppState {
-  if (usesLiveKisQuotes()) {
-    // Never invent seed quotes under live KIS; strip any leftover mock/seed.
-    return { ...state, quotes: invalidateNonKisQuotes(state.quotes) };
-  }
-  const quotes = { ...state.quotes };
-  for (const code of watchedTickersFrom(state)) {
-    if (!quotes[code]) quotes[code] = seedQuote(code);
-  }
-  return { ...state, quotes };
+  return { ...state, quotes: invalidateNonKisQuotes(state.quotes) };
 }
 
+/** @deprecated Production never synthesizes mock prices. */
 export function advanceQuotes(
   quotes: Record<string, Quote>,
-  rng: () => number = Math.random,
+  _rng: () => number = Math.random,
 ): Record<string, Quote> {
-  // Live KIS must never synthesize mock prices from the book.
-  if (usesLiveKisQuotes()) {
-    return invalidateNonKisQuotes(quotes);
-  }
-  const next: Record<string, Quote> = {};
-  for (const [code, q] of Object.entries(quotes)) {
-    const vol = 0.0012 + rng() * 0.004;
-    const shock = (rng() - 0.5) * 2 * vol;
-    const raw = q.price * (1 + shock);
-    const price = clampDailyLimit(raw, q.prevClose);
-    const tick = tickSize(price);
-    const bid = roundToTick(Math.max(tick, price - tick));
-    const ask = roundToTick(price + tick);
-    const history = [...q.history, price].slice(-HISTORY_LEN);
-    next[code] = {
-      ...q,
-      price,
-      high: Math.max(q.high, price),
-      low: Math.min(q.low, price),
-      volume: q.volume + Math.floor(400 + rng() * 2200),
-      bid,
-      ask,
-      history,
-      source: "mock",
-    };
-  }
-  return next;
+  return invalidateNonKisQuotes(quotes);
 }
 
 export function watchPrice(quote: Quote, cond: AutoCondition): number {
@@ -481,7 +470,7 @@ export async function tickState(
       updatedAt: clock.iso,
       settings: {
         ...state.settings,
-        broker: brokerDriver(),
+        broker: "kis",
       },
       circuit: state.circuit ?? emptyCircuit(),
       safety: {
@@ -492,84 +481,96 @@ export async function tickState(
       },
     },
   };
-  // LIVE_TEST+KIS: drop persisted mock/seed before any order decision or display path.
-  if (usesLiveKisQuotes()) {
-    box.current = {
-      ...box.current,
-      quotes: invalidateNonKisQuotes(box.current.quotes),
-    };
-  }
-  const root = createBroker(box, CASH_RULE_ID, brokerOpts);
+  // Drop persisted mock/seed before any order decision or display path.
+  box.current = {
+    ...box.current,
+    quotes: invalidateNonKisQuotes(box.current.quotes),
+  };
+
+  let root: IBroker;
   let liveReady = true;
-
-  if (root.driver === "kis") {
-    expireStaleInFlight(box);
-    const settled = await settleOpenOrders(box, kisClient);
-    let recoveredOk = settled.ok;
-    if (!settled.ok) {
-      box.current = markInquiryFailure(
-        box.current,
-        "recon",
-        settled.error ?? "당일 체결 조회에 실패했습니다.",
-      );
-      liveReady = false;
-    } else {
-      const recovered = await recoverExternalOrders(box, kisClient);
-      recoveredOk = recovered.ok;
-      if (!recovered.ok) {
-        box.current = markInquiryFailure(box.current, "recon", recovered.error);
-        liveReady = false;
-      }
-    }
-    const synced = await syncKisBalance(box, kisClient, now.getTime(), {
-      force: forceBalance,
-    });
-    if (!synced.ok) {
-      box.current = markInquiryFailure(box.current, "broker", synced.error ?? "잔고 조회에 실패했습니다.");
-      liveReady = false;
-    }
-    const quotesOk = await refreshLiveQuotes(
-      box,
-      root,
-      ruleConfig,
-      quoteHub,
-      kisClient,
-      quoteConsumerId,
+  try {
+    root = createBroker(box, CASH_RULE_ID, brokerOpts);
+  } catch (err) {
+    const message =
+      err instanceof BrokerNotReadyError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "KIS PAPER runtime not ready";
+    box.current = markInquiryFailure(box.current, "broker", message);
+    const equity = accountValue(box.current);
+    return bumpTick(
+      {
+        ...box.current,
+        equityHistory: [...(box.current.equityHistory ?? []), equity].slice(-120),
+      },
+      clock.open,
     );
-    if (!quotesOk && isLiveLike()) liveReady = false;
-    box.current = noteInquiry(box.current, {
-      quoteOk: quotesOk,
-      balanceOk: synced.ok,
-      orderableOk: Boolean(box.current.kisBalance?.orderableCash != null && box.current.kisBalance.orderableCash >= 0),
-      positionOk: synced.ok,
-      openOrdersOk: settled.ok && recoveredOk,
-      executionOk: settled.ok,
-      recon: reconStatusOf(box.current),
-    });
-    box.current = syncHttpAudit(box.current);
-    if (liveReady && isLiveLike()) {
-      box.current = clearSafetyBlock(resetRecoverableHalt(box.current), {
-        quoteOk: true,
-        brokerConnected: true,
-        reconciliation: engineReconciliationFlag(box.current),
-        workerHealthy: true,
-      });
-    }
-    box.current = resumeTransientUnknownStop(box.current);
-    const stop = box.current.controlledRun
-      ? autoStopReason(box.current, process.env, brokerOpts.safety)
-      : null;
-    if (stop) {
-      box.current = applyAutoStop(box.current, stop);
-      liveReady = false;
-    }
-  } else {
-    if (box.current.settings.ignoreMarketHours || clock.open) {
-      box.current = { ...box.current, quotes: advanceQuotes(box.current.quotes) };
-    }
   }
 
-  const kisLiveSession = root.driver !== "kis" || clock.open;
+  expireStaleInFlight(box);
+  const settled = await settleOpenOrders(box, kisClient);
+  let recoveredOk = settled.ok;
+  if (!settled.ok) {
+    box.current = markInquiryFailure(
+      box.current,
+      "recon",
+      settled.error ?? "당일 체결 조회에 실패했습니다.",
+    );
+    liveReady = false;
+  } else {
+    const recovered = await recoverExternalOrders(box, kisClient);
+    recoveredOk = recovered.ok;
+    if (!recovered.ok) {
+      box.current = markInquiryFailure(box.current, "recon", recovered.error);
+      liveReady = false;
+    }
+  }
+  const synced = await syncKisBalance(box, kisClient, now.getTime(), {
+    force: forceBalance,
+  });
+  if (!synced.ok) {
+    box.current = markInquiryFailure(box.current, "broker", synced.error ?? "잔고 조회에 실패했습니다.");
+    liveReady = false;
+  }
+  const quotesOk = await refreshLiveQuotes(
+    box,
+    root,
+    ruleConfig,
+    quoteHub,
+    kisClient,
+    quoteConsumerId,
+  );
+  if (!quotesOk && isLiveLike()) liveReady = false;
+  box.current = noteInquiry(box.current, {
+    quoteOk: quotesOk,
+    balanceOk: synced.ok,
+    orderableOk: Boolean(box.current.kisBalance?.orderableCash != null && box.current.kisBalance.orderableCash >= 0),
+    positionOk: synced.ok,
+    openOrdersOk: settled.ok && recoveredOk,
+    executionOk: settled.ok,
+    recon: reconStatusOf(box.current),
+  });
+  box.current = syncHttpAudit(box.current);
+  if (liveReady && isLiveLike()) {
+    box.current = clearSafetyBlock(resetRecoverableHalt(box.current), {
+      quoteOk: true,
+      brokerConnected: true,
+      reconciliation: engineReconciliationFlag(box.current),
+      workerHealthy: true,
+    });
+  }
+  box.current = resumeTransientUnknownStop(box.current);
+  const stop = box.current.controlledRun
+    ? autoStopReason(box.current, process.env, brokerOpts.safety)
+    : null;
+  if (stop) {
+    box.current = applyAutoStop(box.current, stop);
+    liveReady = false;
+  }
+
+  const kisLiveSession = clock.open;
   const sessionOk = clock.open && kisLiveSession;
   box.current = RiskManager.rollDay(box.current, now);
 
@@ -597,7 +598,7 @@ export async function tickState(
     sessionOk &&
     tradingOn &&
     !tradingBlocked(box.current, brokerOpts.safety) &&
-    (root.driver !== "kis" || liveReady);
+    liveReady;
   if (tradingAllowed) {
     box.current = await evaluateConditions(box.current, clock.iso, brokerOpts);
     box.current = await evaluateDca(box.current, clock.iso, brokerOpts);

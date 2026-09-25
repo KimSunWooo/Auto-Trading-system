@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  brokerDriver,
   getBrokerPublicStatus,
   getKisConfig,
   KisCredentialError,
@@ -171,26 +172,26 @@ test("legacy KIS_APP_KEY is ignored and never selected", () => {
   assert.ok(cfg.issues.some((msg) => msg.includes("더 이상")));
 });
 
-test("getKisConfig(mock) fails fast without reading credentials", () => {
-  assert.throws(
-    () => getKisConfig("mock", { ...PAPER, ...REAL }),
-    /MockBroker/,
-  );
+test("getKisConfig accepts paper only from TradingEnvironment (no mock env)", () => {
+  const paper = getKisConfig("paper", { ...PAPER, KIS_MODE: "paper" });
+  assert.equal(paper.environment, "paper");
+  assert.equal(paper.configured, true);
+  assert.equal(brokerDriver({ BROKER: "mock" }), "kis");
 });
 
-test("Mock broker does not need KIS credentials", () => {
-  assert.equal(resolveTradingEnvironment({ BROKER: "mock", KIS_MODE: "real", ...REAL }), "mock");
-  const status = getBrokerPublicStatus({ BROKER: "mock", ...REAL, ...PAPER });
-  assert.equal(status.driver, "mock");
-  assert.equal(status.accountMasked, null);
-  assert.match(status.message, /페이퍼/);
+test("legacy BROKER=mock is ignored — public status stays KIS", () => {
+  assert.equal(resolveTradingEnvironment({ BROKER: "mock", KIS_MODE: "paper", ...PAPER }), "paper");
+  const status = getBrokerPublicStatus({ BROKER: "mock", KIS_MODE: "paper", ...PAPER });
+  assert.equal(status.driver, "kis");
+  assert.equal(status.mode, "paper");
+  assert.equal(status.configured, true);
 });
 
-test("public status for mock does not leak account numbers", () => {
-  const status = getBrokerPublicStatus({ BROKER: "mock" });
-  assert.equal(status.driver, "mock");
+test("public status without credentials does not invent a local book", () => {
+  const status = getBrokerPublicStatus({ BROKER: "mock", KIS_MODE: "paper" });
+  assert.equal(status.driver, "kis");
+  assert.equal(status.configured, false);
   assert.equal(status.accountMasked, null);
-  assert.match(status.message, /페이퍼/);
 });
 
 test("public status masks PAPER account numbers", () => {

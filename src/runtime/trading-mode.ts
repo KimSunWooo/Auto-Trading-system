@@ -1,24 +1,22 @@
-export type TradingMode = "mock" | "paper" | "live_test" | "live";
-
-export type MockBrokerMode =
-  | "instant"
-  | "delayed"
-  | "reject"
-  | "timeout"
-  | "unknown"
-  | "partial";
+export type TradingMode = "paper" | "live_test" | "live";
 
 export type EnvMap = Record<string, string | undefined>;
 
+/**
+ * Resolve TRADING_MODE. Default is live_test (KIS PAPER operational).
+ * Legacy "mock" / "MOCK" values are rejected — fail closed to live_test with no mock book.
+ */
 export function tradingMode(env: EnvMap = process.env): TradingMode {
-  const raw = String(env.TRADING_MODE ?? "mock")
+  const raw = String(env.TRADING_MODE ?? "live_test")
     .trim()
     .toLowerCase()
     .replaceAll("-", "_");
   if (raw === "live_test") return "live_test";
   if (raw === "live") return "live";
   if (raw === "paper") return "paper";
-  return "mock";
+  // Legacy MOCK removed: treat as live_test so product never runs a mock book.
+  if (raw === "mock" || raw === "") return "live_test";
+  return "live_test";
 }
 
 export function allowLiveTrading(env: EnvMap = process.env): boolean {
@@ -29,8 +27,9 @@ export function isLiveLike(mode: TradingMode = tradingMode()): boolean {
   return mode === "live_test" || mode === "live";
 }
 
+/** Browser /api/tick is never allowed for live_test/live (worker+lock only). */
 export function httpTickAllowed(mode: TradingMode = tradingMode()): boolean {
-  return mode === "mock" || mode === "paper";
+  return mode === "paper";
 }
 
 export function liveOrdersLocked(env: EnvMap = process.env): string | null {
@@ -43,20 +42,6 @@ export function liveOrdersLocked(env: EnvMap = process.env): string | null {
 export function realKisOrdersLocked(env: EnvMap = process.env): string | null {
   if (tradingMode(env) === "live" && allowLiveTrading(env)) return null;
   return "실전 KIS 주문은 TRADING_MODE=live 와 ALLOW_LIVE_TRADING=true 가 필요합니다. 모의투자는 KIS_MODE=paper 와 KIS_PAPER_* 를 사용하세요.";
-}
-
-export function mockBrokerMode(env: EnvMap = process.env): MockBrokerMode {
-  const raw = String(env.MOCK_BROKER_MODE ?? "instant").trim().toLowerCase();
-  if (
-    raw === "delayed" ||
-    raw === "reject" ||
-    raw === "timeout" ||
-    raw === "unknown" ||
-    raw === "partial"
-  ) {
-    return raw;
-  }
-  return "instant";
 }
 
 export type LiveTestCaps = {

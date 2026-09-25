@@ -6,7 +6,7 @@ import { cashFromAllocations, TOTAL_DEPOSIT } from "@/src/accounts/defaults";
 import { emptyCircuit } from "@/src/risk/circuit";
 import { seoulDay } from "@/src/risk/limits";
 import { mergeProductRisk } from "@/src/risk/product";
-import { brokerDriver, getBrokerPublicStatus } from "@/src/brokers/kis-config";
+import { getBrokerPublicStatus } from "@/src/brokers/kis-config";
 import { cashAllocation, getRuleConfig } from "@/src/rules/config";
 import { CASH_RULE_ID, isLegacyPlaybookId } from "@/src/rules/params";
 import type { Allocation, AppState, Position, PublicState } from "./types";
@@ -97,7 +97,7 @@ function migrateState(parsed: AppState): AppState {
     settings: {
       ignoreMarketHours: parsed.settings?.ignoreMarketHours ?? true,
       startingCash: parsed.settings?.startingCash ?? totalDeposit,
-      broker: brokerDriver(),
+      broker: "kis",
       autoTrading: disclaimerAccepted && (parsed.settings?.autoTrading ?? false),
       onboardingComplete: parsed.settings?.onboardingComplete ?? false,
       liquidating: false,

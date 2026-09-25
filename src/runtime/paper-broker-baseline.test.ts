@@ -13,10 +13,11 @@ import {
 } from "@/src/runtime/paper-broker-baseline";
 import { emptyStartupSync } from "@/src/runtime/startup-sync";
 
-test("P3 first broker sync replaces default 10M with KIS deposit baseline", () => {
+test("P3 first broker sync sets strategy ledger from KIS deposit (no default 10M)", () => {
   const seeded = createInitialState();
   assert.equal(seeded.totalDeposit, TOTAL_DEPOSIT);
-  assert.equal(needsPaperBrokerBaseline(seeded, { BROKER: "kis", KIS_MODE: "paper" }), true);
+  assert.equal(TOTAL_DEPOSIT, 0);
+  assert.equal(needsPaperBrokerBaseline(seeded, { KIS_MODE: "paper" }), true);
 
   const next = applyPaperBrokerBaseline(seeded, 5_000_000);
   assert.equal(next.totalDeposit, 5_000_000);
@@ -41,7 +42,7 @@ test("P4 second apply does not reset baseline/history when KIS cash changes", ()
   assert.equal(second.paperBrokerBaseline?.depositCash, 5_000_000);
   assert.equal(second.totalDeposit, 5_000_000);
   assert.deepEqual(second.equityHistory, [5_000_000, 5_100_000, 4_900_000]);
-  assert.equal(needsPaperBrokerBaseline(second, { BROKER: "kis", KIS_MODE: "paper" }), false);
+  assert.equal(needsPaperBrokerBaseline(second, { KIS_MODE: "paper" }), false);
 });
 
 test("P2 client totalDeposit must not be used once baseline exists (unit)", () => {
@@ -52,7 +53,7 @@ test("P2 client totalDeposit must not be used once baseline exists (unit)", () =
   assert.equal(baselined.totalDeposit, 5_000_000);
 });
 
-test("P7 PAPER account reset clears fake 10M and baseline", () => {
+test("P7 PAPER account reset clears ledger and baseline", () => {
   const reset = createPaperAccountResetState();
   assert.equal(reset.totalDeposit, 0);
   assert.equal(reset.settings.startingCash, 0);
@@ -87,8 +88,8 @@ test("P onboarding readiness requires HEALTHY + fresh kisBalance + baseline", ()
   assert.equal(paperBalanceReadyForOnboarding(ready), null);
 });
 
-test("MOCK path still allows seeded TOTAL_DEPOSIT until user sets deposit", () => {
-  const mock = createInitialState();
-  assert.equal(needsPaperBrokerBaseline(mock, { BROKER: "mock", KIS_MODE: "paper" }), false);
-  assert.equal(mock.totalDeposit, TOTAL_DEPOSIT);
+test("legacy BROKER=mock env is ignored — PAPER baseline still required", () => {
+  const state = createInitialState();
+  assert.equal(needsPaperBrokerBaseline(state, { BROKER: "mock", KIS_MODE: "paper" }), true);
+  assert.equal(state.totalDeposit, 0);
 });

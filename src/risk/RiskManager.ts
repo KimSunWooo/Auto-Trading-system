@@ -1,9 +1,5 @@
-import { nowIso, nowMs } from "@/src/clock";
-import { accountValue } from "@/src/accounts/portfolio";
 import type { StateBox } from "@/src/accounts/StateBox";
-import { MockBroker } from "@/src/brokers/MockBroker";
 import { KisBroker } from "@/src/brokers/KisBroker";
-import { brokerDriver } from "@/src/brokers/kis-config";
 import { getSharedKisClient, type KisApi } from "@/src/brokers/kis-client";
 import type { AppState, KillReport, Side } from "@/lib/types";
 import { seoulDay } from "@/src/risk/limits";
@@ -11,7 +7,7 @@ import { openCircuit, resetCircuit } from "@/src/risk/circuit";
 import { DEFAULT_PRODUCT_RISK, type ProductRisk } from "@/src/risk/product";
 import { settleOpenOrders } from "@/src/risk/reconcile";
 import { applyKisSnapshot } from "@/src/risk/balance-sync";
-import { createBroker, type CreateBrokerOpts } from "@/src/brokers/index";
+import { BrokerNotReadyError, createBroker, type CreateBrokerOpts } from "@/src/brokers/index";
 import { sellBandSlices } from "@/src/accounts/execution-policy";
 import { getRuleConfig } from "@/src/rules/config";
 import { CASH_RULE_ID, type RuleConfigFile } from "@/src/rules/params";
@@ -19,6 +15,8 @@ import { autoRunAllowed } from "@/src/rules/disclaimer";
 import { blockSafety, safetyOf } from "@/src/runtime/safety";
 import { isLiveLike } from "@/src/runtime/trading-mode";
 import { recordControlledEvent } from "@/src/runtime/controlled-run";
+import { nowIso, nowMs } from "@/src/clock";
+import { accountValue } from "@/src/accounts/portfolio";
 
 function riskOf(state: AppState): ProductRisk {
   return state.settings?.risk ?? DEFAULT_PRODUCT_RISK;
@@ -205,11 +203,7 @@ export class RiskManager {
     await persist(box, opts.persistState);
 
     const kis =
-      opts.kis === undefined
-        ? brokerDriver() === "kis"
-          ? getSharedKisClient()
-          : null
-        : opts.kis;
+      opts.kis === undefined ? getSharedKisClient() : opts.kis;
 
     let cancelled = 0;
     if (kis?.configured) {
@@ -236,7 +230,7 @@ export class RiskManager {
       }
       await persist(box, opts.persistState);
     } else {
-      notes.push("로컬 모의는 증권사 미체결 취소 대상이 없습니다.");
+      notes.push("KIS PAPER 미연결 — 증권사 미체결 취소를 건너뜁니다.");
     }
 
     box.current = {
@@ -263,16 +257,16 @@ export class RiskManager {
     };
     await persist(box, opts.persistState);
     const kis =
-      opts.kis === undefined
-        ? brokerDriver() === "kis"
-          ? getSharedKisClient()
-          : null
-        : opts.kis;
-    const broker = kis?.configured
-      ? new KisBroker(box, kis, CASH_RULE_ID, "rule", undefined, undefined, {
-          persistState: opts.persistState,
-        })
-      : new MockBroker(box);
+      opts.kis === undefined ? getSharedKisClient() : opts.kis;
+    if (!kis?.configured) {
+      throw new BrokerNotReadyError(
+        "KIS_PAPER_RUNTIME_NOT_READY",
+        "KIS PAPER runtime not ready — local mock book is not available",
+      );
+    }
+    const broker = new KisBroker(box, kis, CASH_RULE_ID, "rule", undefined, undefined, {
+      persistState: opts.persistState,
+    });
     let flattened = 0;
     const notes: string[] = [];
     const snapshot = [...box.current.positions];
@@ -339,11 +333,7 @@ export class RiskManager {
     await persist(box, opts.persistState);
 
     const kis =
-      opts.kis === undefined
-        ? brokerDriver() === "kis"
-          ? getSharedKisClient()
-          : null
-        : opts.kis;
+      opts.kis === undefined ? getSharedKisClient() : opts.kis;
 
     if (kis?.configured) {
       await settleOpenOrders(box, kis, nowMs(), { cancelImmediately: true });
@@ -357,11 +347,15 @@ export class RiskManager {
 
     let flattened = 0;
     const snapshot = [...box.current.positions];
-    const broker = kis?.configured
-      ? new KisBroker(box, kis, CASH_RULE_ID, "rule", undefined, undefined, {
-          persistState: opts.persistState,
-        })
-      : new MockBroker(box);
+    if (!kis?.configured) {
+      throw new BrokerNotReadyError(
+        "KIS_PAPER_RUNTIME_NOT_READY",
+        "KIS PAPER runtime not ready — local mock book is not available",
+      );
+    }
+    const broker = new KisBroker(box, kis, CASH_RULE_ID, "rule", undefined, undefined, {
+      persistState: opts.persistState,
+    });
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;
       const live = box.current.positions.find(
@@ -424,7 +418,7 @@ export class RiskManager {
       }
       await persist(box, opts.persistState);
     } else {
-      notes.push("로컬 모의는 증권사 잔고가 없어 장부 덮어쓰기를 건너뜁니다.");
+      notes.push("KIS PAPER 미연결 — 증권사 잔고 덮어쓰기를 건너뜁니다.");
     }
 
     return RiskManager.finishKill(box, before, { flattened, overwritten, notes });

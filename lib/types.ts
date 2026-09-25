@@ -18,7 +18,7 @@ export type ConditionStatus =
   | "deleted";
 export type OrderSource = "condition" | "dca" | "manual" | "rule";
 export type OrderStatus = "pending" | "unknown" | "filled" | "rejected" | "cancelled";
-export type BrokerDriver = "mock" | "kis";
+export type BrokerDriver = "kis";
 
 export type Quote = {
   code: string;
@@ -33,7 +33,8 @@ export type Quote = {
   bid: number;
   ask: number;
   history: number[];
-  source?: "mock" | "kis" | "seed";
+  /** Production quotes are KIS only. Legacy mock/seed may appear in migration input only. */
+  source?: "kis" | "mock" | "seed";
   /** How the latest price arrived. Optional diagnostic; safety still keys off source+freshAt. */
   transport?: "rest" | "ws";
   freshAt?: number;

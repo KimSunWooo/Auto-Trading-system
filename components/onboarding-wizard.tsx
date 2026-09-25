@@ -1,11 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { api } from "@/hooks/use-trading";
 import { formatWon } from "@/lib/format";
@@ -15,7 +13,6 @@ import type { PublicState } from "@/lib/types";
 import { DisclaimerModal } from "@/components/disclaimer-modal";
 import { RuleBuilder, draftToRule, emptyDraft, type RuleDraft } from "@/components/rule-builder";
 
-const MOCK_STEPS = ["증권사", "예수금", "매매 룰", "면책", "시작"] as const;
 const PAPER_STEPS = ["계좌 확인", "매매 룰", "면책", "시작"] as const;
 
 export function OnboardingWizard({
@@ -27,20 +24,14 @@ export function OnboardingWizard({
   onState: (next: PublicState) => void;
   onClose: () => void;
 }) {
-  const kisPaper =
-    state.broker.driver === "kis" && (state.broker.mode === "paper" || state.broker.mode == null);
   const [step, setStep] = useState(0);
-  const [mode, setMode] = useState<"mock" | "kis">(kisPaper || state.broker.driver === "kis" ? "kis" : "mock");
-  const [budget, setBudget] = useState(state.totalDeposit);
   const [draft, setDraft] = useState<RuleDraft>(emptyDraft());
   const [autoStart, setAutoStart] = useState(false);
   const [saving, setSaving] = useState(false);
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [disclaimerChecked, setDisclaimerChecked] = useState(false);
   const risk = state.settings.risk ?? DEFAULT_PRODUCT_RISK;
-
-  const paperFlow = mode === "kis" && state.broker.driver === "kis";
-  const steps = useMemo(() => (paperFlow ? PAPER_STEPS : MOCK_STEPS), [paperFlow]);
+  const steps = PAPER_STEPS;
 
   async function skip() {
     try {
@@ -60,13 +51,10 @@ export function OnboardingWizard({
     setSaving(true);
     try {
       const rule = draft.ticker.length === 6 ? draftToRule(draft) : undefined;
-      if (rule && rule.budget <= 0 && !paperFlow) rule.budget = budget;
       onState(
         await api<PublicState>("/api/onboarding", {
           method: "POST",
           body: JSON.stringify({
-            // PAPER: server ignores totalDeposit. MOCK only.
-            ...(paperFlow ? {} : { totalDeposit: budget }),
             rule,
             autoStart: opts.autoStart,
             disclaimerAccepted: opts.disclaimerAccepted,
@@ -82,16 +70,8 @@ export function OnboardingWizard({
     }
   }
 
-  function ruleStepIndex() {
-    return paperFlow ? 1 : 2;
-  }
-
-  function disclaimerStepIndex() {
-    return paperFlow ? 2 : 3;
-  }
-
   function next() {
-    if (step === ruleStepIndex() && draft.ticker && draft.ticker.length !== 6) {
+    if (step === 1 && draft.ticker && draft.ticker.length !== 6) {
       toast.error("종목코드는 6자리입니다. 비워 두면 조건식 없이 저장할 수 있습니다.");
       return;
     }
@@ -112,18 +92,14 @@ export function OnboardingWizard({
         <div>
           <h2 className="text-lg font-semibold">시작 가이드</h2>
           <p className="text-sm text-muted-foreground">
-            종목·조건·금액을 직접 입력하는 매매 실행 도구입니다. 미리 정해 둔 조건식이나 종목은 없습니다.
+            KIS PAPER 계좌만 지원합니다. 임의 예수금 설정은 없습니다.
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => void skip()}>
           나중에 하기
         </Button>
       </div>
-      <ol
-        className={`grid gap-1 text-center text-[11px] sm:text-xs ${
-          paperFlow ? "grid-cols-4" : "grid-cols-5"
-        }`}
-      >
+      <ol className="grid grid-cols-4 gap-1 text-center text-[11px] sm:text-xs">
         {steps.map((label, i) => (
           <li
             key={label}
@@ -139,106 +115,54 @@ export function OnboardingWizard({
       {step === 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle>{paperFlow ? "PAPER 계좌 확인" : "증권사 연결"}</CardTitle>
+            <CardTitle>PAPER 계좌 확인</CardTitle>
             <CardDescription>
-              {paperFlow
-                ? "예수금과 주문가능금액은 연결된 한국투자증권 PAPER 계좌에서 조회합니다."
-                : "앱키는 브라우저에 넣지 않습니다. 한국투자증권은 서버 `.env.local` 에 설정합니다."}
+              KIS 예수금(dnca_tot_amt)과 주문가능금액(ord_psbl_cash)은 연결된 PAPER 계좌에서 조회합니다.
             </CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-2">
-            {!paperFlow || state.broker.driver !== "kis" ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setMode("mock");
-                  setStep(0);
-                }}
-                className={`rounded-xl border p-4 text-left ${mode === "mock" ? "ring-2 ring-primary" : ""}`}
-              >
-                <div className="font-medium">로컬 모의투자</div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  지금 바로 연습합니다. 실제 주문은 나가지 않습니다. 로컬 예수금을 설정할 수 있습니다.
-                </p>
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                setMode("kis");
-                setStep(0);
-              }}
-              className={`rounded-xl border p-4 text-left ${mode === "kis" ? "ring-2 ring-primary" : ""}`}
-            >
+          <CardContent className="space-y-3">
+            <div className="rounded-xl border p-4">
               <div className="font-medium">한국투자증권 PAPER</div>
               <p className="mt-1 text-xs text-muted-foreground">
-                {state.broker.driver === "kis"
+                {state.broker.configured
                   ? state.broker.message
-                  : "BROKER=kis 와 앱키를 넣은 뒤 서버를 재시작하세요. 현재는 로컬 모의입니다."}
+                  : "마이페이지에서 KIS PAPER 계좌·AppKey·AppSecret을 등록하세요. 계좌가 없으면 매매할 수 없습니다."}
               </p>
               {state.kisBalance ? (
                 <div className="mt-3 space-y-1 text-xs">
                   <div>
-                    예수금 (dnca_tot_amt):{" "}
+                    KIS 예수금 (dnca_tot_amt):{" "}
                     <span className="font-medium tabular-nums">{formatWon(state.kisBalance.cash)}</span>
                   </div>
                   <div>
-                    주문가능 (ord_psbl_cash):{" "}
+                    KIS 주문가능금액 (ord_psbl_cash):{" "}
                     <span className="font-medium tabular-nums">
                       {state.kisBalance.orderableCash != null
                         ? formatWon(state.kisBalance.orderableCash)
                         : "조회 대기"}
                     </span>
                   </div>
+                  <div>
+                    전략 배정 잔액:{" "}
+                    <span className="font-medium tabular-nums">{formatWon(state.cash)}</span>
+                  </div>
                 </div>
               ) : (
                 <p className="mt-3 text-xs text-amber-600">
-                  Startup Sync 후 KIS 잔고가 표시됩니다. 임의 예수금 입력은 없습니다.
+                  Startup Sync / 계좌 검증 후 KIS 잔고가 표시됩니다. 임의 예수금 입력은 없습니다.
                 </p>
               )}
-            </button>
+            </div>
           </CardContent>
         </Card>
       ) : null}
 
-      {!paperFlow && step === 1 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>예수금 설정</CardTitle>
-            <CardDescription>
-              로컬 모의투자 장부 예수금입니다. KIS PAPER 계좌에는 적용되지 않습니다.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="text-2xl font-semibold tabular-nums">{formatWon(budget)}</div>
-            <input
-              type="range"
-              min={1_000_000}
-              max={10_000_000}
-              step={500_000}
-              value={budget}
-              onChange={(e) => setBudget(Number(e.target.value))}
-              className="w-full"
-            />
-            <Label className="grid gap-1 text-xs">
-              직접 입력
-              <Input
-                inputMode="numeric"
-                value={budget}
-                onChange={(e) => setBudget(Math.max(100_000, Number(e.target.value) || 0))}
-              />
-            </Label>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {step === ruleStepIndex() ? (
+      {step === 1 ? (
         <Card>
           <CardHeader>
             <CardTitle>매매 룰 직접 입력</CardTitle>
             <CardDescription>
-              거래할 종목코드, 매수/매도 조건, 1회 매수 금액, 손절/익절 라인을 빈칸에 넣습니다.
-              {paperFlow ? " 룰별 예산은 설정할 수 있지만, 증권 예수금 자체는 KIS에서 조회합니다." : ""}
+              거래할 종목·조건·예산을 입력합니다. 증권 예수금 자체는 KIS에서 조회합니다.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -247,7 +171,7 @@ export function OnboardingWizard({
         </Card>
       ) : null}
 
-      {step === disclaimerStepIndex() ? (
+      {step === 2 ? (
         <Card>
           <CardHeader>
             <CardTitle>이용 동의</CardTitle>
@@ -268,12 +192,12 @@ export function OnboardingWizard({
         </Card>
       ) : null}
 
-      {step === steps.length - 1 ? (
+      {step === 3 ? (
         <Card>
           <CardHeader>
             <CardTitle>실행 한도 확인</CardTitle>
             <CardDescription>
-              소프트웨어 안전장치입니다. 한도에 닿으면 당일 자동 실행이 멈춥니다. 긴급 정지는 화면 상단에 있습니다.
+              소프트웨어 안전장치입니다. 한도에 닿으면 당일 자동 실행이 멈춥니다.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
@@ -300,7 +224,7 @@ export function OnboardingWizard({
           이전
         </Button>
         {step < steps.length - 1 ? (
-          <Button onClick={next} disabled={step === disclaimerStepIndex() && !disclaimerChecked}>
+          <Button onClick={next} disabled={step === 2 && !disclaimerChecked}>
             다음
           </Button>
         ) : (

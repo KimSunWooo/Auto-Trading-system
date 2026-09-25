@@ -240,10 +240,10 @@ test("H. UI live-like mode: source=mock not shown as valid current quote", () =>
   assert.equal(quoteDisplayKind(mockQuote(), { liveKis: true }), "UNAVAILABLE");
 });
 
-test("I. manual createBroker with BROKER=kis → KisBroker path", () => {
+test("I. manual createBroker with configured KisClient → KisBroker path", () => {
   liveKisEnv();
   const box = { current: makeTestPaperState() };
-  const broker = createBroker(box).withSource("manual");
+  const broker = createBroker(box, "cash", { kisClient: new FakeKis() }).withSource("manual");
   assert.equal(broker.driver, "kis");
   assert.ok(broker instanceof KisBroker);
 });

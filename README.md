@@ -2,7 +2,8 @@
 
 사용자가 **직접 입력한 조건식**에 따라 한국투자증권 Open API 매매를 기계적으로 실행하는 소프트웨어 도구입니다. 종목 추천이나 투자 일임을 하지 않습니다.
 
-기본값은 **로컬 페이퍼 북**입니다. 앱키를 넣기 전에는 실제 주문이 나가지 않습니다. 엔진은 빈 사용자 설정에서 시작합니다.
+정상 사용자 Runtime은 **KIS PAPER만** 지원합니다. 로컬 mock 브로커·임의 예수금·seed 시세는 없습니다. KIS PAPER 계좌·AppKey·AppSecret이 없으면 매매 기능을 사용할 수 없습니다. REAL은 LOCKED입니다.
+엔진은 빈 사용자 설정에서 시작합니다.
 
 ## 현재 진행
 
@@ -24,7 +25,7 @@
 | EC2 PAPER deployment artifacts | Dockerfile / compose / health / docs 준비. 실제 EC2 provisioning 없음 |
 | RDS MySQL mirror | JSON authority. `PERSISTENCE_MODE=mirror`. database SOT 없음 |
 | PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
-| Domestic KIS quote isolation | LIVE_TEST+KIS: mock/seed 시세 표시·주문 금지. `source=kis`+freshAt≤15s만 유효. 실패 시 mock fallback 없음 |
+| Domestic KIS quote isolation | KIS-only: mock/seed 시세 표시·주문 금지. `source=kis`+freshAt≤15s만 유효. 실패 시 seed/mock fallback 없음 |
 | KIS PAPER WebSocket market data | Domestic H0STCNT0 (`ws://ops.koreainvestment.com:31000`). Continuous REST inquire-price polling removed. Fail-closed on disconnect/stale. REAL WS locked. |
 | KIS PAPER WS read-only soak | `npm run paper:ws:soak` — approval → H0STCNT0 subscribe → quote observe. **No autoTrading / orders / inquirePrice.** Ready For Automated Market Test remains **NO**. |
 | Gate 3 / REAL | LOCKED |
@@ -104,8 +105,10 @@ ACTIVE kis/PAPER `broker_accounts` must carry non-null `physical_account_fingerp
 src/
   brokers/
     IBroker.ts          # getCurrentPrice / buyMarket / buyLimit / sellMarket / sellLimit
-    MockBroker.ts       # 로컬 페이퍼 북
-    KisBroker.ts        # 한국투자증권 Open API
+    KisBroker.ts        # 한국투자증권 Open API (production only)
+  test-support/
+    fake-broker.ts      # unit-test local book filler (not production)
+    quote-fixtures.ts   # makeTestQuote / makeTestPaperState
   instruments/
     sync.ts / parsers   # Master download→validate→stage→apply (source-isolated)
     search.ts           # DB-only autocomplete
@@ -139,8 +142,8 @@ src/
 - 이용 동의 체크박스가 true가 아니면 KIS 주문과 자동 실행이 잠깁니다.
 - 신규 주문은 KST 정규장(09:00~15:20)만 허용합니다. 동시호가·주말·공휴일은 거부합니다.
 - 시장가 의도는 현재가 ±3% 지정가로 바꿔 내고, 같은 룰이 연속 실패/미체결이면 3분 정지합니다.
-- 기본 거래 모드는 `TRADING_MODE=MOCK` 입니다. 브라우저 `/api/tick` 은 MOCK/PAPER 에서만 엔진을 돌립니다. LIVE_TEST/LIVE 엔진은 워커 + 파일 락만 실행합니다.
-- `LIVE_TEST`/`LIVE` + `BROKER=kis` 에서는 persisted mock/seed 시세를 현재가로 쓰지 않습니다. `source=kis` 이고 `freshAt` 15초 이내만 주문·대시보드 현재가로 인정합니다. KIS 시세 실패 시 mock fallback 없습니다.
+- 기본 거래 모드는 `TRADING_MODE=live_test` 입니다. 브라우저 `/api/tick` 은 `paper` 모드에서만 엔진을 돌립니다. `live_test`/`live` 엔진은 워커 + 파일 락만 실행합니다.
+- persisted mock/seed 시세는 로드 시 버리고, `source=kis` 이고 `freshAt` 15초 이내만 주문·대시보드 현재가로 인정합니다. KIS 시세 실패 시 seed/mock fallback 없습니다.
 - Next가 죽어도 `npm run emergency:stop` 으로 신규 주문을 막고 KIS 미체결을 취소할 수 있습니다. 포지션 청산은 `npm run emergency:flatten` 입니다. 두 명령은 섞이지 않습니다.
 
 로컬 장부(`data/paper-account.json`)는 한도와 UI용입니다. KIS 모의·실전 잔고·수수료와 숫자가 다를 수 있습니다.
@@ -151,21 +154,35 @@ APIs:
 - `GET /api/instruments/dashboard` — representative cards (no trading circuit)
 - `GET /api/accounts/current/verify` — strict PAPER binding + fresh balance (read-only)
 
-## 실행 (로컬 모의)
+## 실행 (KIS PAPER)
 
 ```bash
+# 1. DB 실행/연결 (선택: mirror 모드)
+# 2. 환경 파일
 cp .env.example .env.local
+# PAPER_RUNTIME_OWNER=accounts
+# TRADING_MODE=live_test
+# KIS_MODE=paper
+# ALLOW_LIVE_TRADING=false
+
 npm install
 npm run dev
 ```
 
 브라우저: [http://127.0.0.1:43147](http://127.0.0.1:43147)
 
+개발 흐름:
+
+1. 회원가입 / 로그인
+2. `/mypage` 에서 KIS PAPER 계좌 · App Key · App Secret 등록
+3. Fresh verify (잔고·주문가능·보유)
+4. 대시보드
+
+키/계좌가 없으면 **매매 기능을 사용할 수 없습니다.** Mock으로 실행되지 않습니다.
+
 ```bash
 npm test
 ```
-
-키 없이 실행하면 `BROKER=mock` 입니다. 조건식에 넣은 종목의 호가만 움직입니다.
 
 로컬에서 예전 프리셋을 쓰려면 `.env.local` 에 `NEXT_PUBLIC_ADMIN_MODE=true` 를 넣고 개발 서버를 재시작합니다. `localhost` 로 열면 이 변수가 없어도 관리자 프리셋이 보입니다.
 
@@ -188,11 +205,11 @@ docker compose -f docker-compose.db.yml up -d
 
 ## 한국투자증권 모의투자(VTS)
 
-기본 실행은 항상 Mock입니다.
+기본 실행은 KIS PAPER operational 입니다. 로컬 mock 브로커는 없습니다.
 
 ```
-BROKER=mock
-TRADING_MODE=MOCK
+PAPER_RUNTIME_OWNER=accounts
+TRADING_MODE=live_test
 ALLOW_LIVE_TRADING=false
 KIS_MODE=paper
 ```
@@ -202,7 +219,6 @@ VTS 검증은 `.env.local`에만 키를 넣고, **모의투자 `KIS_PAPER_*`** �
 VTS-A(읽기 전용)용 `.env.local` 예. 앱키·시크릿·계좌는 직접 채우세요. 채팅이나 README에 실제 값을 적지 마세요.
 
 ```
-BROKER=kis
 TRADING_MODE=live_test
 ALLOW_LIVE_TRADING=false
 KIS_MODE=paper
@@ -224,9 +240,9 @@ cp .env.example .env.local
 npm run dev
 ```
 
-화면 상단 배지가 **KIS 모의** / `LIVE_TEST` 인지 확인합니다. `TRADING_MODE=live_test`에서는 실전 호스트 주문을 거절합니다.
+화면 상단 배지가 **KIS PAPER** / `LIVE_TEST` 인지 확인합니다. `TRADING_MODE=live_test`에서는 실전 호스트 주문을 거절합니다.
 
-PAPER(`TRADING_MODE=live_test` + `KIS_MODE=paper|demo` + `BROKER=kis`, REAL 플래그 없음) operational 한도:
+PAPER(`TRADING_MODE=live_test` + `KIS_MODE=paper|demo`, REAL 플래그 없음) operational 한도:
 
 - 1회 최대 `PAPER_MAX_QTY_PER_ORDER` (기본 5주) — quantity hard cap
 - 일일 브로커 submit COUNT: **없음** (장시간 soak에서 COUNT로 AUTO STOP 하지 않음)
@@ -291,17 +307,18 @@ npm run vts:overseas-b-preflight
 
 테스트 계층: Layer A 기존 단위 테스트, Layer B FakeKis 실패 주입(`src/runtime/vts-failure-injection.test.ts`), Layer C 실VTS(`src/runtime/vts-lifecycle.test.ts`, 기본 SKIP).
 
-검증이 끝나면 `.env.local`을 다시 Mock 기본값으로 되돌리세요.
+검증이 끝나면 `.env.local`에서 주문 opt-in 플래그를 끄고 `TRADING_MODE=live_test` / `KIS_MODE=paper` 기본으로 되돌리세요.
 
-## 환경 분리: LOCAL MOCK / KIS PAPER / KIS REAL
+## 환경 분리: KIS PAPER / KIS REAL
 
-이 세 가지는 **다른 개념**입니다. 섞지 마세요.
+로컬 mock 브로커 제품 기능은 제거되었습니다. 정상 사용자 Runtime은 KIS PAPER만 사용합니다.
 
 | 환경 | 의미 | 주문 |
 | --- | --- | --- |
-| **LOCAL MOCK** | `BROKER=mock` 로컬 페이퍼 북. KIS API 없음 | 로컬 시뮬만 |
 | **KIS PAPER** | `KIS_MODE=paper\|demo` 한국투자 모의투자(VTS) | PAPER 주문 가능 (별도 안전장치) |
-| **KIS REAL** | `KIS_MODE=real` + live unlock | **LOCKED** (이번 단계에서 사용 금지) |
+| **KIS REAL** | `KIS_MODE=real` + live unlock | **LOCKED** (사용 금지) |
+
+Unit test의 `FakeBroker` / `FakeKisClient` / `makeTestQuote` 는 `src/test-support/` 전용이며 production import graph에 없습니다.
 
 ### PAPER background runtime ownership
 

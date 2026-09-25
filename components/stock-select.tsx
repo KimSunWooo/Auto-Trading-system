@@ -90,7 +90,11 @@ export function InstrumentSearch({
     }
   }
 
-  const legacyCode = legacySixDigitOnly ? value.replace(/\D/g, "").slice(0, 6) : value;
+  const legacyCode = legacySixDigitOnly
+    ? /^\d+$/.test(query.trim())
+      ? query.replace(/\D/g, "").slice(0, 6)
+      : value.replace(/\D/g, "").slice(0, 6)
+    : value;
   const stock =
     legacySixDigitOnly && legacyCode.length === 6 ? findStock(legacyCode) : undefined;
   const quote = quotes?.[legacySixDigitOnly ? legacyCode : value];
@@ -117,10 +121,19 @@ export function InstrumentSearch({
         inputMode={legacySixDigitOnly ? "numeric" : "search"}
         maxLength={legacySixDigitOnly ? 6 : 64}
         placeholder={placeholder}
-        value={legacySixDigitOnly ? legacyCode : query}
+        value={legacySixDigitOnly ? ( /^\d*$/.test(query.trim()) ? legacyCode : query) : query}
         onChange={(event) => {
           const raw = event.target.value;
           if (legacySixDigitOnly) {
+            // Allow Korean/name search: do not strip non-digits from the query.
+            // Only normalize to 6-digit ticker when the input is digits-only.
+            const digitsOnly = /^\d*$/.test(raw.trim());
+            if (!digitsOnly) {
+              setQuery(raw);
+              scheduleSearch(raw);
+              setOpen(true);
+              return;
+            }
             const code = raw.replace(/\D/g, "").slice(0, 6);
             onChange(code);
             setQuery(code);

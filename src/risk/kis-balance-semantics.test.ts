@@ -23,15 +23,15 @@ const REAL = {
   KIS_LIVE_CONFIRM: "I_UNDERSTAND",
 };
 
-test("PAPER semantics require explicit BROKER=kis and KIS_MODE=paper|demo", () => {
-  assert.equal(usesPaperBrokerBalanceSemantics({ BROKER: "kis", KIS_MODE: "paper" }), true);
-  assert.equal(usesPaperBrokerBalanceSemantics({ BROKER: "kis", KIS_MODE: "demo" }), true);
-  assert.equal(usesPaperBrokerBalanceSemantics({ BROKER: "kis", KIS_MODE: "" }), false);
-  assert.equal(usesPaperBrokerBalanceSemantics({ BROKER: "mock", KIS_MODE: "paper" }), false);
+test("PAPER semantics require explicit KIS_MODE=paper|demo (BROKER env ignored)", () => {
+  assert.equal(usesPaperBrokerBalanceSemantics({ KIS_MODE: "paper" }), true);
+  assert.equal(usesPaperBrokerBalanceSemantics({ KIS_MODE: "demo" }), true);
+  assert.equal(usesPaperBrokerBalanceSemantics({ KIS_MODE: "" }), false);
+  // Legacy BROKER=mock must not disable PAPER semantics when KIS_MODE=paper.
+  assert.equal(usesPaperBrokerBalanceSemantics({ BROKER: "mock", KIS_MODE: "paper" }), true);
   assert.equal(usesPaperBrokerBalanceSemantics(REAL), false);
   assert.equal(
     usesPaperBrokerBalanceSemantics({
-      BROKER: "kis",
       KIS_MODE: "paper",
       ALLOW_LIVE_TRADING: "true",
     }),

@@ -71,10 +71,7 @@ export function buildRuntimePublic(state: AppState): RuntimePublic {
     httpTickAllowed: httpTickAllowed(mode),
     tradingStatus,
     worker: !isLiveLike(mode) || workerLockHealthy() ? "healthy" : "unhealthy",
-    brokerLink:
-      broker.driver === "mock" || (broker.configured && safety.brokerConnected)
-        ? "connected"
-        : "disconnected",
+    brokerLink: broker.configured && safety.brokerConnected ? "connected" : "disconnected",
     marketStatus: clock.open ? "open" : "closed",
     risk,
     reconciliation: safety.reconciliation,

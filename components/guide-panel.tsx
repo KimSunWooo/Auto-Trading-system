@@ -86,16 +86,16 @@ export function GuidePanel({
         <CardHeader className="border-b">
           <CardTitle>장 운영 설정</CardTitle>
           <CardDescription>
-            로컬 모의는 주말·야간에도 시세를 움직일 수 있습니다. 주문은 브로커와 관계없이 정규장(09:00~15:20 KST)만
+            KIS PAPER 시세는 WebSocket으로만 수신합니다. 신규 주문은 정규장(09:00~15:20 KST)만
             허용합니다. 동시호가·주말·공휴일에는 조건이 맞아도 거부하고 로그만 남깁니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
           <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-3">
             <div>
-              <Label htmlFor="hours">정규장 외에도 시세</Label>
+              <Label htmlFor="hours">장외 시세 표시</Label>
               <p className="text-xs text-muted-foreground">
-                로컬 모의 호가만 상시 갱신합니다. 신규 주문은 항상 09:00~15:20 정규장에서만 나갑니다.
+                켜면 장외에도 수신된 KIS 시세를 표시합니다. 신규 주문은 항상 09:00~15:20 정규장에서만 나갑니다.
               </p>
             </div>
             <Switch
@@ -115,8 +115,8 @@ export function GuidePanel({
               실제 개장 여부: {state.market.open ? "개장" : "휴장/장마감"} · 타임존 Asia/Seoul
             </div>
             <div className="mt-2 text-muted-foreground">
-              브로커: {state.broker?.driver === "kis" ? "한국투자증권" : "로컬 모의"}
-              {state.broker?.accountMasked ? ` · ${state.broker.accountMasked}` : ""}
+              브로커: 한국투자증권 KIS PAPER
+              {state.broker?.accountMasked ? ` · ${state.broker.accountMasked}` : " · 미연결"}
             </div>
           </div>
           <Button variant="outline" className="w-full" onClick={() => void reset()}>
