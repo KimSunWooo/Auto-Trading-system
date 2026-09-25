@@ -26,12 +26,16 @@ export function ordersCurrentlyAllowed(state: AppState): boolean {
   return tradingBlocked(state) == null;
 }
 
-export function buildRuntimePublic(state: AppState): RuntimePublic {
+export function buildRuntimePublic(
+  state: AppState,
+  opts: { broker?: ReturnType<typeof getBrokerPublicStatus> } = {},
+): RuntimePublic {
   const safety = safetyOf(state);
   const clock = getMarketClock();
   const mode = tradingMode();
   const blocked = tradingBlocked(state);
-  const broker = getBrokerPublicStatus();
+  // Prefer caller-supplied account-scoped status; bootstrap falls back to env.
+  const broker = opts.broker ?? getBrokerPublicStatus();
   const tradingStatus: RuntimePublic["tradingStatus"] =
     safety.kind === "emergency_stop" || !state.settings.autoTrading
       ? "stopped"

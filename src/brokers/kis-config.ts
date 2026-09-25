@@ -274,10 +274,15 @@ export function loadKisConfig(env: EnvMap = process.env): KisConfig {
   return buildConfig(environment, readSet(env, keys), env);
 }
 
-export function getBrokerPublicStatus(
-  env: EnvMap = process.env,
-): BrokerPublicStatus {
-  const kis = loadKisConfig(env);
+/** Shared public-status shaping — used by env bootstrap and account-scoped KisClient. */
+export function brokerPublicStatusFromKisFields(kis: {
+  mode: KisMode;
+  configured: boolean;
+  liveEnabled: boolean;
+  issues: string[];
+  cano?: string;
+  productCode?: string;
+}): BrokerPublicStatus {
   if (!kis.configured) {
     return {
       driver: "kis",
@@ -289,7 +294,7 @@ export function getBrokerPublicStatus(
     };
   }
 
-  const accountMasked = maskAccountNo(kis.cano, kis.productCode);
+  const accountMasked = maskAccountNo(kis.cano ?? "", kis.productCode ?? "01");
   if (kis.mode === "real" && !kis.liveEnabled) {
     return {
       driver: "kis",
@@ -312,4 +317,26 @@ export function getBrokerPublicStatus(
         ? `한국투자증권 실전 계좌 ${accountMasked} 로 주문을 냅니다.`
         : `한국투자증권 모의투자(VTS) 계좌 ${accountMasked} 로 주문을 냅니다.`,
   };
+}
+
+/**
+ * Account RuntimeScope authority — never reads global process.env credentials.
+ * Prefer this for authenticated USER / account-worker public state.
+ */
+export function brokerPublicStatusFromKisClient(client: {
+  mode: KisMode;
+  configured: boolean;
+  liveEnabled: boolean;
+  issues: string[];
+  cano?: string;
+  productCode?: string;
+}): BrokerPublicStatus {
+  return brokerPublicStatusFromKisFields(client);
+}
+
+/** Bootstrap / operator inspect from process.env. Prefer account-scoped helper for USER runtime. */
+export function getBrokerPublicStatus(
+  env: EnvMap = process.env,
+): BrokerPublicStatus {
+  return brokerPublicStatusFromKisFields(loadKisConfig(env));
 }

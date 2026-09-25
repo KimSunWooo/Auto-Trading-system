@@ -115,6 +115,58 @@ test("test-only FakeBroker preserved for safety semantics", async () => {
   assert.ok(fill.status === "filled" || fill.status === "rejected" || fill.ok);
 });
 
+test("account RuntimeScope KisClient is public-status authority (not global env)", async () => {
+  const { brokerPublicStatusFromKisClient, getBrokerPublicStatus } = await import(
+    "@/src/brokers/kis-config"
+  );
+  const { createTradingStateStore, resetTradingStateStoresForTest } = await import(
+    "@/src/runtime/trading-state-store"
+  );
+  const { EMPTY_RULE_CONFIG } = await import("@/src/rules/params");
+  resetTradingStateStoresForTest();
+  const prevApp = process.env.KIS_PAPER_APP_KEY;
+  const prevSecret = process.env.KIS_PAPER_APP_SECRET;
+  const prevAcct = process.env.KIS_PAPER_ACCOUNT_NO;
+  process.env.KIS_PAPER_APP_KEY = "env-global-app-key-xxxx";
+  process.env.KIS_PAPER_APP_SECRET = "env-global-secret-xxxx";
+  process.env.KIS_PAPER_ACCOUNT_NO = "12345678-01";
+  try {
+    const envStatus = getBrokerPublicStatus();
+    assert.equal(envStatus.driver, "kis");
+    assert.match(envStatus.accountMasked ?? "", /78-01/);
+
+    const accountClient = {
+      mode: "paper" as const,
+      configured: true,
+      liveEnabled: true,
+      issues: [] as string[],
+      cano: "87654321",
+      productCode: "01",
+    };
+    const scoped = brokerPublicStatusFromKisClient(accountClient);
+    assert.equal(scoped.driver, "kis");
+    assert.match(scoped.accountMasked ?? "", /21-01/);
+    assert.notEqual(scoped.accountMasked, envStatus.accountMasked);
+
+    const store = createTradingStateStore({
+      statePath: path.join(process.cwd(), "data", "test-runtime-scope-authority.json"),
+      skipPersistUnderTest: true,
+      getKisClient: () => accountClient as never,
+    });
+    const pub = store.toPublic(makeTestPaperState(), EMPTY_RULE_CONFIG);
+    assert.equal(pub.broker.accountMasked, scoped.accountMasked);
+    assert.equal(pub.runtime.brokerLink, "connected");
+  } finally {
+    if (prevApp === undefined) delete process.env.KIS_PAPER_APP_KEY;
+    else process.env.KIS_PAPER_APP_KEY = prevApp;
+    if (prevSecret === undefined) delete process.env.KIS_PAPER_APP_SECRET;
+    else process.env.KIS_PAPER_APP_SECRET = prevSecret;
+    if (prevAcct === undefined) delete process.env.KIS_PAPER_ACCOUNT_NO;
+    else process.env.KIS_PAPER_ACCOUNT_NO = prevAcct;
+    resetTradingStateStoresForTest();
+  }
+});
+
 test("tickState fail-closed without KisClient — no local mock fill path", async () => {
   const next = await tickState(createInitialState());
   assert.equal(Object.keys(next.quotes).length, 0);

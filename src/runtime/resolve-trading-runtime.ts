@@ -54,7 +54,11 @@ async function buildScopeForAccount(
   mkdirSync(dir, { recursive: true });
   const statePath = path.join(dir, "state.json");
   const strategyPath = path.join(dir, "strategy-config.json");
-  const store = createTradingStateStore({ statePath });
+  // Bind public broker status to this account's RuntimeScope KisClient — never global env.
+  const store = createTradingStateStore({
+    statePath,
+    getKisClient: () => getRuntimeScope(account.id)?.kisClient,
+  });
   const rules = createRuleConfigStore(strategyPath);
 
   let scope = getRuntimeScope(account.id);
@@ -67,6 +71,7 @@ async function buildScopeForAccount(
   } else {
     scope.persistState = (state) => store.persistStateNow(state);
   }
+  store.bindKisClient(() => getRuntimeScope(account.id)?.kisClient);
   return { scope, store, rules };
 }
 
@@ -118,6 +123,7 @@ export function resolveBootstrapTradingRuntime(): {
   const store = createTradingStateStore({
     statePath: scope.statePath,
     skipPersistUnderTest: true,
+    getKisClient: () => getRuntimeScope(scope.brokerAccountId)?.kisClient ?? scope.kisClient,
   });
   const rules = createRuleConfigStore(scope.strategyPath);
   return { scope, store, rules };

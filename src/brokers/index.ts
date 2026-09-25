@@ -95,6 +95,8 @@ export type { BrokerPublicStatus } from "@/lib/types";
 export { KisBroker } from "@/src/brokers/KisBroker";
 export {
   getBrokerPublicStatus,
+  brokerPublicStatusFromKisClient,
+  brokerPublicStatusFromKisFields,
   getKisConfig,
   loadKisConfig,
   KIS_TR,

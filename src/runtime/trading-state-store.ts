@@ -1,22 +1,28 @@
 /**
  * Per-account trading state store — own queue, no global mutable path swap.
+ * Public broker status prefers the account RuntimeScope KisClient over process.env.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { createInitialState, accountValue, tickState, type TickRuntimeDeps } from "@/lib/engine";
+import { accountValue, tickState, type TickRuntimeDeps } from "@/lib/engine";
 import { getMarketClock } from "@/lib/market-hours";
-import type { AppState, PublicState } from "@/lib/types";
+import type { AppState, BrokerPublicStatus, PublicState } from "@/lib/types";
 import { JsonStateRepository } from "@/src/persistence/json-state-repository";
 import { hydratePersistedState, toPublic as bootstrapToPublic } from "@/lib/store";
 import { mirrorAfterJsonSave } from "@/src/db/mirror";
 import { isNodeTestProcess } from "@/src/runtime/test-process";
 import type { RuleConfigFile } from "@/src/rules/params";
-import { getBrokerPublicStatus } from "@/src/brokers/kis-config";
+import {
+  brokerPublicStatusFromKisClient,
+  getBrokerPublicStatus,
+} from "@/src/brokers/kis-config";
 import { buildRuntimePublic } from "@/src/runtime/status";
 import type { KisApi } from "@/src/brokers/kis-client";
 
 export type TradingStateStore = {
   readonly statePath: string;
+  /** Rebind account KisClient authority (RuntimeScope rebuild / credential rotate). */
+  bindKisClient(getKisClient: () => KisApi | undefined): void;
   getState(): Promise<AppState>;
   getPublicState(ruleConfig: RuleConfigFile): Promise<PublicState>;
   toPublic(state: AppState, ruleConfig: RuleConfigFile): PublicState;
@@ -28,10 +34,26 @@ export type TradingStateStore = {
   ): Promise<PublicState>;
 };
 
-const stores = new Map<string, TradingStateStore>();
+type StoreInternal = TradingStateStore & {
+  _getKisClient: () => KisApi | undefined;
+};
 
-function toPublicWithRules(state: AppState, ruleConfig: RuleConfigFile): PublicState {
+const stores = new Map<string, StoreInternal>();
+
+function resolveBrokerPublicStatus(getKisClient?: () => KisApi | undefined): BrokerPublicStatus {
+  const client = getKisClient?.();
+  if (client) return brokerPublicStatusFromKisClient(client);
+  // Bootstrap / tests without a bound scope still report KIS-only (never mock).
+  return getBrokerPublicStatus();
+}
+
+function toPublicWithRules(
+  state: AppState,
+  ruleConfig: RuleConfigFile,
+  getKisClient?: () => KisApi | undefined,
+): PublicState {
   const clock = getMarketClock();
+  const broker = resolveBrokerPublicStatus(getKisClient);
   return {
     ...state,
     equity: accountValue(state),
@@ -41,9 +63,9 @@ function toPublicWithRules(state: AppState, ruleConfig: RuleConfigFile): PublicS
       open: clock.open,
       sessionLabel: clock.sessionLabel,
     },
-    broker: getBrokerPublicStatus(),
+    broker,
     ruleConfig,
-    runtime: buildRuntimePublic(state),
+    runtime: buildRuntimePublic(state, { broker }),
   };
 }
 
@@ -51,15 +73,24 @@ export function createTradingStateStore(opts: {
   statePath: string;
   /** When true, skip writes under node:test (matches bootstrap DEFAULT_STORE_PATH behavior). */
   skipPersistUnderTest?: boolean;
+  /**
+   * Account-scoped KisClient lookup. When present, public broker status never
+   * falls back to a different global env account.
+   */
+  getKisClient?: () => KisApi | undefined;
 }): TradingStateStore {
   const absolute = path.isAbsolute(opts.statePath)
     ? opts.statePath
     : path.join(process.cwd(), opts.statePath);
   const existing = stores.get(absolute);
-  if (existing) return existing;
+  if (existing) {
+    if (opts.getKisClient) existing.bindKisClient(opts.getKisClient);
+    return existing;
+  }
 
   const repository = new JsonStateRepository(absolute);
   let queue: Promise<unknown> = Promise.resolve();
+  let getKisClient = opts.getKisClient;
 
   async function loadState(): Promise<AppState> {
     return hydratePersistedState(await repository.load());
@@ -93,14 +124,19 @@ export function createTradingStateStore(opts: {
     return run;
   }
 
-  const store: TradingStateStore = {
+  const store: StoreInternal = {
     statePath: absolute,
+    _getKisClient: () => getKisClient?.(),
+    bindKisClient(next) {
+      getKisClient = next;
+      store._getKisClient = () => getKisClient?.();
+    },
     getState: () => withStore((s) => s),
     async getPublicState(ruleConfig) {
-      return withStore((state) => toPublicWithRules(state, ruleConfig));
+      return withStore((state) => toPublicWithRules(state, ruleConfig, getKisClient));
     },
     toPublic(state, ruleConfig) {
-      return toPublicWithRules(state, ruleConfig);
+      return toPublicWithRules(state, ruleConfig, getKisClient);
     },
     async mutateStore(fn) {
       return withStore(async (state) => {
@@ -118,9 +154,10 @@ export function createTradingStateStore(opts: {
         tickState(state, new Date(), {
           ...tickOpts.tickDeps,
           ruleConfig: tickOpts.tickDeps?.ruleConfig ?? ruleConfig,
+          kisClient: tickOpts.tickDeps?.kisClient ?? getKisClient?.(),
         }),
       );
-      return toPublicWithRules(next, ruleConfig);
+      return toPublicWithRules(next, ruleConfig, getKisClient);
     },
   };
 
