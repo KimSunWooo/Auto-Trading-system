@@ -14,7 +14,12 @@ export default async function Home() {
   try {
     const rt = await resolveCurrentTradingRuntime();
     const initialState = await rt.store.getPublicState(rt.rules.get());
-    return <TradingApp initialState={initialState} />;
+    return (
+      <TradingApp
+        initialState={initialState}
+        currentUser={{ displayName: user.displayName, role: user.role }}
+      />
+    );
   } catch (err) {
     if (err instanceof AccountNotConnectedError) redirect("/mypage");
     throw err;

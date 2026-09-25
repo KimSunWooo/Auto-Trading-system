@@ -18,6 +18,10 @@ export type PaperAccountVerification = {
     avgPrice: number;
   }>;
   localPositionsMatched: boolean;
+  /** Local state.kisBalance.cash === fresh dnca_tot_amt */
+  depositSnapshotMatched: boolean;
+  /** Local state.kisBalance.orderableCash === fresh ord_psbl_cash */
+  orderableSnapshotMatched: boolean;
   verifiedAt: string;
   readyForTrading: boolean;
   blockers: string[];

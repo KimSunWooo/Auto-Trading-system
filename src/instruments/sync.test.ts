@@ -40,6 +40,7 @@ test("IM9: KOSDAQ sync failure does not mass-deactivate KOSPI", async () => {
     id: "KOSDAQ",
     country: "KR",
     market: "KOSDAQ",
+    fixture: true,
     input: { kind: "inline", body: "this is not a valid master\n" },
   };
 
@@ -76,7 +77,7 @@ test("IM10: empty parse refuses apply — no delete-all on failure", async () =>
   assert.equal(validated.ok, false);
 
   const result = await syncInstrumentSource(
-    { id: "KOSPI", country: "KR", market: "KOSPI", input: { kind: "inline", body: emptyBody } },
+    { id: "KOSPI", country: "KR", market: "KOSPI", fixture: true, input: { kind: "inline", body: emptyBody } },
     { store },
   );
   assert.equal(result.status, "FAILED");
@@ -108,7 +109,7 @@ test("successful source-isolated sync deactivates only missing symbols in that m
 
   const body = readFileSync(path.join(fixtures, "kosdaq-sample.txt"), "utf8");
   const result = await syncInstrumentSource(
-    { id: "KOSDAQ", country: "KR", market: "KOSDAQ", input: { kind: "inline", body } },
+    { id: "KOSDAQ", country: "KR", market: "KOSDAQ", fixture: true, input: { kind: "inline", body } },
     { store },
   );
   assert.equal(result.status, "SUCCESS");

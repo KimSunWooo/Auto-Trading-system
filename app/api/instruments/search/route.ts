@@ -1,5 +1,5 @@
 import { AuthError, requireUser } from "@/src/auth/guards";
-import { searchInstruments } from "@/src/instruments/search";
+import { searchInstrumentsDetailed } from "@/src/instruments/search";
 import { configDashboardRepresentatives } from "@/src/instruments/dashboard";
 
 export const dynamic = "force-dynamic";
@@ -16,10 +16,13 @@ export async function GET(req: Request) {
     const limitRaw = url.searchParams.get("limit");
     const limit = limitRaw ? Number(limitRaw) : 20;
 
-    const items = await searchInstruments({ q, country, market, type, limit });
+    const result = await searchInstrumentsDetailed({ q, country, market, type, limit });
     return Response.json({
-      items,
-      source: "instruments",
+      items: result.items,
+      catalogSource: result.catalogSource,
+      catalogComplete: result.catalogComplete,
+      error: result.error,
+      source: result.catalogSource,
       representatives: q ? undefined : configDashboardRepresentatives(country),
       kisCalls: 0,
     });

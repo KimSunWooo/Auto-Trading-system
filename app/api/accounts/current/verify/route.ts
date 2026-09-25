@@ -2,6 +2,9 @@
  * GET /api/accounts/current/verify
  * Authenticated read-only PAPER account binding + fresh broker snapshot.
  * Never returns secrets, full account numbers, or tokens.
+ *
+ * Runtime resolve failure is NOT swallowed as a silent READY path —
+ * it is passed through as RUNTIME_RESOLUTION_FAILED (readyForTrading=false).
  */
 import { requireUser } from "@/src/auth/guards";
 import { verifyPaperAccountForUser } from "@/src/auth/paper-account-verify";
@@ -14,15 +17,18 @@ export async function GET() {
   try {
     const user = await requireUser();
     let state = null;
+    let runtimeResolutionFailed = false;
     try {
-      const runtime = await resolveCurrentTradingRuntime();
-      state = await runtime.store.getState();
+      const tradingRuntime = await resolveCurrentTradingRuntime();
+      state = await tradingRuntime.store.getState();
     } catch {
+      runtimeResolutionFailed = true;
       state = null;
     }
     const verification = await verifyPaperAccountForUser({
       userId: user.id,
       state,
+      runtimeResolutionFailed,
     });
     return Response.json({
       verification,
@@ -33,6 +39,10 @@ export async function GET() {
       },
       ordersEnabled: false,
       autoTradingSystemConnected: false,
+      runtimeReady: !runtimeResolutionFailed && verification.runtimeClientVerified,
+      message: runtimeResolutionFailed
+        ? "계좌는 존재하지만 Runtime 준비 실패 — 신규 주문 차단"
+        : undefined,
     });
   } catch (err) {
     return runtimeJsonError(err);

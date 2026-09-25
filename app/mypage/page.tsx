@@ -33,6 +33,10 @@ export default function MyPage() {
   const [rotateAccountNo, setRotateAccountNo] = useState("");
   const [rotateKey, setRotateKey] = useState("");
   const [rotateSecret, setRotateSecret] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
 
   async function refresh() {
     const res = await fetch("/api/auth/me");
@@ -40,7 +44,9 @@ export default function MyPage() {
       setMe({ user: null });
       return;
     }
-    setMe(await res.json());
+    const body = (await res.json()) as MeResponse;
+    setMe(body);
+    if (body.user?.displayName) setDisplayName(body.user.displayName);
   }
 
   useEffect(() => {
@@ -108,6 +114,52 @@ export default function MyPage() {
     window.location.href = "/login";
   }
 
+  async function saveDisplayName(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ displayName }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "profile update failed");
+      setMessage("표시 이름이 저장되었습니다.");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "profile update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "password change failed");
+      setMessage(body.message ?? "비밀번호가 변경되었습니다.");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "password change failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!me) return <main className="p-8">불러오는 중…</main>;
   if (!me.user) {
     return (
@@ -137,9 +189,70 @@ export default function MyPage() {
 
       <section className="space-y-2">
         <h2 className="text-lg font-medium">계정</h2>
-        <p>이메일: {me.user.email}</p>
-        <p>이름: {me.user.displayName}</p>
+        <p>이메일: {me.user.email} <span className="text-xs text-muted-foreground">(읽기 전용)</span></p>
         <p>역할: {me.user.role}</p>
+        <form
+          className="mt-3 flex flex-col gap-2 rounded border border-border p-3"
+          onSubmit={(e) => void saveDisplayName(e)}
+        >
+          <label className="text-sm font-medium">표시 이름</label>
+          <input
+            className="rounded border border-border bg-background px-3 py-2"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            maxLength={80}
+            required
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded bg-foreground px-4 py-2 text-background disabled:opacity-50"
+          >
+            이름 저장
+          </button>
+        </form>
+        <form
+          className="mt-3 flex flex-col gap-2 rounded border border-border p-3"
+          onSubmit={(e) => void savePassword(e)}
+        >
+          <h3 className="text-sm font-medium">비밀번호 변경</h3>
+          <input
+            className="rounded border border-border bg-background px-3 py-2"
+            type="password"
+            placeholder="현재 비밀번호"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            required
+            autoComplete="current-password"
+          />
+          <input
+            className="rounded border border-border bg-background px-3 py-2"
+            type="password"
+            placeholder="새 비밀번호 (8자 이상)"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            required
+            minLength={8}
+            autoComplete="new-password"
+          />
+          <input
+            className="rounded border border-border bg-background px-3 py-2"
+            type="password"
+            placeholder="새 비밀번호 확인"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            required
+            minLength={8}
+            autoComplete="new-password"
+          />
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded bg-foreground px-4 py-2 text-background disabled:opacity-50"
+          >
+            비밀번호 변경
+          </button>
+        </form>
       </section>
 
       <section className="space-y-3">

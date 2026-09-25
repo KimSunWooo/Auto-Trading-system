@@ -1,12 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { and, eq, notInArray, sql } from "drizzle-orm";
+import AdmZip from "adm-zip";
 import { getDb, type AppDb } from "@/src/db/client";
 import * as schema from "@/src/db/schema";
 import { newId, stableId } from "@/src/db/ids";
 import { mysqlDateUtc } from "@/src/db/time";
 import { normalizeAlias } from "@/src/instruments/normalize";
-import { parseKrMaster, parseUsMaster, type ParsedMasterRow } from "@/src/instruments/parsers";
+import {
+  parseKrMaster,
+  parseKrMstBinary,
+  parseNasdaqListed,
+  parseOtherListed,
+  parseUsMaster,
+  type ParsedMasterRow,
+} from "@/src/instruments/parsers";
 import { makeInstrumentKey } from "@/src/instruments/types";
 
 export type InstrumentSyncSourceId =
@@ -17,13 +25,48 @@ export type InstrumentSyncSourceId =
   | "NYSE"
   | "AMEX";
 
+export type InstrumentSyncFormat =
+  | "text"
+  | "kr-mst-zip"
+  | "nasdaq-listed"
+  | "other-listed-nyse"
+  | "other-listed-amex";
+
 export type InstrumentSyncSource = {
   id: InstrumentSyncSourceId;
   country: "KR" | "US";
   market: string;
   /** file: path, url: http(s), or inline text via `body` */
-  input: { kind: "file" | "url" | "inline"; path?: string; url?: string; body?: string };
+  input: {
+    kind: "file" | "url" | "inline";
+    path?: string;
+    url?: string;
+    body?: string;
+    /** Binary path for zip masters (when kind=file). */
+    format?: InstrumentSyncFormat;
+  };
+  /** When true, apply fixture-friendly floors (tiny samples OK). */
+  fixture?: boolean;
 };
+
+/** Absolute sanity floors for production masters (conservative vs current market size). */
+export const PRODUCTION_MASTER_FLOORS: Record<InstrumentSyncSourceId, number> = {
+  KOSPI: 800,
+  KOSDAQ: 800,
+  KONEX: 30,
+  NASDAQ: 2000,
+  NYSE: 1000,
+  AMEX: 50,
+};
+
+/** Official production master URLs (KRX via Daishin DWS + NASDAQ Trader). */
+export const PRODUCTION_MASTER_URLS = {
+  KOSPI: "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip",
+  KOSDAQ: "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip",
+  KONEX: "https://new.real.download.dws.co.kr/common/master/konex_code.mst.zip",
+  NASDAQ: "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+  OTHER: "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+} as const;
 
 export type InstrumentSyncRunResult = {
   source: string;
@@ -322,22 +365,67 @@ export function createMysqlSyncStore(db: AppDb): InstrumentSyncStore {
   };
 }
 
-export async function downloadSourceText(
+export async function downloadSourceBytes(
   input: InstrumentSyncSource["input"],
   fetchImpl: typeof fetch = fetch,
-): Promise<string> {
+): Promise<Buffer> {
   if (input.kind === "inline") {
     if (input.body == null) throw new Error("inline sync source missing body");
-    return input.body;
+    return Buffer.from(input.body, "utf8");
   }
   if (input.kind === "file") {
     if (!input.path) throw new Error("file sync source missing path");
-    return readFile(input.path, "utf8");
+    return readFile(input.path);
   }
   if (!input.url) throw new Error("url sync source missing url");
   const res = await fetchImpl(input.url);
   if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-  return res.text();
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** @deprecated Prefer downloadSourceBytes — kept for text fixture callers. */
+export async function downloadSourceText(
+  input: InstrumentSyncSource["input"],
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const buf = await downloadSourceBytes(input, fetchImpl);
+  return buf.toString("utf8");
+}
+
+function unzipFirstEntry(buffer: Buffer): Buffer {
+  const zip = new AdmZip(buffer);
+  const entries = zip.getEntries().filter((e) => !e.isDirectory);
+  if (!entries.length) throw new Error("zip master contains no files");
+  const entry = entries[0]!;
+  return entry.getData();
+}
+
+export function parseSourceBuffer(
+  sourceId: InstrumentSyncSourceId,
+  buffer: Buffer,
+  format: InstrumentSyncFormat = "text",
+): ParsedMasterRow[] {
+  if (format === "kr-mst-zip") {
+    const mst = unzipFirstEntry(buffer);
+    if (sourceId === "KOSPI" || sourceId === "KOSDAQ" || sourceId === "KONEX") {
+      return parseKrMstBinary(mst, sourceId);
+    }
+    throw new Error(`kr-mst-zip not valid for ${sourceId}`);
+  }
+  const text = buffer.toString("utf8");
+  if (format === "nasdaq-listed") {
+    if (sourceId !== "NASDAQ") throw new Error("nasdaq-listed format requires NASDAQ source");
+    return parseNasdaqListed(text);
+  }
+  if (format === "other-listed-nyse") {
+    if (sourceId !== "NYSE") throw new Error("other-listed-nyse requires NYSE source");
+    return parseOtherListed(text).nyse;
+  }
+  if (format === "other-listed-amex") {
+    if (sourceId !== "AMEX") throw new Error("other-listed-amex requires AMEX source");
+    return parseOtherListed(text).amex;
+  }
+  return parseSourceText(sourceId, text);
 }
 
 export function parseSourceText(sourceId: InstrumentSyncSourceId, text: string): ParsedMasterRow[] {
@@ -362,6 +450,10 @@ export function parseSourceText(sourceId: InstrumentSyncSourceId, text: string):
 export function validateParsedRows(
   sourceId: InstrumentSyncSourceId,
   rows: ParsedMasterRow[],
+  opts: {
+    fixture?: boolean;
+    previousCount?: number;
+  } = {},
 ): { ok: true; rows: ParsedMasterRow[] } | { ok: false; error: string } {
   if (rows.length === 0) {
     return { ok: false, error: `${sourceId} parse produced 0 rows — refusing to apply (no mass deactivate)` };
@@ -384,6 +476,26 @@ export function validateParsedRows(
     }
     deduped.push(row);
   }
+
+  if (!opts.fixture) {
+    const floor = PRODUCTION_MASTER_FLOORS[sourceId];
+    if (deduped.length < floor) {
+      return {
+        ok: false,
+        error: `${sourceId} count ${deduped.length} below production floor ${floor} — refusing to apply`,
+      };
+    }
+  }
+
+  const previous = opts.previousCount ?? 0;
+  if (previous > 0 && deduped.length < previous * 0.5) {
+    return {
+      ok: false,
+      error:
+        `${sourceId} abnormal shrink ${previous} → ${deduped.length} (<50%) — existing DB untouched`,
+    };
+  }
+
   return { ok: true, rows: deduped };
 }
 
@@ -439,24 +551,27 @@ export async function syncInstrumentSource(
     return fail("Database unavailable — sync aborted without mutating instruments");
   }
 
-  let text: string;
+  let buffer: Buffer;
   try {
-    text = await downloadSourceText(source.input, options.fetchImpl);
+    buffer = await downloadSourceBytes(source.input, options.fetchImpl);
   } catch (err) {
     return fail(err instanceof Error ? err.message : "download failed");
   }
 
   let parsed: ParsedMasterRow[];
   try {
-    parsed = parseSourceText(source.id, text);
+    parsed = parseSourceBuffer(source.id, buffer, source.input.format ?? "text");
   } catch (err) {
     return fail(err instanceof Error ? err.message : "parse failed");
   }
 
-  const validated = validateParsedRows(source.id, parsed);
+  const before = await store.listActiveByMarket(source.country, source.market);
+  const validated = validateParsedRows(source.id, parsed, {
+    fixture: source.fixture === true,
+    previousCount: before.length,
+  });
   if (!validated.ok) return fail(validated.error);
 
-  const before = await store.listActiveByMarket(source.country, source.market);
   const beforeSymbols = new Set(before.map((r) => r.symbol));
 
   try {
@@ -515,12 +630,59 @@ export async function syncInstrumentSources(
 
 export function fixtureSyncSources(fixturesDir: string): InstrumentSyncSource[] {
   return [
-    { id: "KOSPI", country: "KR", market: "KOSPI", input: { kind: "file", path: `${fixturesDir}/kospi-sample.txt` } },
-    { id: "KOSDAQ", country: "KR", market: "KOSDAQ", input: { kind: "file", path: `${fixturesDir}/kosdaq-sample.txt` } },
-    { id: "KONEX", country: "KR", market: "KONEX", input: { kind: "file", path: `${fixturesDir}/konex-sample.txt` } },
-    { id: "NASDAQ", country: "US", market: "NASDAQ", input: { kind: "file", path: `${fixturesDir}/nasdaq-sample.csv` } },
-    { id: "NYSE", country: "US", market: "NYSE", input: { kind: "file", path: `${fixturesDir}/nyse-sample.csv` } },
-    { id: "AMEX", country: "US", market: "AMEX", input: { kind: "file", path: `${fixturesDir}/amex-sample.csv` } },
+    { id: "KOSPI", country: "KR", market: "KOSPI", fixture: true, input: { kind: "file", path: `${fixturesDir}/kospi-sample.txt` } },
+    { id: "KOSDAQ", country: "KR", market: "KOSDAQ", fixture: true, input: { kind: "file", path: `${fixturesDir}/kosdaq-sample.txt` } },
+    { id: "KONEX", country: "KR", market: "KONEX", fixture: true, input: { kind: "file", path: `${fixturesDir}/konex-sample.txt` } },
+    { id: "NASDAQ", country: "US", market: "NASDAQ", fixture: true, input: { kind: "file", path: `${fixturesDir}/nasdaq-sample.csv` } },
+    { id: "NYSE", country: "US", market: "NYSE", fixture: true, input: { kind: "file", path: `${fixturesDir}/nyse-sample.csv` } },
+    { id: "AMEX", country: "US", market: "AMEX", fixture: true, input: { kind: "file", path: `${fixturesDir}/amex-sample.csv` } },
+  ];
+}
+
+/** Production KR+US full masters — never fixtures. */
+export function productionSyncSources(env: NodeJS.ProcessEnv = process.env): InstrumentSyncSource[] {
+  const kospi = env.INSTRUMENTS_KOSPI_URL?.trim() || PRODUCTION_MASTER_URLS.KOSPI;
+  const kosdaq = env.INSTRUMENTS_KOSDAQ_URL?.trim() || PRODUCTION_MASTER_URLS.KOSDAQ;
+  const konex = env.INSTRUMENTS_KONEX_URL?.trim() || PRODUCTION_MASTER_URLS.KONEX;
+  const nasdaq = env.INSTRUMENTS_NASDAQ_URL?.trim() || PRODUCTION_MASTER_URLS.NASDAQ;
+  const other = env.INSTRUMENTS_OTHER_LISTED_URL?.trim() || PRODUCTION_MASTER_URLS.OTHER;
+  return [
+    {
+      id: "KOSPI",
+      country: "KR",
+      market: "KOSPI",
+      input: { kind: "url", url: kospi, format: "kr-mst-zip" },
+    },
+    {
+      id: "KOSDAQ",
+      country: "KR",
+      market: "KOSDAQ",
+      input: { kind: "url", url: kosdaq, format: "kr-mst-zip" },
+    },
+    {
+      id: "KONEX",
+      country: "KR",
+      market: "KONEX",
+      input: { kind: "url", url: konex, format: "kr-mst-zip" },
+    },
+    {
+      id: "NASDAQ",
+      country: "US",
+      market: "NASDAQ",
+      input: { kind: "url", url: nasdaq, format: "nasdaq-listed" },
+    },
+    {
+      id: "NYSE",
+      country: "US",
+      market: "NYSE",
+      input: { kind: "url", url: other, format: "other-listed-nyse" },
+    },
+    {
+      id: "AMEX",
+      country: "US",
+      market: "AMEX",
+      input: { kind: "url", url: other, format: "other-listed-amex" },
+    },
   ];
 }
 

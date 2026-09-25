@@ -193,3 +193,77 @@ export function clearSessionCookie(): SessionCookie {
     maxAge: 0,
   };
 }
+
+/** Update display name only (email stays read-only). */
+export async function updateUserDisplayName(
+  userId: string,
+  displayName: string,
+): Promise<AuthUser> {
+  const db = await readyDb();
+  const next = displayName.trim();
+  if (next.length < 1 || next.length > 80) {
+    throw new Error("Display name must be 1–80 characters");
+  }
+  const rows = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  const row = rows[0];
+  if (!row || row.deletedAt) throw new Error("User not found");
+  await db.update(schema.users).set({ displayName: next }).where(eq(schema.users.id, userId));
+  return {
+    id: row.id,
+    email: row.email ?? "",
+    displayName: next,
+    role: row.role === "ADMIN" ? "ADMIN" : "USER",
+    status: row.status,
+  };
+}
+
+/**
+ * Change password after verifying current.
+ * Revokes all other sessions; keeps the current session token active.
+ */
+export async function changeUserPassword(input: {
+  userId: string;
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+  currentSessionToken?: string;
+}): Promise<{ otherSessionsRevoked: number }> {
+  const db = await readyDb();
+  if (input.newPassword.length < 8) {
+    throw new Error("New password must be at least 8 characters");
+  }
+  if (input.newPassword !== input.confirmPassword) {
+    throw new Error("Password confirmation does not match");
+  }
+  const rows = await db.select().from(schema.users).where(eq(schema.users.id, input.userId)).limit(1);
+  const row = rows[0];
+  if (!row || row.deletedAt) throw new Error("User not found");
+  if (!row.passwordHash || !verifyPassword(input.currentPassword, row.passwordHash)) {
+    throw new Error("Current password is incorrect");
+  }
+  await db
+    .update(schema.users)
+    .set({ passwordHash: hashPassword(input.newPassword) })
+    .where(eq(schema.users.id, input.userId));
+
+  // Revoke other sessions; keep current if provided.
+  const sessions = await db
+    .select()
+    .from(schema.authSessions)
+    .where(
+      and(eq(schema.authSessions.userId, input.userId), isNull(schema.authSessions.revokedAt)),
+    );
+  let revoked = 0;
+  const keepHash = input.currentSessionToken
+    ? hashToken(input.currentSessionToken)
+    : null;
+  for (const session of sessions) {
+    if (keepHash && session.sessionTokenHash === keepHash) continue;
+    await db
+      .update(schema.authSessions)
+      .set({ revokedAt: nowMysql() })
+      .where(eq(schema.authSessions.id, session.id));
+    revoked += 1;
+  }
+  return { otherSessionsRevoked: revoked };
+}

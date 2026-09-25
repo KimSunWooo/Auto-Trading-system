@@ -42,7 +42,13 @@ const TABS = [
   { value: "guide", label: "안내", icon: BookOpenIcon },
 ] as const;
 
-export function TradingApp({ initialState }: { initialState: PublicState }) {
+export function TradingApp({
+  initialState,
+  currentUser,
+}: {
+  initialState: PublicState;
+  currentUser?: { displayName: string; role: string };
+}) {
   const { state, setState, error, reload } = useTrading(initialState);
   const [tab, setTab] = useState<string>("overview");
   const [market, setMarket] = useState<"domestic" | "overseas">("domestic");
@@ -60,6 +66,28 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
       toast.error(err instanceof Error ? err.message : "긴급 정지에 실패했습니다.");
     }
   }
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
+
+  const userBlock = currentUser ? (
+    <div className="hidden items-center gap-2 sm:flex">
+      <div className="text-right leading-tight">
+        <div className="text-sm font-medium">{currentUser.displayName}</div>
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {currentUser.role}
+        </div>
+      </div>
+      <Button variant="outline" size="sm" onClick={() => { window.location.href = "/mypage"; }}>
+        마이페이지
+      </Button>
+      <Button variant="ghost" size="sm" onClick={() => void logout()}>
+        로그아웃
+      </Button>
+    </div>
+  ) : null;
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -91,6 +119,7 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {userBlock}
             <Button variant="destructive" size="sm" onClick={() => void killSwitch()}>
               긴급 정지
             </Button>
@@ -111,11 +140,17 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
                       ? formatWon(state.kisBalance.orderableCash)
                       : "—"}
                   </div>
+                  <div className="text-[10px] tabular-nums text-muted-foreground">
+                    전략 배정 {formatWon(state.cash)}
+                  </div>
                 </>
               ) : (
                 <>
-                  <div className="text-[11px] text-muted-foreground">전략 배정 잔액</div>
-                  <div className="text-sm tabular-nums font-medium">{formatWon(state.cash)}</div>
+                  <div className="text-[11px] text-muted-foreground">KIS 잔고</div>
+                  <div className="text-sm font-medium">조회 중 / 검증 필요</div>
+                  <div className="text-[10px] tabular-nums text-muted-foreground">
+                    전략 배정 {formatWon(state.cash)}
+                  </div>
                 </>
               )}
             </div>
@@ -186,6 +221,12 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
             <SheetTitle>미리매수</SheetTitle>
           </SheetHeader>
           <nav className="grid gap-1 px-3 pb-6">
+            {currentUser ? (
+              <div className="mb-2 rounded-md border border-border px-3 py-2 text-sm">
+                <div className="font-medium">{currentUser.displayName}</div>
+                <div className="text-xs uppercase text-muted-foreground">{currentUser.role}</div>
+              </div>
+            ) : null}
             {TABS.map((item) => (
               <Button
                 key={item.value}
@@ -209,6 +250,26 @@ export function TradingApp({ initialState }: { initialState: PublicState }) {
               }}
             >
               시작 가이드
+            </Button>
+            <Button
+              variant="outline"
+              className="justify-start"
+              onClick={() => {
+                setMenu(false);
+                window.location.href = "/mypage";
+              }}
+            >
+              마이페이지
+            </Button>
+            <Button
+              variant="ghost"
+              className="justify-start"
+              onClick={() => {
+                setMenu(false);
+                void logout();
+              }}
+            >
+              로그아웃
             </Button>
             <Button
               variant="destructive"

@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,33 +16,39 @@ import {
 import { api } from "@/hooks/use-trading";
 import { formatPct, formatUsd, formatWon } from "@/lib/format";
 import type { OverseasAccountSnapshot, OverseasQuote } from "@/src/markets/overseas/types";
-import type { OverseasInstrument } from "@/src/markets/overseas/instruments";
+import type { UsExchange } from "@/src/markets/overseas/instruments";
 import type { CurrencyExchangeAudit } from "@/src/markets/overseas/types";
 
-type SearchItem = { instrument: OverseasInstrument; quote: OverseasQuote | null };
+type CatalogInstrument = {
+  symbol: string;
+  name: string;
+  exchange: UsExchange;
+  currency: string;
+  instrumentId?: string;
+  instrumentKey?: string;
+};
+
+type SearchItem = { instrument: CatalogInstrument; quote: OverseasQuote | null };
 
 type SearchResponse = {
-  items: SearchItem[] | OverseasInstrument[];
+  items: SearchItem[];
+  catalogSource?: string;
+  catalogComplete?: boolean;
   source?: string;
   message?: string;
   error?: string;
+  kisCalls?: number;
   exchangeAudit?: CurrencyExchangeAudit;
   ordersEnabled?: boolean;
 };
 
 type AccountResponse = {
   account: OverseasAccountSnapshot | null;
-  openOrders?: Array<{ orderNo: string; identity: string; remainingQty: number; qty: number; filledQty: number }>;
-  executions?: Array<{ orderNo: string; identity: string; filledQty: number }>;
   ordersEnabled?: boolean;
   exchangeAudit?: CurrencyExchangeAudit;
   error?: string;
   message?: string;
 };
-
-function isSearchItem(row: SearchItem | OverseasInstrument): row is SearchItem {
-  return "instrument" in row;
-}
 
 function marketLabel(status: OverseasQuote["marketStatus"]) {
   if (status === "open") return "정규장";
@@ -59,10 +64,12 @@ export function OverseasPanel() {
   const [account, setAccount] = useState<OverseasAccountSnapshot | null>(null);
   const [selected, setSelected] = useState<SearchItem | null>(null);
   const [audit, setAudit] = useState<CurrencyExchangeAudit | null>(null);
+  const [kisCalls, setKisCalls] = useState(0);
 
-  const loadAccount = useCallback(async (symbol = "NASDAQ:AAPL") => {
+  const loadAccount = useCallback(async (identity?: string) => {
     try {
-      const data = await api<AccountResponse>(`/api/overseas/account?symbol=${encodeURIComponent(symbol)}`);
+      const qs = identity ? `?symbol=${encodeURIComponent(identity)}` : "";
+      const data = await api<AccountResponse>(`/api/overseas/account${qs}`);
       if (data.account) setAccount(data.account);
       if (data.exchangeAudit) setAudit(data.exchangeAudit);
       if (data.error && !data.account) setError(data.error);
@@ -71,16 +78,15 @@ export function OverseasPanel() {
     }
   }, []);
 
+  /** DB master autocomplete — 0 KIS calls. */
   const loadSearch = useCallback(async (q: string) => {
     setLoading(true);
     try {
       const data = await api<SearchResponse>(`/api/overseas/search?q=${encodeURIComponent(q)}`);
       if (data.exchangeAudit) setAudit(data.exchangeAudit);
-      const next: SearchItem[] = (data.items ?? []).map((row) =>
-        isSearchItem(row) ? row : { instrument: row, quote: null },
-      );
-      setItems(next);
-      setSelected(next[0] ?? null);
+      setKisCalls(data.kisCalls ?? 0);
+      setItems(data.items ?? []);
+      setSelected(null);
       setError(data.error ?? data.message ?? null);
     } catch (err) {
       setItems([]);
@@ -90,8 +96,40 @@ export function OverseasPanel() {
     }
   }, []);
 
+  /** After exact master row selection — one KIS quote. */
+  const loadSelectedQuote = useCallback(async (row: CatalogInstrument) => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({
+        quote: "1",
+        symbol: row.symbol,
+        selectedExchange: row.exchange,
+      });
+      const data = await api<SearchResponse>(`/api/overseas/search?${params}`);
+      if (data.exchangeAudit) setAudit(data.exchangeAudit);
+      setKisCalls(data.kisCalls ?? 1);
+      const next = data.items?.[0] ?? null;
+      if (next) {
+        setSelected(next);
+        setItems((prev) =>
+          prev.map((item) =>
+            item.instrument.symbol === row.symbol && item.instrument.exchange === row.exchange
+              ? next
+              : item,
+          ),
+        );
+        void loadAccount(`${row.exchange}:${row.symbol}`);
+      }
+      if (data.error) setError(data.error);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "해외 시세 조회에 실패했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  }, [loadAccount]);
+
   useEffect(() => {
-    void loadSearch("");
+    void loadSearch("AAPL");
     void loadAccount();
   }, [loadAccount, loadSearch]);
 
@@ -143,30 +181,32 @@ export function OverseasPanel() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <CardTitle>미국 주식</CardTitle>
-                <CardDescription>NASDAQ · NYSE · AMEX · KIS 공식 시세/상품조회 · 읽기 전용</CardDescription>
+                <CardDescription>
+                  Instrument Master DB 검색 · 선택 후 KIS 시세 · 자동완성 KIS 호출 0
+                </CardDescription>
               </div>
               <form
                 className="flex gap-2"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void loadSearch(query);
-                  void loadAccount(query.includes(":") ? query : `NASDAQ:${query}`);
                 }}
               >
                 <Input
                   value={query}
-                  onChange={(e) => setQuery(e.target.value.toUpperCase())}
-                  placeholder="AAPL 또는 NASDAQ:AAPL"
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="AAPL / Apple / Microsoft"
                   className="sm:w-52"
                 />
                 <Button type="submit" size="sm" disabled={loading}>
-                  조회
+                  검색
                 </Button>
               </form>
             </div>
           </CardHeader>
           <CardContent className="pt-2">
             {error ? <p className="mb-2 text-sm text-destructive">{error}</p> : null}
+            <p className="mb-2 text-xs text-muted-foreground">autocomplete kisCalls={kisCalls}</p>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -182,33 +222,35 @@ export function OverseasPanel() {
                 {items.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
-                      {loading ? "해외 시세를 불러오는 중입니다." : "검색 결과가 없습니다. 티커를 입력하세요."}
+                      {loading ? "Master 검색 중…" : "검색 결과가 없습니다. 티커/이름을 입력하세요."}
                     </TableCell>
                   </TableRow>
                 ) : (
                   items.map((row) => {
                     const q = row.quote;
-                    const active = selected?.instrument.symbol === row.instrument.symbol && selected.instrument.exchange === row.instrument.exchange;
+                    const active =
+                      selected?.instrument.symbol === row.instrument.symbol &&
+                      selected.instrument.exchange === row.instrument.exchange;
                     return (
                       <TableRow
                         key={`${row.instrument.exchange}:${row.instrument.symbol}`}
                         className={active ? "bg-muted/50" : "cursor-pointer"}
-                        onClick={() => setSelected(row)}
+                        onClick={() => void loadSelectedQuote(row.instrument)}
                       >
                         <TableCell>
                           <div className="font-medium">{row.instrument.symbol}</div>
-                          <div className="text-xs text-muted-foreground">{row.instrument.displayName}</div>
+                          <div className="text-xs text-muted-foreground">{row.instrument.name}</div>
                         </TableCell>
                         <TableCell>{row.instrument.exchange}</TableCell>
-                        <TableCell className="tabular-nums">{q ? formatUsd(q.price) : "—"}</TableCell>
-                        <TableCell className={q && q.changeRate > 0 ? "text-up" : q && q.changeRate < 0 ? "text-down" : ""}>
+                        <TableCell className="tabular-nums">
+                          {q ? formatUsd(q.price) : "선택 후 조회"}
+                        </TableCell>
+                        <TableCell className="tabular-nums">
                           {q ? formatPct(q.changeRate) : "—"}
                         </TableCell>
                         <TableCell>{row.instrument.currency}</TableCell>
                         <TableCell>
-                          <Badge variant={q?.marketStatus === "open" ? "default" : "outline"}>
-                            {q ? marketLabel(q.marketStatus) : "—"}
-                          </Badge>
+                          {q ? <Badge variant="outline">{marketLabel(q.marketStatus)}</Badge> : "—"}
                         </TableCell>
                       </TableRow>
                     );
@@ -219,109 +261,55 @@ export function OverseasPanel() {
           </CardContent>
         </Card>
 
-        <Card className="min-w-0">
-          <CardHeader className="border-b">
-            <CardTitle>주문 영역</CardTitle>
-            <CardDescription>PAPER Order Gate 이전에는 실행하지 않습니다.</CardDescription>
+        <Card>
+          <CardHeader>
+            <CardTitle>선택 종목</CardTitle>
+            <CardDescription>
+              {instrument
+                ? `${instrument.exchange}:${instrument.symbol} · Master exchange 유지`
+                : "행을 클릭하면 Master exchange로 KIS 시세를 조회합니다"}
+            </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3 pt-4 text-sm">
-            <Row label="Ticker" value={instrument?.symbol ?? "—"} />
-            <Row label="Exchange" value={instrument?.exchange ?? "—"} />
-            <Row label="USD Quote" value={quote ? formatUsd(quote.price) : "—"} />
-            <Row label="USD Balance" value={usd ? formatUsd(usd.cash) : "—"} />
-            <Row label="Orderable USD" value={account?.buyingPower ? formatUsd(account.buyingPower.orderableCash) : "—"} />
-            <Row label="FX Rate" value={account?.fx ? `USD/KRW ${account.fx.rate.toLocaleString("ko-KR")}` : "—"} />
-            <Row label="KRW Equivalent" value={account?.estimatedKrwValue != null ? formatWon(account.estimatedKrwValue) : "—"} />
-            <div className="flex gap-2 pt-2">
-              <Button
-                className="flex-1"
-                variant="outline"
-                disabled
-                aria-disabled
-                title="해외 PAPER 주문 게이트가 열리기 전까지 비활성화"
-              >
-                BUY 잠금
-              </Button>
-              <Button
-                className="flex-1"
-                variant="outline"
-                disabled
-                aria-disabled
-                title="해외 PAPER 주문 게이트가 열리기 전까지 비활성화"
-              >
-                SELL 잠금
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              주문 버튼은 DISABLED 입니다. `RUN_KIS_VTS_OVERSEAS_ORDER_TESTS` 가 없어도 UI에서 주문을 내지 않습니다.
-            </p>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => toast.message("해외 주문은 Overseas VTS-B opt-in 이후에만 실행됩니다.")}
-            >
-              주문 잠금 안내
-            </Button>
+          <CardContent className="space-y-3 text-sm">
+            {instrument ? (
+              <>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">이름</span>
+                  <span>{instrument.name}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">거래소</span>
+                  <span>{instrument.exchange}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">현재가</span>
+                  <span className="tabular-nums">{quote ? formatUsd(quote.price) : "—"}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">등락</span>
+                  <span className="tabular-nums">{quote ? formatPct(quote.changeRate) : "—"}</span>
+                </div>
+              </>
+            ) : (
+              <p className="text-muted-foreground">검색 후 종목을 선택하세요.</p>
+            )}
           </CardContent>
         </Card>
       </div>
-
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle className="text-base">해외 보유종목</CardTitle>
-          <CardDescription>{account?.message ?? "KIS inquire-balance · 거래통화 USD 유지"}</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-2">
-          {!account?.positions.length ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">해외 보유 종목이 없습니다.</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>종목</TableHead>
-                  <TableHead>수량</TableHead>
-                  <TableHead>평가</TableHead>
-                  <TableHead>통화</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {account.positions.map((pos) => (
-                  <TableRow key={pos.identity}>
-                    <TableCell>
-                      <div className="font-medium">{pos.instrument.displayName}</div>
-                      <div className="text-xs text-muted-foreground">{pos.identity}</div>
-                    </TableCell>
-                    <TableCell className="tabular-nums">{pos.qty}</TableCell>
-                    <TableCell className="tabular-nums">{formatUsd(pos.marketValue)}</TableCell>
-                    <TableCell>{pos.currency}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }
 
-function Stat({ label, value, hint }: { label: string; hint: string; value: string }) {
+function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
     <Card size="sm">
-      <CardHeader>
+      <CardHeader className="pb-2">
         <CardDescription>{label}</CardDescription>
-        <CardTitle className="text-xl tabular-nums">{value}</CardTitle>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <CardTitle className="text-lg tabular-nums">{value}</CardTitle>
       </CardHeader>
+      <CardContent>
+        <p className="text-xs text-muted-foreground">{hint}</p>
+      </CardContent>
     </Card>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="tabular-nums font-medium">{value}</span>
-    </div>
   );
 }

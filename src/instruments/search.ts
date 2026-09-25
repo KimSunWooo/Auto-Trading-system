@@ -1,6 +1,4 @@
 import { and, eq, like, or, sql } from "drizzle-orm";
-import { UNIVERSE } from "@/lib/universe";
-import { US_SEED_UNIVERSE } from "@/src/markets/overseas/instruments";
 import { getDb, type AppDb } from "@/src/db/client";
 import * as schema from "@/src/db/schema";
 import { normalizeAlias, normalizeInstrumentText, normalizeSymbol } from "@/src/instruments/normalize";
@@ -34,31 +32,129 @@ export type SearchableInstrument = InstrumentRef & {
 };
 
 export type InstrumentSearchOptions = {
-  /** Injected corpus (tests). When set, DB/seed paths are skipped. */
+  /** Injected corpus (tests / explicit fixtures only). When set, DB paths are skipped. */
   corpus?: SearchableInstrument[];
-  /** Injected DB. Pass null to force seed fallback. */
+  /** Injected DB. Pass null to simulate unavailable DB (no seed fallback). */
   db?: AppDb | null;
   /** Default 20. */
   limit?: number;
+  /**
+   * Allow seed/universe fallback — TESTS ONLY.
+   * Production search never invents a catalog from UNIVERSE / US_SEED_UNIVERSE.
+   */
+  allowSeedFallback?: boolean;
+};
+
+export type InstrumentSearchResult = {
+  items: InstrumentSearchHit[];
+  catalogSource: "database-master" | "test-corpus" | "test-seed" | "none";
+  catalogComplete: boolean;
+  error?: "CATALOG_NOT_READY" | "DB_UNAVAILABLE";
+  kisCalls: 0;
 };
 
 /**
- * Search instruments against MySQL `instruments` + `instrument_aliases` when DB
- * has rows; otherwise fall back to `lib/universe` + `US_SEED_UNIVERSE`.
+ * Search instruments against MySQL `instruments` + `instrument_aliases`.
+ * Production: no UNIVERSE / US_SEED_UNIVERSE / dashboard-rep seed fallback.
  * Never calls KIS REST/WS.
  */
+export async function searchInstrumentsDetailed(
+  query: InstrumentSearchQuery,
+  options: InstrumentSearchOptions = {},
+): Promise<InstrumentSearchResult> {
+  const limit = clampLimit(options.limit ?? query.limit);
+  const qNorm = normalizeInstrumentText(query.q);
+
+  if (options.corpus) {
+    const items = qNorm
+      ? rankInstruments(options.corpus, qNorm, limit, query)
+      : emptyFromCorpus(options.corpus, query, limit);
+    return {
+      items,
+      catalogSource: "test-corpus",
+      catalogComplete: true,
+      kisCalls: 0,
+    };
+  }
+
+  const db = options.db === undefined ? getDb() : options.db;
+  if (!db) {
+    if (options.allowSeedFallback) {
+      const { seedCorpusForTest } = await import("@/src/instruments/search-seed");
+      const corpus = seedCorpusForTest(query);
+      const items = qNorm
+        ? rankInstruments(corpus, qNorm, limit, query)
+        : emptyFromCorpus(corpus, query, limit);
+      return {
+        items,
+        catalogSource: "test-seed",
+        catalogComplete: false,
+        kisCalls: 0,
+      };
+    }
+    return {
+      items: [],
+      catalogSource: "none",
+      catalogComplete: false,
+      error: "DB_UNAVAILABLE",
+      kisCalls: 0,
+    };
+  }
+
+  const masterCount = await countActiveInstruments(db, query.country);
+  if (masterCount <= 0) {
+    if (options.allowSeedFallback) {
+      const { seedCorpusForTest } = await import("@/src/instruments/search-seed");
+      const corpus = seedCorpusForTest(query);
+      const items = qNorm
+        ? rankInstruments(corpus, qNorm, limit, query)
+        : emptyFromCorpus(corpus, query, limit);
+      return {
+        items,
+        catalogSource: "test-seed",
+        catalogComplete: false,
+        kisCalls: 0,
+      };
+    }
+    return {
+      items: [],
+      catalogSource: "none",
+      catalogComplete: false,
+      error: "CATALOG_NOT_READY",
+      kisCalls: 0,
+    };
+  }
+
+  if (!qNorm) {
+    const reps = configDashboardRepresentatives(query.country)
+      .filter((row) => !query.market || row.market.toUpperCase() === query.market.toUpperCase())
+      .slice(0, limit)
+      .map((row) => ({ ...row, rank: 99, matchedOn: "contains" as const }));
+    return {
+      items: reps,
+      catalogSource: "database-master",
+      catalogComplete: true,
+      kisCalls: 0,
+    };
+  }
+
+  const fromDb = await loadFromDb(db, query);
+  const items = rankInstruments(fromDb, qNorm, limit, query);
+  return {
+    items,
+    catalogSource: "database-master",
+    catalogComplete: true,
+    kisCalls: 0,
+  };
+}
+
+/** Back-compat: items only. Prefer searchInstrumentsDetailed in routes. */
 export async function searchInstruments(
   query: InstrumentSearchQuery,
   options: InstrumentSearchOptions = {},
 ): Promise<InstrumentSearchHit[]> {
-  const limit = clampLimit(options.limit ?? query.limit);
-  const qNorm = normalizeInstrumentText(query.q);
-  if (!qNorm) {
-    return emptyQueryHits(query, limit, options);
-  }
-
-  const corpus = options.corpus ?? (await loadSearchCorpus(query, options));
-  return rankInstruments(corpus, qNorm, limit, query);
+  const result = await searchInstrumentsDetailed(query, options);
+  return result.items;
 }
 
 export function rankInstruments(
@@ -91,11 +187,7 @@ export function rankInstruments(
 
 function matchKind(row: SearchableInstrument, qNorm: string, qSymbol: string): SearchRankKind | null {
   const symbol = normalizeSymbol(row.symbol);
-  const names = [
-    row.displayName,
-    row.koreanName,
-    row.englishName,
-  ]
+  const names = [row.displayName, row.koreanName, row.englishName]
     .filter(Boolean)
     .map((n) => normalizeInstrumentText(n));
   const aliases = (row.aliases ?? []).map((a) => normalizeAlias(a));
@@ -121,16 +213,18 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(100, Math.floor(n));
 }
 
-async function loadSearchCorpus(
-  query: InstrumentSearchQuery,
-  options: InstrumentSearchOptions,
-): Promise<SearchableInstrument[]> {
-  const db = options.db === undefined ? getDb() : options.db;
-  if (db) {
-    const fromDb = await loadFromDb(db, query);
-    if (fromDb.length > 0) return fromDb;
+async function countActiveInstruments(db: AppDb, country?: string): Promise<number> {
+  try {
+    const conditions = [eq(schema.instruments.isActive, true)];
+    if (country) conditions.push(eq(schema.instruments.country, country.toUpperCase()));
+    const rows = await db
+      .select({ n: sql<number>`count(*)` })
+      .from(schema.instruments)
+      .where(and(...conditions));
+    return Number(rows[0]?.n ?? 0);
+  } catch {
+    return 0;
   }
-  return seedCorpus(query);
 }
 
 async function loadFromDb(db: AppDb, query: InstrumentSearchQuery): Promise<SearchableInstrument[]> {
@@ -210,62 +304,17 @@ async function loadFromDb(db: AppDb, query: InstrumentSearchQuery): Promise<Sear
   }
 }
 
-function seedCorpus(query: InstrumentSearchQuery): SearchableInstrument[] {
-  const rows: SearchableInstrument[] = [];
-  for (const stock of UNIVERSE) {
-    rows.push(
-      toInstrumentRef({
-        country: "KR",
-        market: stock.market,
-        symbol: stock.code,
-        displayName: stock.name,
-        koreanName: stock.name,
-        currency: "KRW",
-      }),
-    );
-  }
-  for (const stock of US_SEED_UNIVERSE) {
-    rows.push(
-      toInstrumentRef({
-        country: "US",
-        market: stock.exchange,
-        symbol: stock.symbol,
-        displayName: stock.displayName,
-        englishName: stock.displayName,
-        currency: "USD",
-      }),
-    );
-  }
-  // Include dashboard reps so UI always has known anchors even if universe drifts.
-  for (const rep of configDashboardRepresentatives()) {
-    if (!rows.some((r) => r.instrumentKey === rep.instrumentKey)) rows.push(rep);
-  }
-
-  return rows.filter((row) => {
-    if (query.country && row.country.toUpperCase() !== query.country.toUpperCase()) return false;
-    if (query.market && row.market.toUpperCase() !== query.market.toUpperCase()) return false;
-    if (query.type && String(row.instrumentType).toUpperCase() !== query.type.toUpperCase()) return false;
-    return true;
-  });
-}
-
-function emptyQueryHits(
+function emptyFromCorpus(
+  corpus: SearchableInstrument[],
   query: InstrumentSearchQuery,
   limit: number,
-  options: InstrumentSearchOptions,
 ): InstrumentSearchHit[] {
-  if (options.corpus) {
-    return options.corpus
-      .filter((row) => {
-        if (query.country && row.country.toUpperCase() !== query.country.toUpperCase()) return false;
-        if (query.market && row.market.toUpperCase() !== query.market.toUpperCase()) return false;
-        return true;
-      })
-      .slice(0, limit)
-      .map((row) => ({ ...row, rank: 99, matchedOn: "contains" as const }));
-  }
-  const reps = configDashboardRepresentatives(query.country)
-    .filter((row) => !query.market || row.market.toUpperCase() === query.market.toUpperCase())
-    .slice(0, limit);
-  return reps.map((row) => ({ ...row, rank: 99, matchedOn: "contains" as const }));
+  return corpus
+    .filter((row) => {
+      if (query.country && row.country.toUpperCase() !== query.country.toUpperCase()) return false;
+      if (query.market && row.market.toUpperCase() !== query.market.toUpperCase()) return false;
+      return true;
+    })
+    .slice(0, limit)
+    .map((row) => ({ ...row, rank: 99, matchedOn: "contains" as const }));
 }

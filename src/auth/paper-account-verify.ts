@@ -70,8 +70,13 @@ function positionsExactMatch(
 
 export async function verifyPaperAccountForUser(input: {
   userId: string;
-  /** Optional local state for position compare (after startup sync). */
+  /** Local trading state — required for READY (null ⇒ not ready). */
   state?: AppState | null;
+  /**
+   * When resolveCurrentTradingRuntime() failed in the route.
+   * Distinct from "state file empty" — UI can show runtime prep failure.
+   */
+  runtimeResolutionFailed?: boolean;
   /** When true, skip live KIS (unit tests only). */
   skipLiveQuery?: boolean;
   /** Injected balance for tests. */
@@ -82,36 +87,63 @@ export async function verifyPaperAccountForUser(input: {
     pagesFetched?: number;
     orderableCash?: number;
   };
+  /** Injected RuntimeScope for unit tests (bypasses process scope map). */
+  mockRuntimeScope?: RuntimeScope | null;
+  /** Injected owned account row for unit tests (skips DB select). */
+  mockAccount?: {
+    id: string;
+    userId: string;
+    environment: string;
+    status: string;
+    accountNumberMasked?: string | null;
+    physicalAccountFingerprint?: string | null;
+  };
+  /** Injected decrypted PAPER secret for unit tests. */
+  mockSecret?: { appKey: string; appSecret: string; accountNo: string };
 }): Promise<PaperAccountVerification> {
   const blockers: string[] = [];
   const verifiedAt = new Date().toISOString();
 
-  await maybeSelfHealSinglePaperDefault(input.userId);
+  if (input.runtimeResolutionFailed) {
+    blockers.push("RUNTIME_RESOLUTION_FAILED");
+  }
 
-  let account: Awaited<ReturnType<typeof selectOwnedPaperAccount>>;
-  try {
-    account = await selectOwnedPaperAccount(input.userId);
-  } catch (err) {
-    const code = err instanceof PaperAccountSelectionError ? err.code : "ACCOUNT_NOT_CONNECTED";
-    blockers.push(code);
-    return {
-      brokerAccountId: "",
-      environment: "PAPER",
-      accountMasked: "****",
-      bindingVerified: false,
-      fingerprintVerified: false,
-      runtimeClientVerified: false,
-      freshBrokerQuery: false,
-      paginationComplete: false,
-      pagesFetched: 0,
-      depositCash: 0,
-      orderableCash: null,
-      holdings: [],
-      localPositionsMatched: false,
-      verifiedAt,
-      readyForTrading: false,
-      blockers,
-    };
+  if (!input.mockAccount) {
+    await maybeSelfHealSinglePaperDefault(input.userId);
+  }
+
+  let account: Awaited<ReturnType<typeof selectOwnedPaperAccount>> | NonNullable<
+    typeof input.mockAccount
+  >;
+  if (input.mockAccount) {
+    account = input.mockAccount;
+  } else {
+    try {
+      account = await selectOwnedPaperAccount(input.userId);
+    } catch (err) {
+      const code = err instanceof PaperAccountSelectionError ? err.code : "ACCOUNT_NOT_CONNECTED";
+      blockers.push(code);
+      return {
+        brokerAccountId: "",
+        environment: "PAPER",
+        accountMasked: "****",
+        bindingVerified: false,
+        fingerprintVerified: false,
+        runtimeClientVerified: false,
+        freshBrokerQuery: false,
+        paginationComplete: false,
+        pagesFetched: 0,
+        depositCash: 0,
+        orderableCash: null,
+        holdings: [],
+        localPositionsMatched: false,
+        depositSnapshotMatched: false,
+        orderableSnapshotMatched: false,
+        verifiedAt,
+        readyForTrading: false,
+        blockers,
+      };
+    }
   }
 
   if (account.userId !== input.userId) {
@@ -124,7 +156,7 @@ export async function verifyPaperAccountForUser(input: {
     blockers.push("ACCOUNT_NOT_ACTIVE");
   }
 
-  const secret = await loadPaperSecretForAccount(account.id);
+  const secret = input.mockSecret ?? (await loadPaperSecretForAccount(account.id));
   if (!secret) {
     blockers.push("CREDENTIAL_MISSING");
   }
@@ -148,29 +180,36 @@ export async function verifyPaperAccountForUser(input: {
     blockers.push("ACCOUNT_FINGERPRINT_MISSING");
   }
 
-  // Ensure encrypted payload decrypts to the same account as secret loader.
-  const payload = await loadEncryptedPayload(account.id);
-  if (payload && secret) {
-    try {
-      const roundtrip = decryptPaperCredentials({
-        ciphertext: payload.ciphertext,
-        iv: payload.iv,
-        authTag: payload.authTag,
-      });
-      if (
-        paperPhysicalAccountFingerprint(roundtrip.accountNo) !==
-        account.physicalAccountFingerprint
-      ) {
-        blockers.push("SECRET_DB_FINGERPRINT_MISMATCH");
+  // Ensure encrypted payload decrypts to the same account as secret loader (skip when mocked).
+  if (!input.mockAccount && !input.mockSecret) {
+    const payload = await loadEncryptedPayload(account.id);
+    if (payload && secret) {
+      try {
+        const roundtrip = decryptPaperCredentials({
+          ciphertext: payload.ciphertext,
+          iv: payload.iv,
+          authTag: payload.authTag,
+        });
+        if (
+          paperPhysicalAccountFingerprint(roundtrip.accountNo) !==
+          account.physicalAccountFingerprint
+        ) {
+          blockers.push("SECRET_DB_FINGERPRINT_MISMATCH");
+        }
+      } catch {
+        blockers.push("SECRET_DECRYPT_FAILED");
       }
-    } catch {
-      blockers.push("SECRET_DECRYPT_FAILED");
     }
   }
 
   let runtimeClientVerified = false;
-  const scope = getRuntimeScope(account.id);
-  if (scope && secret) {
+  const scope =
+    input.mockRuntimeScope !== undefined
+      ? input.mockRuntimeScope
+      : getRuntimeScope(account.id);
+  if (!scope) {
+    blockers.push("RUNTIME_SCOPE_MISSING");
+  } else if (secret) {
     runtimeClientVerified = verifyScopeMatchesSecret(scope, secret.accountNo);
     if (!runtimeClientVerified) {
       blockers.push("RUNTIME_SCOPE_ACCOUNT_MISMATCH");
@@ -253,25 +292,38 @@ export async function verifyPaperAccountForUser(input: {
     blockers.push("LIVE_QUERY_SKIPPED");
   }
 
+  if (input.state == null) {
+    blockers.push("LOCAL_TRADING_STATE_UNAVAILABLE");
+  } else if (!input.state.kisBalance) {
+    blockers.push("LOCAL_BROKER_SNAPSHOT_MISSING");
+  }
+
   const localPositionsMatched =
-    input.state != null
-      ? positionsExactMatch(input.state, holdings)
-      : false;
+    input.state != null ? positionsExactMatch(input.state, holdings) : false;
   if (input.state != null && !localPositionsMatched) {
     blockers.push("POSITION_QTY_MISMATCH");
   }
 
-  // Optional: compare state.kisBalance.cash to fresh deposit when present.
+  if (orderableCash == null && !blockers.includes("ORDERABLE_CASH_UNAVAILABLE")) {
+    blockers.push("ORDERABLE_CASH_UNAVAILABLE");
+  }
+
+  let depositSnapshotMatched = false;
+  let orderableSnapshotMatched = false;
   if (input.state?.kisBalance && freshBrokerQuery && paginationComplete) {
-    if (input.state.kisBalance.cash !== depositCash) {
+    depositSnapshotMatched = input.state.kisBalance.cash === depositCash;
+    if (!depositSnapshotMatched) {
       blockers.push("KIS_BALANCE_CASH_MISMATCH");
     }
-    if (
-      orderableCash != null &&
-      input.state.kisBalance.orderableCash != null &&
-      input.state.kisBalance.orderableCash !== orderableCash
-    ) {
-      blockers.push("KIS_ORDERABLE_CASH_MISMATCH");
+    if (orderableCash != null) {
+      if (input.state.kisBalance.orderableCash == null) {
+        blockers.push("KIS_ORDERABLE_CASH_MISMATCH");
+      } else {
+        orderableSnapshotMatched = input.state.kisBalance.orderableCash === orderableCash;
+        if (!orderableSnapshotMatched) {
+          blockers.push("KIS_ORDERABLE_CASH_MISMATCH");
+        }
+      }
     }
   }
 
@@ -288,12 +340,17 @@ export async function verifyPaperAccountForUser(input: {
       ].includes(b),
     ).length === 0;
 
+  // Production READY: RuntimeScope + local broker snapshot + exact holdings/deposit/orderable.
   const readyForTrading =
     bindingVerified &&
     fingerprintVerified &&
+    runtimeClientVerified &&
     freshBrokerQuery &&
     paginationComplete &&
-    (input.state == null || localPositionsMatched) &&
+    input.state != null &&
+    localPositionsMatched &&
+    depositSnapshotMatched &&
+    orderableSnapshotMatched &&
     orderableCash != null &&
     blockers.length === 0;
 
@@ -311,6 +368,8 @@ export async function verifyPaperAccountForUser(input: {
     orderableCash,
     holdings,
     localPositionsMatched,
+    depositSnapshotMatched,
+    orderableSnapshotMatched,
     verifiedAt,
     readyForTrading,
     blockers,

@@ -115,8 +115,18 @@ test("IS8: default limit 20; search creates 0 KIS calls (mock counter)", async (
   assert.equal(hits.length, 20);
   assert.equal(kisCalls, 0);
 
-  // Seed fallback path also avoids KIS.
-  const seedHits = await searchInstruments({ q: "005930", limit: 5 }, { db: null });
+  // Production path: no seed fallback when DB unavailable.
+  const { searchInstrumentsDetailed } = await import("@/src/instruments/search");
+  const blocked = await searchInstrumentsDetailed({ q: "005930", limit: 5 }, { db: null });
+  assert.equal(blocked.items.length, 0);
+  assert.equal(blocked.catalogComplete, false);
+  assert.equal(kisCalls, 0);
+
+  // Explicit test-only seed fallback still avoids KIS.
+  const seedHits = await searchInstruments(
+    { q: "005930", limit: 5 },
+    { db: null, allowSeedFallback: true },
+  );
   assert.ok(seedHits.length >= 1);
   assert.equal(seedHits[0]?.symbol, "005930");
   assert.equal(kisCalls, 0);
