@@ -188,7 +188,9 @@ test("Test A: 069500 enabled=false → QuantEngine skips interval rule (no BUY)"
   );
   assert.equal(unexpectedEnabledRules(rules).length, 0);
   const beforeOrders = state.orders.length;
-  const after = await QuantEngine.run(state);
+  const after = await QuantEngine.run(state, {
+    createTestBroker: (box) => new FakeBroker(box),
+  });
   assert.equal(after.orders.length, beforeOrders);
   // Disabled kodex never runs — no interval message on that alloc
   const kodexAlloc = after.allocations.find((row) => row.ruleId === KODEX_ID);

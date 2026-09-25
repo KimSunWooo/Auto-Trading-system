@@ -7,6 +7,8 @@ import { tradingBlocked } from "./circuit";
 import type { KisApi, KisAccountBalance, KisCancelOrder, KisCashOrder, KisDayOrder, KisPrice } from "@/src/brokers/kis-client";
 import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
 import { setNowMs } from "@/src/clock";
+import { FakeBroker } from "@/src/test-support";
+import { BrokerNotReadyError } from "@/src/brokers/index";
 
 before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
 after(() => setNowMs(null));
@@ -61,7 +63,9 @@ test("stop-loss sells with a -3% limit band in slices, not market", async () => 
   );
   state.cash = state.allocations.reduce((sum, row) => sum + row.balance, 0);
   const box = { current: state };
-  await new RiskManager(box).enforceStops();
+  await new RiskManager(box).enforceStops({
+    createTestBroker: (b) => new FakeBroker(b),
+  });
   const sells = box.current.orders.filter((row) => row.side === "sell");
   assert.equal(sells.length, 2);
   assert.ok(sells.every((row) => row.ordDvsn === "limit"));
@@ -98,7 +102,7 @@ test("kill switch disables buckets and auto trading", () => {
   assert.equal(stopped.orders[0]?.status, "cancelled");
 });
 
-test("executeKillSwitch band-limit sells mock positions then halts", async () => {
+test("executeKillSwitch without KisClient fails closed (no local mock flatten)", async () => {
   const state = createPaperState();
   state.positions = [
     { code: "005930", name: "삼성전자", qty: 2, avgPrice: 70_000, ruleId: "cash" },
@@ -108,15 +112,11 @@ test("executeKillSwitch band-limit sells mock positions then halts", async () =>
   );
   state.cash = state.allocations.reduce((sum, row) => sum + row.balance, 0);
   const box = { current: state };
-  const after = await RiskManager.executeKillSwitch(box, { kis: null });
-  assert.equal(after.settings.autoTrading, false);
-  assert.equal(after.settings.liquidating, false);
-  assert.equal(after.circuit.kind, "kill");
-  assert.equal(after.positions.length, 0);
-  assert.equal(after.killReport?.flattened, 1);
-  assert.equal(after.killReport?.overwritten, false);
-  assert.ok((after.allocations.find((row) => row.ruleId === "cash")?.balance ?? 0) > 6_800_000);
-  assert.ok(after.orders.filter((row) => row.side === "sell").every((row) => row.ordDvsn === "limit"));
+  await assert.rejects(
+    () => RiskManager.executeKillSwitch(box, { kis: null }),
+    (err: unknown) => err instanceof BrokerNotReadyError,
+  );
+  assert.equal(box.current.positions.length, 2);
 });
 
 class KillKis implements KisApi {

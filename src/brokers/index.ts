@@ -12,6 +12,11 @@ export type CreateBrokerOpts = {
   safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
   /** PAPER WebSocket quote hub — process-local, never persisted. */
   quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
+  /**
+   * Test-only broker factory (FakeBroker). Production must never set this —
+   * there is no local mock book product path.
+   */
+  createTestBroker?: (box: StateBox) => IBroker;
 };
 
 export class BrokerNotReadyError extends Error {
@@ -35,6 +40,7 @@ export function createBroker(
   ruleKey = CASH_RULE_ID,
   opts: CreateBrokerOpts = {},
 ): IBroker {
+  if (opts.createTestBroker) return opts.createTestBroker(box).forRule(ruleKey);
   const client = opts.kisClient ?? getSharedKisClient();
   if (!client?.configured) {
     throw new BrokerNotReadyError(

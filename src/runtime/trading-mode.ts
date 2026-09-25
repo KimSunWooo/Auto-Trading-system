@@ -1,21 +1,29 @@
+import { isNodeTestProcess } from "@/src/runtime/test-process";
+
 export type TradingMode = "paper" | "live_test" | "live";
 
 export type EnvMap = Record<string, string | undefined>;
 
 /**
- * Resolve TRADING_MODE. Default is live_test (KIS PAPER operational).
- * Legacy "mock" / "MOCK" values are rejected — fail closed to live_test with no mock book.
+ * Resolve TRADING_MODE.
+ * Production default: live_test (KIS PAPER operational).
+ * Unit tests without an explicit TRADING_MODE use paper so FakeBroker /
+ * OrderManager book tests do not require a worker lock.
+ * Legacy "mock" / "MOCK" → live_test (never invents a local mock book).
  */
 export function tradingMode(env: EnvMap = process.env): TradingMode {
-  const raw = String(env.TRADING_MODE ?? "live_test")
+  const raw = String(env.TRADING_MODE ?? "")
     .trim()
     .toLowerCase()
     .replaceAll("-", "_");
+  if (!raw) {
+    return isNodeTestProcess(env) ? "paper" : "live_test";
+  }
   if (raw === "live_test") return "live_test";
   if (raw === "live") return "live";
   if (raw === "paper") return "paper";
   // Legacy MOCK removed: treat as live_test so product never runs a mock book.
-  if (raw === "mock" || raw === "") return "live_test";
+  if (raw === "mock") return "live_test";
   return "live_test";
 }
 

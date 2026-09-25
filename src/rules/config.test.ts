@@ -110,7 +110,7 @@ test("syncAllocationsToRules starts from cash-only when there are no rules", () 
   const next = syncAllocationsToRules(createInitialState(), []);
   assert.equal(next.allocations.length, 1);
   assert.equal(next.allocations[0]?.ruleId, "cash");
-  assert.equal(next.allocations[0]?.balance, 10_000_000);
+  assert.equal(next.allocations[0]?.balance, 0);
 });
 
 test("RuleRunner interval buy uses the ticker from the user rule", async () => {

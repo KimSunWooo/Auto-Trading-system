@@ -23,8 +23,10 @@ function cloneConfig(value: RuleConfigFile): RuleConfigFile {
   return structuredClone(value);
 }
 
+import { isNodeTestProcess } from "@/src/runtime/test-process";
+
 function inTest() {
-  return process.env.npm_lifecycle_event === "test";
+  return isNodeTestProcess();
 }
 
 function readFileConfig(): RuleConfigFile {

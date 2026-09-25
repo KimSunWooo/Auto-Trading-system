@@ -280,7 +280,9 @@ test("11. 손절 후 같은 tick 재매수 금지", async () => {
   );
   state.cash = state.allocations.reduce((sum, row) => sum + row.balance, 0);
   const box = { current: state };
-  await new RiskManager(box).enforceStops();
+  await new RiskManager(box).enforceStops({
+    createTestBroker: (b) => new FakeBroker(b),
+  });
   const buy = new OrderManager(box).buy("cash", "005930", 1, 70_000);
   assert.equal(buy.ok, false);
   assert.match(buy.reason ?? "", /손절/);
@@ -482,7 +484,9 @@ test("SCENARIO 6 손절 후 same tick BUY 차단", async () => {
   state.quotes["005930"]!.price = 70_000;
   state.positions = [{ code: "005930", name: "삼성전자", qty: 2, avgPrice: 80_000, ruleId: "cash" }];
   const box = { current: state };
-  await new RiskManager(box).enforceStops();
+  await new RiskManager(box).enforceStops({
+    createTestBroker: (b) => new FakeBroker(b),
+  });
   const buy = new OrderManager(box).buy("cash", "005930", 1, 70_000);
   assert.equal(buy.ok, false);
 });
@@ -515,12 +519,12 @@ test("atomic JSON write keeps the original file on success path", async () => {
   if (loaded.ok) assert.equal(loaded.value.ok, true);
 });
 
-test("http tick is allowed only in mock/paper", () => {
-  assert.equal(httpTickAllowed("mock"), true);
+test("http tick is allowed only in paper (mock mode removed)", () => {
   assert.equal(httpTickAllowed("paper"), true);
   assert.equal(httpTickAllowed("live_test"), false);
   assert.equal(httpTickAllowed("live"), false);
-  assert.equal(tradingMode({ TRADING_MODE: "MOCK" }), "mock");
+  assert.equal(tradingMode({ TRADING_MODE: "MOCK" }), "live_test");
+  assert.equal(tradingMode({ TRADING_MODE: "paper" }), "paper");
 });
 
 test("LIVE_TEST rejects real-host KisBroker orders", async () => {

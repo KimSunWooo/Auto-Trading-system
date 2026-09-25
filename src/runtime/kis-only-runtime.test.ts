@@ -31,10 +31,12 @@ test("RB1 production brokers/index does not export MockBroker", async () => {
   assert.equal(typeof mod.KisBroker, "function");
 });
 
-test("RB4/RB5 brokerDriver always kis; TRADING_MODE default live_test; no MOCK_BROKER_MODE helper", () => {
+test("RB4/RB5 brokerDriver always kis; TRADING_MODE mock legacy → live_test; no MOCK_BROKER_MODE helper", () => {
   assert.equal(brokerDriver({ BROKER: "mock" }), "kis");
   assert.equal(brokerDriver({}), "kis");
-  assert.equal(tradingMode({}), "live_test");
+  // npm test (MIRAEMAESU_TEST=1): unset TRADING_MODE → paper for FakeBroker unit tests
+  assert.equal(tradingMode({}), "paper");
+  assert.equal(tradingMode({ TRADING_MODE: "live_test" }), "live_test");
   assert.equal(tradingMode({ TRADING_MODE: "MOCK" }), "live_test");
   assert.equal(tradingMode({ TRADING_MODE: "mock" }), "live_test");
   assert.equal(usesLiveKisQuotes(), true);

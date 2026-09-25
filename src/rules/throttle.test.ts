@@ -10,9 +10,14 @@ import {
 } from "@/lib/market-hours";
 import { setNowMs, withNow } from "@/src/clock";
 import { noteRuleOutcome, RULE_THROTTLE_MS, ruleThrottleReason } from "@/src/rules/throttle";
+import { FakeBroker } from "@/src/test-support";
 
 before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
 after(() => setNowMs(null));
+
+const fakeBrokerDeps = {
+  createTestBroker: (box: { current: unknown }) => new FakeBroker(box as never),
+};
 
 test("QuantEngine skips new orders outside regular session", async () => {
   const rule = blankRule({
@@ -28,7 +33,7 @@ test("QuantEngine skips new orders outside regular session", async () => {
   try {
     const seeded = syncAllocationsToRules(createPaperState(), [rule]);
     await withNow(SEOUL_WEEKEND_MS, async () => {
-      const after = await QuantEngine.run(seeded);
+      const after = await QuantEngine.run(seeded, fakeBrokerDeps);
       assert.equal(after.orders.length, 0);
       assert.match(after.allocations.find((row) => row.ruleId === "r-offhours")?.lastMessage ?? "", /정규장 아님/);
     });
@@ -64,7 +69,7 @@ test("QuantEngine does not fire a throttled rule", async () => {
     });
     const alloc = state.allocations.find((row) => row.ruleId === "r-cool");
     assert.match(ruleThrottleReason(alloc, "005930") ?? "", /쿨다운/);
-    const after = await QuantEngine.run(state);
+    const after = await QuantEngine.run(state, fakeBrokerDeps);
     assert.equal(after.orders.length, 0);
     assert.match(after.allocations.find((row) => row.ruleId === "r-cool")?.lastMessage ?? "", /쿨다운/);
     assert.ok(Number(after.allocations.find((row) => row.ruleId === "r-cool")?.meta?.throttleUntilMs) > SEOUL_REGULAR_SESSION_MS);

@@ -63,6 +63,7 @@ export type RiskRuntimeDeps = {
   ruleConfig?: RuleConfigFile;
   safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
   quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
+  createTestBroker?: CreateBrokerOpts["createTestBroker"];
 };
 
 export class RiskManager {
@@ -474,8 +475,13 @@ export class RiskManager {
       persistState: deps.persistState,
       safety: deps.safety,
       quoteHub: deps.quoteHub,
+      createTestBroker: deps.createTestBroker,
     };
-    const root = createBroker(this.box, CASH_RULE_ID, brokerOpts);
+    let root: ReturnType<typeof createBroker> | null = null;
+    const broker = () => {
+      if (!root) root = createBroker(this.box, CASH_RULE_ID, brokerOpts);
+      return root;
+    };
     const snapshot = [...state.positions];
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;
@@ -497,7 +503,7 @@ export class RiskManager {
           `${pos.name} ${label} (${Math.round(pct * 100)}%)`,
         );
       }
-      await sellBandSlices(root.forRule(pos.ruleId), pos.code, pos.qty, last, quote?.prevClose);
+      await sellBandSlices(broker().forRule(pos.ruleId), pos.code, pos.qty, last, quote?.prevClose);
       const key = `${pos.ruleId}:${pos.code}`;
       const prevSafety = safetyOf(this.box.current);
       this.box.current = {

@@ -11,9 +11,14 @@ import { floorToTick, roundToTick, tickSize } from "./tick-size";
 import type { AutoCondition, DcaPlan } from "./types";
 import { SEOUL_REGULAR_SESSION_MS } from "./market-hours";
 import { setNowMs } from "@/src/clock";
+import { FakeBroker } from "@/src/test-support";
 
 before(() => setNowMs(SEOUL_REGULAR_SESSION_MS));
 after(() => setNowMs(null));
+
+function withFakeBroker() {
+  return { createTestBroker: (box: { current: unknown }) => new FakeBroker(box as never) };
+}
 
 test("tick size follows KRX bands", () => {
   assert.equal(tickSize(1500), 1);
@@ -88,7 +93,11 @@ test("price-below condition fires a market buy", async () => {
     createdAt: new Date().toISOString(),
   };
   assert.equal(conditionMatches(cond, quote), true);
-  const next = await evaluateConditions({ ...state, conditions: [cond] }, new Date().toISOString());
+  const next = await evaluateConditions(
+    { ...state, conditions: [cond] },
+    new Date().toISOString(),
+    withFakeBroker(),
+  );
   assert.equal(next.conditions[0]?.status, "filled");
   assert.equal(next.orders[0]?.qty, 5);
   assert.equal(next.orders[0]?.source, "condition");
@@ -109,7 +118,11 @@ test("DCA buys whole shares and schedules the next run", async () => {
     createdAt: new Date().toISOString(),
     runCount: 0,
   };
-  const next = await evaluateDca({ ...state, dcaPlans: [plan] }, new Date().toISOString());
+  const next = await evaluateDca(
+    { ...state, dcaPlans: [plan] },
+    new Date().toISOString(),
+    withFakeBroker(),
+  );
   assert.equal(next.dcaPlans[0]?.runCount, 1);
   assert.equal(next.orders[0]?.source, "dca");
   assert.equal(next.orders[0]?.ordDvsn, "limit");

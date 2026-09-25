@@ -19,6 +19,8 @@ export type QuantEngineDeps = {
   ruleConfig?: RuleConfigFile;
   safety?: import("@/src/runtime/trading-safety").TradingSafetyContext;
   quoteHub?: import("@/src/market-data/kis-realtime-quote-hub").RealtimeQuoteHub | null;
+  /** Test-only FakeBroker factory. */
+  createTestBroker?: CreateBrokerOpts["createTestBroker"];
 };
 
 export class QuantEngine {
@@ -38,14 +40,17 @@ export class QuantEngine {
     }
 
     const box: StateBox = { current: state };
+    const rules = (deps.ruleConfig ?? getRuleConfig()).rules.filter((row) => row.enabled && row.ticker);
+    if (rules.length === 0) return box.current;
+
     const brokerOpts: CreateBrokerOpts = {
       kisClient: deps.kisClient,
       persistState: deps.persistState,
       safety: deps.safety,
       quoteHub: deps.quoteHub,
+      createTestBroker: deps.createTestBroker,
     };
     const root = createBroker(box, CASH_RULE_ID, brokerOpts);
-    const rules = (deps.ruleConfig ?? getRuleConfig()).rules.filter((row) => row.enabled && row.ticker);
 
     for (const rule of rules) {
       const alloc = box.current.allocations.find((row) => row.ruleId === rule.id);

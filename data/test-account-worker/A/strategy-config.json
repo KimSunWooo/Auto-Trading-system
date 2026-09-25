@@ -2,10 +2,10 @@
   "rules": [
     {
       "id": "r1",
-      "name": "",
+      "name": "A only",
       "ticker": "005930",
       "kind": "interval",
-      "intervalMs": 45000,
+      "intervalMs": 60000,
       "fastMa": 5,
       "slowMa": 20,
       "buyPct": 0.1,
