@@ -12,11 +12,14 @@
  * Never calls KIS trading APIs. Source-isolated sync.
  */
 import path from "node:path";
+import { loadLocalEnv } from "@/src/db/load-env";
 import {
   fixtureSyncSources,
   productionSyncSources,
   syncInstrumentSources,
 } from "@/src/instruments/sync";
+
+loadLocalEnv();
 
 async function main() {
   const mode = (process.env.INSTRUMENTS_SYNC_MODE ?? "production").trim().toLowerCase();
