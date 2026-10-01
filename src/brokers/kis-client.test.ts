@@ -449,3 +449,96 @@ test("PAPER inquire-psbl-order is GET VTTC8908R and maps ord_psbl_cash", async (
   assert.equal(psbl.maxBuyQty, 38);
 });
 
+
+test("OAuth single-flight: concurrent token requests issue tokenP once", async () => {
+  resetKisTokenCacheForTest();
+  let tokenCalls = 0;
+  const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("tokenP")) {
+      tokenCalls += 1;
+      await new Promise((r) => setTimeout(r, 40));
+      return jsonResponse({ access_token: "shared-token", expires_in: 86_400 });
+    }
+    return jsonResponse({
+      rt_cd: "0",
+      output: {
+        stck_prpr: "70000",
+        hts_kor_isnm: "삼성전자",
+        stck_oprc: "70000",
+        stck_hgpr: "71000",
+        stck_lwpr: "69000",
+        stck_sdpr: "69500",
+        acml_vol: "1",
+      },
+    });
+  }) as typeof fetch;
+
+  const client = new KisClient(
+    getKisConfig("paper", {
+      KIS_PAPER_APP_KEY: "paper-key",
+      KIS_PAPER_APP_SECRET: "paper-secret",
+      KIS_PAPER_ACCOUNT_NO: "11111111-01",
+    }),
+    fetchImpl,
+  );
+
+  await Promise.all([
+    client.inquirePrice("005930"),
+    client.inquirePrice("069500"),
+    client.inquirePrice("000660"),
+  ]);
+  assert.equal(tokenCalls, 1);
+  assert.equal(client.hasCachedAccessToken(), true);
+});
+
+test("query rate-limit gets bounded retry; order path does not use query retry class", async () => {
+  resetKisTokenCacheForTest();
+  let priceAttempts = 0;
+  const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("tokenP")) {
+      return jsonResponse({ access_token: "tok", expires_in: 86_400 });
+    }
+    if (url.includes("inquire-price")) {
+      priceAttempts += 1;
+      if (priceAttempts === 1) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              rt_cd: "1",
+              msg_cd: "EGW00201",
+              msg1: "초당 거래건수를 초과하였습니다",
+            }),
+        } as Response;
+      }
+      return jsonResponse({
+        rt_cd: "0",
+        output: {
+          stck_prpr: "70000",
+          hts_kor_isnm: "삼성전자",
+          stck_oprc: "70000",
+          stck_hgpr: "71000",
+          stck_lwpr: "69000",
+          stck_sdpr: "69500",
+          acml_vol: "1",
+        },
+      });
+    }
+    return jsonResponse({ rt_cd: "0", output: {} });
+  }) as typeof fetch;
+
+  const client = new KisClient(
+    getKisConfig("paper", {
+      KIS_PAPER_APP_KEY: "paper-key",
+      KIS_PAPER_APP_SECRET: "paper-secret",
+      KIS_PAPER_ACCOUNT_NO: "11111111-01",
+    }),
+    fetchImpl,
+  );
+  const px = await client.inquirePrice("005930");
+  assert.equal(px.price, 70000);
+  assert.equal(priceAttempts, 2);
+});

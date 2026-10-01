@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -25,15 +25,20 @@ export function DisclaimerModal({
 }) {
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const submittingRef = useRef(false);
 
   async function confirm() {
-    if (!checked) return;
+    if (!checked || busy || submittingRef.current) return;
+    submittingRef.current = true;
     setBusy(true);
     try {
       await onAccept();
       setChecked(false);
       onOpenChange(false);
+    } catch {
+      /* caller shows toast; keep modal open for retry */
     } finally {
+      submittingRef.current = false;
       setBusy(false);
     }
   }
@@ -42,6 +47,7 @@ export function DisclaimerModal({
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        if (busy || submittingRef.current) return;
         if (!next) setChecked(false);
         onOpenChange(next);
       }}
@@ -57,16 +63,17 @@ export function DisclaimerModal({
             type="checkbox"
             className="mt-1"
             checked={checked}
+            disabled={busy}
             onChange={(event) => setChecked(event.target.checked)}
           />
           <span>위 내용을 읽었고, 모든 투자 판단과 결과에 대한 책임이 본인에게 있음에 동의합니다.</span>
         </label>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
             취소
           </Button>
           <Button disabled={!checked || busy} onClick={() => void confirm()}>
-            {confirmLabel}
+            {busy ? "확인 중…" : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

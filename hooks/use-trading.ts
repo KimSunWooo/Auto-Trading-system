@@ -3,12 +3,38 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PublicState } from "@/lib/types";
 
+export type ApiErrorPayload = {
+  error?: string;
+  errorCode?: string;
+  message?: string;
+  blockers?: Array<{ code: string; message: string; retryable?: boolean } | string>;
+  checks?: Record<string, string>;
+  retryAfterMs?: number;
+  readyForPaperAutoTrading?: boolean;
+};
+
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  payload?: ApiErrorPayload;
+  constructor(message: string, status: number, payload?: ApiErrorPayload) {
     super(message);
     this.status = status;
+    this.payload = payload;
   }
+}
+
+export function formatPreflightBlockers(err: ApiError): string {
+  const blockers = err.payload?.blockers;
+  if (!blockers?.length) return err.message;
+  const lines = blockers.map((b) => {
+    if (typeof b === "string") return `• ${b}`;
+    return `• ${b.message || b.code}${b.retryable ? " (잠시 후 재시도)" : ""}`;
+  });
+  const header =
+    err.payload?.errorCode === "PAPER_PREFLIGHT_BLOCKED"
+      ? "PAPER 자동매매를 아직 시작할 수 없습니다."
+      : err.payload?.message || err.message;
+  return [header, ...lines].join("\n");
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -26,14 +52,26 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       res.status || 500,
     );
   }
-  let data: T & { error?: string };
+  let data: T & ApiErrorPayload;
   try {
-    data = JSON.parse(text) as T & { error?: string };
+    data = JSON.parse(text) as T & ApiErrorPayload;
   } catch {
     throw new ApiError("서버가 JSON이 아닌 응답을 보냈습니다.", res.status || 500);
   }
   if (!res.ok) {
-    throw new ApiError(data.error ?? "요청에 실패했습니다.", res.status);
+    const message =
+      data.message && data.errorCode === "PAPER_PREFLIGHT_BLOCKED"
+        ? data.message
+        : (data.error ?? data.message ?? "요청에 실패했습니다.");
+    throw new ApiError(message, res.status, {
+      error: data.error,
+      errorCode: data.errorCode,
+      message: data.message,
+      blockers: data.blockers,
+      checks: data.checks,
+      retryAfterMs: data.retryAfterMs,
+      readyForPaperAutoTrading: data.readyForPaperAutoTrading,
+    });
   }
   return data;
 }

@@ -1,5 +1,6 @@
 /**
  * PAPER auto-trading preflight + Startup Sync (inquiries only).
+ * Uses the same PaperTradingPreflightService as Settings API.
  * Never enables autoTrading. Never places BUY/SELL/CANCEL. Never REAL.
  *
  * Usage: npx tsx scripts/paper-trading-preflight.ts
@@ -19,10 +20,6 @@ delete process.env.KIS_REAL_ACCOUNT_NO;
 const TARGET = "e3152ebd-c8f5-432f-8923-287d3163e79c";
 const EXPECT_USER = "ff8b3224-5330-46b2-a7a4-481791a4824f";
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 async function main() {
   if (String(process.env.ALLOW_LIVE_TRADING).toLowerCase() === "true") {
     throw new Error("ABORT: ALLOW_LIVE_TRADING=true");
@@ -40,20 +37,18 @@ async function main() {
   const { resolveTradingRuntimeForAccount } = await import(
     "@/src/runtime/resolve-trading-runtime"
   );
-  const { invalidateRuntimeScope, markScopeStartupSyncDone, isScopeStartupSyncDone } =
-    await import("@/src/runtime/runtime-scope");
-  const {
-    emptyStartupSync,
-    runPaperStartupSync,
-    usesPaperStartupSync,
-    findActiveUnknownOrder,
-  } = await import("@/src/runtime/startup-sync");
+  const { invalidateRuntimeScope, markScopeStartupSyncDone } = await import(
+    "@/src/runtime/runtime-scope"
+  );
+  const { usesPaperStartupSync, findActiveUnknownOrder } = await import(
+    "@/src/runtime/startup-sync"
+  );
   const {
     tryAcquireWorkerLock,
     releaseWorkerLock,
     workerLockHealthy,
   } = await import("@/src/runtime/worker-lock");
-  const { evaluatePaperTradingPreflight, runPaperTradingPreflightForUser } = await import(
+  const { runPaperTradingPreflightService } = await import(
     "@/src/runtime/paper-trading-preflight"
   );
   const { loadPaperSecretForAccount } = await import("@/src/auth/paper-accounts");
@@ -67,6 +62,7 @@ async function main() {
   console.log("TRADING_MODE=", process.env.TRADING_MODE);
   console.log("ALLOW_LIVE_TRADING=", process.env.ALLOW_LIVE_TRADING);
   console.log("usesPaperStartupSync=", usesPaperStartupSync() ? "YES" : "NO");
+  console.log("sharedService=", "PaperTradingPreflightService");
 
   const db = getDb();
   if (!db) throw new Error("DB unavailable");
@@ -93,7 +89,10 @@ async function main() {
   const fp = paperPhysicalAccountFingerprint(secret.accountNo);
   console.log("credential.decrypt=", "OK");
   console.log("fingerprint.match=", fp === account.physicalAccountFingerprint ? "YES" : "NO");
-  console.log("masked.match=", maskAccountNumber(secret.accountNo) === account.accountNumberMasked ? "YES" : "NO");
+  console.log(
+    "masked.match=",
+    maskAccountNumber(secret.accountNo) === account.accountNumberMasked ? "YES" : "NO",
+  );
 
   invalidateRuntimeScope(account.id);
   markScopeStartupSyncDone(account.id, false);
@@ -109,101 +108,20 @@ async function main() {
     throw new Error("Could not acquire worker lock — stop other workers and retry");
   }
 
-  // Auth via read-only balance inquiry (token is internal to KisClient).
-  // KIS OAuth is 1/min — do not loop token issuance here.
-  try {
-    const bal = await rt.scope.kisClient.inquireBalance();
-    console.log("kis.auth=", "OK");
-    console.log("kis.balance.deposit=", Number.isFinite(bal.cash) ? "set" : "missing");
-    console.log("kis.balance.holdings=", bal.holdings?.length ?? 0);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.log("kis.auth=", "FAIL", msg.slice(0, 120));
-    releaseWorkerLock(workerId, { filePath: rt.scope.lockPath });
-    if (/1분당|EGW00201|rate|초당/i.test(msg)) {
-      console.log("RemainingBlocker=KIS_TOKEN_RATE_LIMIT (wait >=60s then: npm run paper:preflight)");
-    }
-    throw err;
-  }
-
-  let syncStatus = "IDLE";
-  let syncMessage = "";
-  await rt.store.mutateStore(async (state) => {
-    const marked = {
-      ...state,
-      settings: { ...state.settings, autoTrading: false },
-      startupSync: {
-        ...(state.startupSync ?? emptyStartupSync()),
-        status: "SYNCING" as const,
-        message: "Preflight Startup Sync (inquiries only)",
-      },
-    };
-    const result = await runPaperStartupSync(marked, rt.scope.kisClient);
-    syncStatus = result.state.startupSync?.status ?? (result.ok ? "HEALTHY" : "FAILED");
-    syncMessage = result.state.startupSync?.message ?? result.error ?? "";
-    if (result.ok && syncStatus === "HEALTHY") {
-      markScopeStartupSyncDone(account.id, true);
-    }
-    return { ...result.state, settings: { ...result.state.settings, autoTrading: false } };
+  const stateBefore = await rt.store.getState();
+  const evaluated = await runPaperTradingPreflightService({
+    userId: account.userId,
+    brokerAccountId: account.id,
+    state: stateBefore,
+    workerLockPath: rt.scope.lockPath,
+    kisClient: rt.scope.kisClient,
+    mutateStore: (fn) => rt.store.mutateStore(fn),
+    refreshIfNeeded: true,
+    probeKisAuth: true,
   });
 
-  const { markProcessBootStartupVerified } = await import("@/src/runtime/startup-sync");
-  if (syncStatus === "HEALTHY") markProcessBootStartupVerified(true);
-
-  // Fresh KIS REST quotes for holdings (not mock/seed) — required for marketDataReady.
-  // Skip if market closed; still record blocker honestly.
-  try {
-    const afterSync = await rt.store.getState();
-    const tickers: string[] = [
-      ...new Set([
-        ...afterSync.positions.filter((p) => p.qty > 0).map((p) => p.code),
-        ...(afterSync.kisBalance?.holdings ?? []).map((h) => h.ticker),
-      ]),
-    ].slice(0, 3);
-    if (tickers.length === 0) {
-      tickers.push("005930");
-    }
-    await rt.store.mutateStore(async (state) => {
-      const quotes = { ...state.quotes };
-      for (const ticker of tickers) {
-        try {
-          const px = await rt.scope.kisClient.inquirePrice(ticker);
-          const prev = quotes[ticker];
-          quotes[ticker] = {
-            code: ticker,
-            name: prev?.name ?? ticker,
-            market: prev?.market ?? "KOSPI",
-            price: px.price,
-            prevClose: px.prevClose ?? px.price,
-            open: px.open ?? px.price,
-            high: px.high ?? px.price,
-            low: px.low ?? px.price,
-            volume: px.volume ?? 0,
-            bid: px.bid ?? px.price,
-            ask: px.ask ?? px.price,
-            history: prev?.history?.length ? [...prev.history.slice(-59), px.price] : [px.price],
-            source: "kis",
-            transport: "rest",
-            freshAt: Date.now(),
-          };
-          console.log("quote.fetched=", ticker, "source=kis");
-        } catch (err) {
-          console.log(
-            "quote.fetch.fail=",
-            ticker,
-            err instanceof Error ? err.message.slice(0, 80) : "fail",
-          );
-        }
-      }
-      return { ...state, quotes };
-    });
-  } catch (err) {
-    console.log("quote.phase.fail=", err instanceof Error ? err.message.slice(0, 100) : err);
-  }
-
   const state = await rt.store.getState();
-  console.log("startupSync.status=", syncStatus);
-  if (syncMessage) console.log("startupSync.message=", syncMessage.slice(0, 200));
+  console.log("startupSync.status=", evaluated.details.startupSyncStatus ?? state.startupSync?.status);
   console.log("openOrders.local=", state.orders.filter((o) => o.status === "pending").length);
   console.log("unknown.active=", findActiveUnknownOrder(state) ? "YES" : "NO");
   console.log("positions.local=", state.positions.filter((p) => p.qty > 0).length);
@@ -214,20 +132,9 @@ async function main() {
   console.log("recon=", state.safety?.reconciliation ?? "(unset)");
   console.log("autoTrading=", state.settings.autoTrading ? "ON" : "OFF");
   console.log("workerLock.healthy=", workerLockHealthy({ filePath: rt.scope.lockPath }) ? "YES" : "NO");
-  console.log("bootVerified=", isScopeStartupSyncDone(account.id) ? "YES" : "NO");
-
-  const evaluated = evaluatePaperTradingPreflight({
-    userId: account.userId,
-    state,
-    brokerAccountId: account.id,
-    workerLockPath: rt.scope.lockPath,
-    bootStartupVerified: isScopeStartupSyncDone(account.id),
-    credentialOk: true,
-    fingerprintOk: fp === account.physicalAccountFingerprint,
-    kisAuthOk: true,
-  });
 
   console.log("--- Preflight Gates ---");
+  console.log("checks=", JSON.stringify(evaluated.checks));
   console.log("paperModeConfirmed=", evaluated.paperModeConfirmed);
   console.log("realTradingDisabled=", evaluated.realTradingDisabled);
   console.log("credentialReady=", evaluated.credentialReady);
@@ -241,8 +148,15 @@ async function main() {
   console.log("idempotencyReady=", evaluated.idempotencyReady);
   console.log("unknownOrdersClear=", evaluated.unknownOrdersClear);
   console.log("blockers=", evaluated.blockers.join(",") || "(none)");
+  console.log(
+    "blockersContainSuccessLeak=",
+    evaluated.blockers.some((b) => /HEALTHY|READY|PASS/i.test(b)) ? "YES" : "NO",
+  );
   console.log("readyForPaperAutoTrading=", evaluated.readyForPaperAutoTrading ? "true" : "false");
-  console.log("FinalVerdict=", evaluated.readyForPaperAutoTrading ? "READY_FOR_PAPER_AUTO_TRADING" : "NOT_READY");
+  console.log(
+    "FinalVerdict=",
+    evaluated.readyForPaperAutoTrading ? "READY_FOR_PAPER_AUTO_TRADING" : "NOT_READY",
+  );
   console.log("OrdersExecutedDuringPreflight=0");
 
   releaseWorkerLock(workerId, { filePath: rt.scope.lockPath });

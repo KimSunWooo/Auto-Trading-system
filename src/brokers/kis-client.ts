@@ -260,9 +260,29 @@ function addDays(date: Date, days: number): Date {
 }
 
 const ACCESS_TOKENS = new Map<string, TokenCache>();
+/** OAuth single-flight: concurrent callers share one in-flight tokenP request. */
+const ACCESS_TOKEN_INFLIGHT = new Map<string, Promise<string>>();
 
 /** Official PAPER REST: 1 request / second. Safety margin included. */
 export const PAPER_REST_MIN_SPACING_MS = 1_050;
+
+/** Bounded read retry when KIS returns rate-limit (query only — never orders). */
+export const KIS_READ_RATE_LIMIT_MAX_ATTEMPTS = 2;
+
+export function isKisRateLimitMessage(message: string): boolean {
+  return /초당|EGW00201|rate.?limit|거래건수|EGW00133/i.test(message);
+}
+
+export class KisRateLimitError extends Error {
+  readonly code = "KIS_RATE_LIMITED";
+  readonly retryable = true;
+  readonly retryAfterMs: number;
+  constructor(message: string, retryAfterMs = 1_500) {
+    super(message);
+    this.name = "KisRateLimitError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
 
 /** Test/telemetry: count of inquire-price REST calls (not WS). */
 let inquirePriceRestCount = 0;
@@ -978,6 +998,13 @@ export class KisClient implements KisApi {
 
   private clearAccessToken() {
     ACCESS_TOKENS.delete(this.config.tokenCacheKey);
+    ACCESS_TOKEN_INFLIGHT.delete(this.config.tokenCacheKey);
+  }
+
+  /** True when a non-expired access token is already cached for this client. */
+  hasCachedAccessToken(): boolean {
+    const cached = ACCESS_TOKENS.get(this.config.tokenCacheKey);
+    return Boolean(cached && Date.now() < cached.expiresAt);
   }
 
   private async getAccessToken(): Promise<string> {
@@ -986,14 +1013,36 @@ export class KisClient implements KisApi {
     if (cached && Date.now() < cached.expiresAt) {
       return cached.access;
     }
-    const json = await this.request("POST", `${this.config.host}/oauth2/tokenP`, {
-      headers: { "content-type": "application/json; charset=utf-8" },
-      body: JSON.stringify({
-        grant_type: "client_credentials",
-        appkey: this.config.appKey,
-        appsecret: this.config.appSecret,
-      }),
-    }, HARD_LIMITS.quoteTimeoutMs);
+    const inflight = ACCESS_TOKEN_INFLIGHT.get(cacheKey);
+    if (inflight) return inflight;
+
+    const pending = this.fetchAccessToken(cacheKey).finally(() => {
+      ACCESS_TOKEN_INFLIGHT.delete(cacheKey);
+    });
+    ACCESS_TOKEN_INFLIGHT.set(cacheKey, pending);
+    return pending;
+  }
+
+  private async fetchAccessToken(cacheKey: string): Promise<string> {
+    // Re-check cache after winning the single-flight race.
+    const cached = ACCESS_TOKENS.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.access;
+    }
+    const json = await this.request(
+      "POST",
+      `${this.config.host}/oauth2/tokenP`,
+      {
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify({
+          grant_type: "client_credentials",
+          appkey: this.config.appKey,
+          appsecret: this.config.appSecret,
+        }),
+      },
+      HARD_LIMITS.quoteTimeoutMs,
+      "query",
+    );
     const access = String(json.access_token ?? "").trim();
     if (!access) {
       throw new Error("접근 토큰을 받지 못했습니다. 앱키와 모의/실전 도메인을 확인하세요.");
@@ -1089,8 +1138,30 @@ export class KisClient implements KisApi {
 
     // PAPER: serialize + pace. Waiting for a scheduler slot is NOT an HTTP retry.
     // Orders still POST exactly once after the slot is granted.
+    // Query-only bounded retry on explicit KIS rate-limit responses.
     if (this.config.environment === "paper") {
-      return this.pacePaperRest(kind, run);
+      return this.pacePaperRest(kind, async () => {
+        const maxAttempts = kind === "query" ? KIS_READ_RATE_LIMIT_MAX_ATTEMPTS : 1;
+        let lastErr: unknown;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            return await run();
+          } catch (err) {
+            lastErr = err;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (kind === "query" && attempt < maxAttempts && isKisRateLimitMessage(msg)) {
+              const backoff = 1_100 + Math.floor(Math.random() * 500);
+              await new Promise<void>((r) => setTimeout(r, backoff));
+              continue;
+            }
+            if (kind === "query" && isKisRateLimitMessage(msg)) {
+              throw new KisRateLimitError(msg, 1_500);
+            }
+            throw err;
+          }
+        }
+        throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+      });
     }
     return this.slot(run);
   }
@@ -1103,7 +1174,6 @@ export class KisClient implements KisApi {
     kind: "query" | "order",
     fn: () => Promise<T>,
   ): Promise<T> {
-    const priority = kind === "order" ? 0 : 1;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -1112,9 +1182,6 @@ export class KisClient implements KisApi {
     this.restTail = prev.then(() => gate);
     await prev;
     try {
-      if (priority === 0) {
-        /* order: still waits for prior in-flight REST to finish; no parallel burst */
-      }
       const elapsed = Date.now() - this.lastRestAt;
       const wait = Math.max(0, PAPER_REST_MIN_SPACING_MS - elapsed);
       if (wait > 0) {
@@ -1201,8 +1268,10 @@ export function resetSharedKisClient() {
   testOverride = null;
   sharedByEnv.clear();
   ACCESS_TOKENS.clear();
+  ACCESS_TOKEN_INFLIGHT.clear();
 }
 
 export function resetKisTokenCacheForTest() {
   ACCESS_TOKENS.clear();
+  ACCESS_TOKEN_INFLIGHT.clear();
 }

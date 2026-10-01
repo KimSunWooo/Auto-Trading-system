@@ -16,7 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Change, Price, Sparkline } from "@/components/price";
-import { api } from "@/hooks/use-trading";
+import { ApiError, api, formatPreflightBlockers } from "@/hooks/use-trading";
 import { formatPct, formatSeoul, formatWon } from "@/lib/format";
 import { dashboardStats, ruleCardModel, ruleDisplayName } from "@/lib/dashboard";
 import { DisclaimerModal } from "@/components/disclaimer-modal";
@@ -29,20 +29,26 @@ import {
   quoteFreshnessLabel,
 } from "@/src/runtime/quote-policy";
 import { RepresentativeDashboardPanel } from "@/components/paper-account-verify";
+import {
+  formatInstrumentLabel,
+  instrumentNameOnly,
+} from "@/src/instruments/metadata";
 
 function holdingRows(state: PublicState) {
   const rows = new Map<string, { name: string; kisQty: number; localQty: number }>();
   for (const pos of state.positions) {
     if (pos.qty < 1) continue;
-    const cur = rows.get(pos.code) ?? { name: pos.name, kisQty: 0, localQty: 0 };
+    const display = instrumentNameOnly(pos.code, pos.name);
+    const cur = rows.get(pos.code) ?? { name: display, kisQty: 0, localQty: 0 };
     cur.localQty += pos.qty;
-    cur.name = pos.name || cur.name;
+    cur.name = display || cur.name;
     rows.set(pos.code, cur);
   }
   for (const hold of state.kisBalance?.holdings ?? []) {
-    const cur = rows.get(hold.ticker) ?? { name: hold.name, kisQty: 0, localQty: 0 };
+    const display = instrumentNameOnly(hold.ticker, hold.name);
+    const cur = rows.get(hold.ticker) ?? { name: display, kisQty: 0, localQty: 0 };
     cur.kisQty += hold.qty;
-    cur.name = hold.name || cur.name;
+    cur.name = display || cur.name;
     rows.set(hold.ticker, cur);
   }
   return [...rows.entries()];
@@ -73,12 +79,15 @@ export function OverviewPanel({
   const risk = state.settings.risk ?? DEFAULT_PRODUCT_RISK;
   const rules = state.ruleConfig?.rules ?? [];
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
+  const [autoTradingSubmitting, setAutoTradingSubmitting] = useState(false);
 
   async function setAutoTrading(autoTrading: boolean) {
+    if (autoTradingSubmitting) return;
     if (autoTrading && !state.settings.disclaimerAccepted) {
       setDisclaimerOpen(true);
       return;
     }
+    setAutoTradingSubmitting(true);
     try {
       onState(
         await api<PublicState>("/api/settings", {
@@ -88,18 +97,53 @@ export function OverviewPanel({
       );
       toast.success(autoTrading ? "자동 실행을 켰습니다." : "자동 실행을 멈췄습니다.");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "자동 실행을 바꾸지 못했습니다.");
+      if (err instanceof ApiError && err.status === 409) {
+        const rateLimited = err.payload?.blockers?.some((b) =>
+          typeof b === "string" ? b.includes("RATE") : b.code === "KIS_RATE_LIMITED",
+        );
+        toast.error(
+          rateLimited
+            ? "KIS 조회 요청이 일시적으로 많습니다.\n잠시 후 다시 시도해주세요."
+            : formatPreflightBlockers(err),
+          { duration: 8_000 },
+        );
+      } else {
+        toast.error(err instanceof Error ? err.message : "자동 실행을 바꾸지 못했습니다.");
+      }
+    } finally {
+      setAutoTradingSubmitting(false);
     }
   }
 
   async function acceptAndStart() {
-    onState(
-      await api<PublicState>("/api/settings", {
-        method: "PATCH",
-        body: JSON.stringify({ disclaimerAccepted: true, autoTrading: true }),
-      }),
-    );
-    toast.success("이용에 동의하고 자동 실행을 켰습니다.");
+    if (autoTradingSubmitting) return;
+    setAutoTradingSubmitting(true);
+    try {
+      onState(
+        await api<PublicState>("/api/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ disclaimerAccepted: true, autoTrading: true }),
+        }),
+      );
+      toast.success("이용에 동의하고 자동 실행을 켰습니다.");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        const rateLimited = err.payload?.blockers?.some((b) =>
+          typeof b === "string" ? b.includes("RATE") : b.code === "KIS_RATE_LIMITED",
+        );
+        toast.error(
+          rateLimited
+            ? "KIS 조회 요청이 일시적으로 많습니다.\n잠시 후 다시 시도해주세요."
+            : formatPreflightBlockers(err),
+          { duration: 8_000 },
+        );
+        throw err;
+      }
+      toast.error(err instanceof Error ? err.message : "자동 실행을 바꾸지 못했습니다.");
+      throw err;
+    } finally {
+      setAutoTradingSubmitting(false);
+    }
   }
 
   return (
@@ -132,7 +176,9 @@ export function OverviewPanel({
             </CardTitle>
             <p className="text-sm text-muted-foreground">
               Strategy {state.runtime.selectedStrategy ?? "none"} ·{" "}
-              {(state.runtime.currentSymbols ?? []).join(", ") || "symbols none"} · Recon{" "}
+              {(state.runtime.currentSymbols ?? []).map((s) => formatInstrumentLabel(s)).join(", ") ||
+                "symbols none"}{" "}
+              · Recon{" "}
               {state.runtime.reconciliation} · RDS {state.runtime.rdsMirror ?? "off"} · Last tick{" "}
               {state.runtime.lastTickAt ? formatSeoul(state.runtime.lastTickAt) : "-"}
             </p>
@@ -141,8 +187,10 @@ export function OverviewPanel({
             <div>
               <div className="text-[11px] text-muted-foreground">Open Positions</div>
               <div className="tabular-nums">
-                {state.positions.filter((row) => row.qty > 0).map((row) => `${row.code}×${row.qty}`).join(" ") ||
-                  "none"}
+                {state.positions
+                  .filter((row) => row.qty > 0)
+                  .map((row) => `${formatInstrumentLabel(row.code, row.name)}×${row.qty}`)
+                  .join(" ") || "none"}
               </div>
             </div>
             <div>
@@ -277,7 +325,9 @@ export function OverviewPanel({
                   {kisHoldingRows.map(([ticker, row]) => (
                     <TableRow key={ticker}>
                       <TableCell>
-                        <div className="font-medium">{row.name}</div>
+                        <div className="font-medium">
+                          {instrumentNameOnly(ticker, row.name)}
+                        </div>
                         <div className="text-xs text-muted-foreground">{ticker}</div>
                       </TableCell>
                       <TableCell className="tabular-nums">{row.kisQty}</TableCell>
@@ -307,6 +357,7 @@ export function OverviewPanel({
             </span>
             <Switch
               checked={state.settings.autoTrading}
+              disabled={autoTradingSubmitting}
               onCheckedChange={(checked) => void setAutoTrading(Boolean(checked))}
             />
           </div>
@@ -451,7 +502,9 @@ function Watchlist({
                 return (
                   <TableRow key={quote.code}>
                     <TableCell>
-                      <div className="font-medium">{quote.name}</div>
+                      <div className="font-medium">
+                        {instrumentNameOnly(quote.code, quote.name)}
+                      </div>
                       <div className="text-xs text-muted-foreground">
                         {quote.market} · {quote.code}
                       </div>
@@ -551,7 +604,7 @@ function Positions({
                 return (
                   <TableRow key={`${p.ruleId}-${p.code}`}>
                     <TableCell className="max-w-[16rem] whitespace-normal">
-                      <div className="font-medium">{p.name}</div>
+                      <div className="font-medium">{instrumentNameOnly(p.code, p.name)}</div>
                       <div className="text-xs text-muted-foreground">{ruleName}</div>
                       <div className="text-xs text-muted-foreground">
                         {p.code} · 평단 {formatWon(p.avgPrice)}

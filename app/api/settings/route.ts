@@ -5,9 +5,9 @@ import type { AppState } from "@/lib/types";
 import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
 import {
   assertReadyToEnablePaperAutoTrading,
-  runPaperTradingPreflightForUser,
+  preflightDomainErrorPayload,
+  runPaperTradingPreflightService,
 } from "@/src/runtime/paper-trading-preflight";
-import { isScopeStartupSyncDone } from "@/src/runtime/runtime-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -24,26 +24,23 @@ export async function PATCH(request: Request) {
       const rules = rt.rules.get();
 
       // Enabling autoTrading requires PAPER preflight HEALTHY — never REAL.
+      // Shared PaperTradingPreflightService (same as CLI). May refresh Startup Sync
+      // in THIS process — never assumes CLI in-memory readiness.
       if (body.autoTrading === true) {
         const state = await rt.store.getState();
-        const preflight = await runPaperTradingPreflightForUser({
+        const preflight = await runPaperTradingPreflightService({
           userId: rt.user.id,
+          brokerAccountId: rt.account.id,
           state,
           workerLockPath: rt.scope.lockPath,
-          bootStartupVerified: isScopeStartupSyncDone(rt.account.id),
+          kisClient: rt.scope.kisClient,
+          mutateStore: (fn) => rt.store.mutateStore(fn),
+          refreshIfNeeded: true,
           probeKisAuth: true,
         });
         const blocked = assertReadyToEnablePaperAutoTrading(preflight);
         if (blocked) {
-          return Response.json(
-            {
-              error: blocked,
-              code: "PAPER_PREFLIGHT_NOT_READY",
-              readyForPaperAutoTrading: false,
-              blockers: preflight.blockers,
-            },
-            { status: 409 },
-          );
+          return Response.json(preflightDomainErrorPayload(preflight), { status: 409 });
         }
       }
 

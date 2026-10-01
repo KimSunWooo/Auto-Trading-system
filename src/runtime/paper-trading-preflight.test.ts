@@ -9,7 +9,9 @@ import { afterEach, test } from "node:test";
 import { createPaperState } from "@/lib/engine";
 import {
   assertReadyToEnablePaperAutoTrading,
+  clearPreflightInflightForTest,
   evaluatePaperTradingPreflight,
+  preflightDomainErrorPayload,
 } from "@/src/runtime/paper-trading-preflight";
 import {
   configureWorkerLockPath,
@@ -18,6 +20,17 @@ import {
   tryAcquireWorkerLock,
 } from "@/src/runtime/worker-lock";
 import { emptyStartupSync } from "@/src/runtime/startup-sync";
+import {
+  formatInstrumentLabel,
+  instrumentNameCacheSizeForTest,
+  resetInstrumentNameCacheForTest,
+  resolveInstrumentMetadata,
+} from "@/src/instruments/metadata";
+import {
+  isKisRateLimitMessage,
+  KisRateLimitError,
+  resetKisTokenCacheForTest,
+} from "@/src/brokers/kis-client";
 
 const PAPER_ENV = {
   BROKER: "kis",
@@ -32,6 +45,9 @@ const PAPER_ENV = {
 const dirs: string[] = [];
 afterEach(() => {
   resetWorkerLockForTest();
+  clearPreflightInflightForTest();
+  resetInstrumentNameCacheForTest();
+  resetKisTokenCacheForTest();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -52,19 +68,34 @@ function healthyState() {
     tradingAllowed: true,
   } as typeof state.safety;
   state.kisBalance = {
+    syncedAt: new Date().toISOString(),
     cash: 1_000_000,
+    d2Cash: 1_000_000,
     orderableCash: 900_000,
     matched: true,
     holdings: [],
-    checkedAt: Date.now(),
+    cashDelta: 0,
+    message: "ok",
   };
-  // Fresh KIS quote
   const q = state.quotes["005930"];
   if (q) {
     q.source = "kis";
     q.freshAt = Date.now();
   }
   return state;
+}
+
+function withLock(run: (lockPath: string) => void) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "preflight-lock-"));
+  dirs.push(dir);
+  const lockPath = path.join(dir, "trading-worker.lock");
+  configureWorkerLockPath(lockPath);
+  assert.equal(tryAcquireWorkerLock("w1", { filePath: lockPath }), true);
+  try {
+    run(lockPath);
+  } finally {
+    releaseWorkerLock("w1", { filePath: lockPath });
+  }
 }
 
 test("REAL env aborts paperModeConfirmed", () => {
@@ -83,7 +114,7 @@ test("REAL env aborts paperModeConfirmed", () => {
   assert.ok(pre.blockers.some((b) => b.includes("REAL") || b.includes("ALLOW_LIVE")));
 });
 
-test("startup sync IDLE blocks ready", () => {
+test("startup sync IDLE blocks ready without leaking HEALTHY", () => {
   const state = healthyState();
   state.startupSync = { ...emptyStartupSync(), status: "IDLE" };
   const pre = evaluatePaperTradingPreflight({
@@ -97,7 +128,47 @@ test("startup sync IDLE blocks ready", () => {
     env: PAPER_ENV,
   });
   assert.equal(pre.startupSyncReady, false);
+  assert.equal(pre.checks.startupSync, "NOT_READY");
+  assert.ok(!pre.blockers.includes("STARTUP_SYNC_HEALTHY"));
+  assert.ok(pre.blockers.includes("STARTUP_SYNC_NOT_RUN"));
   assert.equal(pre.readyForPaperAutoTrading, false);
+});
+
+test("HEALTHY status with boot not verified does NOT put STARTUP_SYNC_HEALTHY in blockers", () => {
+  const pre = evaluatePaperTradingPreflight({
+    userId: "u1",
+    state: healthyState(),
+    brokerAccountId: "acct-1",
+    bootStartupVerified: false,
+    credentialOk: true,
+    fingerprintOk: true,
+    kisAuthOk: true,
+    env: PAPER_ENV,
+  });
+  assert.equal(pre.checks.startupSync, "NOT_READY");
+  assert.ok(!pre.blockers.includes("STARTUP_SYNC_HEALTHY"));
+  assert.ok(pre.blockers.includes("STARTUP_SYNC_BOOT_NOT_VERIFIED"));
+  assert.ok(!pre.blockers.some((b) => /HEALTHY|READY|PASS/.test(b) && !b.includes("NOT_")));
+});
+
+test("Credential OK → CREDENTIAL_NOT_READY absent; Auth OK → KIS_AUTH_NOT_READY absent", () => {
+  withLock((lockPath) => {
+    const pre = evaluatePaperTradingPreflight({
+      userId: "u1",
+      state: healthyState(),
+      brokerAccountId: "acct-1",
+      workerLockPath: lockPath,
+      bootStartupVerified: true,
+      credentialOk: true,
+      fingerprintOk: true,
+      kisAuthOk: true,
+      env: PAPER_ENV,
+    });
+    assert.equal(pre.checks.credential, "READY");
+    assert.equal(pre.checks.kisAuth, "READY");
+    assert.ok(!pre.blockers.includes("CREDENTIAL_NOT_READY"));
+    assert.ok(!pre.blockers.includes("KIS_AUTH_NOT_READY"));
+  });
 });
 
 test("UNKNOWN order blocks ready", () => {
@@ -118,25 +189,21 @@ test("UNKNOWN order blocks ready", () => {
     status: "unknown",
     activeClass: "UNKNOWN_ACTIVE",
   });
-  const dir = mkdtempSync(path.join(os.tmpdir(), "preflight-lock-"));
-  dirs.push(dir);
-  const lockPath = path.join(dir, "trading-worker.lock");
-  configureWorkerLockPath(lockPath);
-  tryAcquireWorkerLock("w1", { filePath: lockPath });
-  const pre = evaluatePaperTradingPreflight({
-    userId: "u1",
-    state,
-    brokerAccountId: "acct-1",
-    workerLockPath: lockPath,
-    bootStartupVerified: true,
-    credentialOk: true,
-    fingerprintOk: true,
-    kisAuthOk: true,
-    env: PAPER_ENV,
+  withLock((lockPath) => {
+    const pre = evaluatePaperTradingPreflight({
+      userId: "u1",
+      state,
+      brokerAccountId: "acct-1",
+      workerLockPath: lockPath,
+      bootStartupVerified: true,
+      credentialOk: true,
+      fingerprintOk: true,
+      kisAuthOk: true,
+      env: PAPER_ENV,
+    });
+    assert.equal(pre.unknownOrdersClear, false);
+    assert.equal(pre.readyForPaperAutoTrading, false);
   });
-  assert.equal(pre.unknownOrdersClear, false);
-  assert.equal(pre.readyForPaperAutoTrading, false);
-  releaseWorkerLock("w1", { filePath: lockPath });
 });
 
 test("worker lock missing blocks ready", () => {
@@ -159,25 +226,23 @@ test("worker lock missing blocks ready", () => {
 });
 
 test("all gates pass → readyForPaperAutoTrading", () => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "preflight-lock-"));
-  dirs.push(dir);
-  const lockPath = path.join(dir, "trading-worker.lock");
-  configureWorkerLockPath(lockPath);
-  assert.equal(tryAcquireWorkerLock("w1", { filePath: lockPath }), true);
-  const pre = evaluatePaperTradingPreflight({
-    userId: "u1",
-    state: healthyState(),
-    brokerAccountId: "acct-1",
-    workerLockPath: lockPath,
-    bootStartupVerified: true,
-    credentialOk: true,
-    fingerprintOk: true,
-    kisAuthOk: true,
-    env: PAPER_ENV,
+  withLock((lockPath) => {
+    const pre = evaluatePaperTradingPreflight({
+      userId: "u1",
+      state: healthyState(),
+      brokerAccountId: "acct-1",
+      workerLockPath: lockPath,
+      bootStartupVerified: true,
+      credentialOk: true,
+      fingerprintOk: true,
+      kisAuthOk: true,
+      env: PAPER_ENV,
+    });
+    assert.equal(assertReadyToEnablePaperAutoTrading(pre), null);
+    assert.equal(pre.readyForPaperAutoTrading, true);
+    assert.equal(pre.blockers.length, 0);
+    assert.equal(pre.checks.startupSync, "HEALTHY");
   });
-  assert.equal(assertReadyToEnablePaperAutoTrading(pre), null);
-  assert.equal(pre.readyForPaperAutoTrading, true);
-  releaseWorkerLock("w1", { filePath: lockPath });
 });
 
 test("stale/mock quote blocks marketDataReady", () => {
@@ -186,22 +251,75 @@ test("stale/mock quote blocks marketDataReady", () => {
     q.source = "mock";
     q.freshAt = Date.now();
   }
-  const dir = mkdtempSync(path.join(os.tmpdir(), "preflight-lock-"));
-  dirs.push(dir);
-  const lockPath = path.join(dir, "trading-worker.lock");
-  tryAcquireWorkerLock("w1", { filePath: lockPath });
+  withLock((lockPath) => {
+    const pre = evaluatePaperTradingPreflight({
+      userId: "u1",
+      state,
+      brokerAccountId: "acct-1",
+      workerLockPath: lockPath,
+      bootStartupVerified: true,
+      credentialOk: true,
+      fingerprintOk: true,
+      kisAuthOk: true,
+      env: PAPER_ENV,
+    });
+    assert.equal(pre.marketDataReady, false);
+    assert.equal(pre.readyForPaperAutoTrading, false);
+  });
+});
+
+test("risk skipped when credential not ready — no confusing RISK_BLOCKED from startup", () => {
   const pre = evaluatePaperTradingPreflight({
     userId: "u1",
-    state,
+    state: healthyState(),
     brokerAccountId: "acct-1",
-    workerLockPath: lockPath,
-    bootStartupVerified: true,
-    credentialOk: true,
-    fingerprintOk: true,
-    kisAuthOk: true,
+    bootStartupVerified: false,
+    credentialOk: false,
+    fingerprintOk: false,
+    kisAuthOk: false,
     env: PAPER_ENV,
   });
-  assert.equal(pre.marketDataReady, false);
-  assert.equal(pre.readyForPaperAutoTrading, false);
-  releaseWorkerLock("w1", { filePath: lockPath });
+  assert.equal(pre.checks.risk, "SKIPPED");
+  assert.ok(pre.blockers.includes("CREDENTIAL_NOT_READY"));
+  assert.ok(!pre.blockers.includes("STARTUP_SYNC_HEALTHY"));
+});
+
+test("domain error payload structures PAPER_PREFLIGHT_BLOCKED", () => {
+  const pre = evaluatePaperTradingPreflight({
+    userId: "u1",
+    state: healthyState(),
+    brokerAccountId: "acct-1",
+    bootStartupVerified: false,
+    credentialOk: true,
+    fingerprintOk: true,
+    kisAuthStatus: "RATE_LIMITED",
+    env: PAPER_ENV,
+    retryAfterMs: 1500,
+  });
+  const payload = preflightDomainErrorPayload(pre);
+  assert.equal(payload.errorCode, "PAPER_PREFLIGHT_BLOCKED");
+  assert.equal(payload.readyForPaperAutoTrading, false);
+  assert.ok(payload.blockers.some((b) => b.code === "KIS_RATE_LIMITED" && b.retryable));
+  assert.ok(!payload.blockers.some((b) => b.code === "STARTUP_SYNC_HEALTHY"));
+});
+
+test("instrument metadata resolves 005930 without inventing names", () => {
+  const meta = resolveInstrumentMetadata("005930");
+  assert.equal(meta.name, "삼성전자");
+  assert.equal(formatInstrumentLabel("005930"), "삼성전자 (005930)");
+  assert.equal(formatInstrumentLabel("069500"), "KODEX 200 (069500)");
+  assert.equal(formatInstrumentLabel("999999"), "999999");
+  const before = instrumentNameCacheSizeForTest();
+  resolveInstrumentMetadata("005930");
+  assert.equal(instrumentNameCacheSizeForTest(), before);
+});
+
+test("isKisRateLimitMessage and KisRateLimitError", () => {
+  assert.equal(isKisRateLimitMessage("초당 거래건수를 초과하였습니다"), true);
+  assert.equal(isKisRateLimitMessage("EGW00201"), true);
+  assert.equal(isKisRateLimitMessage("ok"), false);
+  const err = new KisRateLimitError("초당 거래건수", 2000);
+  assert.equal(err.code, "KIS_RATE_LIMITED");
+  assert.equal(err.retryable, true);
+  assert.equal(err.retryAfterMs, 2000);
 });
