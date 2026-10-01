@@ -53,3 +53,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 data/test-*
+
+# Operator credential rebind backups (may contain ciphertext)
+data/recovery-backups/
+scripts/tmp/
