@@ -57,3 +57,6 @@ data/test-*
 # Operator credential rebind backups (may contain ciphertext)
 data/recovery-backups/
 scripts/tmp/
+
+# Per-account runtime state (lock/state — not source)
+data/accounts/

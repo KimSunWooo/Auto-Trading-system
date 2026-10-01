@@ -63,7 +63,9 @@ export function emptyStartupSync(): StartupSyncState {
 /** LIVE_TEST + KIS PAPER only. Never REAL. */
 export function usesPaperStartupSync(env: EnvMap = process.env): boolean {
   if (tradingMode(env) !== "live_test") return false;
-  if (env.BROKER !== "kis") return false;
+  // Default kis when unset — missing BROKER must NOT skip Startup Sync for PAPER.
+  const broker = String(env.BROKER ?? "kis").trim().toLowerCase();
+  if (broker !== "kis") return false;
   const mode = String(env.KIS_MODE ?? "").trim().toLowerCase();
   if (mode !== "paper" && mode !== "demo") return false;
   if (env.ALLOW_LIVE_TRADING === "true") return false;

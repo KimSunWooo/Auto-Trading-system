@@ -3,6 +3,11 @@ import { resetCircuit } from "@/src/risk/circuit";
 import { DISCLAIMER_TEXT } from "@/src/rules/params";
 import type { AppState } from "@/lib/types";
 import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
+import {
+  assertReadyToEnablePaperAutoTrading,
+  runPaperTradingPreflightForUser,
+} from "@/src/runtime/paper-trading-preflight";
+import { isScopeStartupSyncDone } from "@/src/runtime/runtime-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +22,31 @@ export async function PATCH(request: Request) {
     };
     try {
       const rules = rt.rules.get();
+
+      // Enabling autoTrading requires PAPER preflight HEALTHY — never REAL.
+      if (body.autoTrading === true) {
+        const state = await rt.store.getState();
+        const preflight = await runPaperTradingPreflightForUser({
+          userId: rt.user.id,
+          state,
+          workerLockPath: rt.scope.lockPath,
+          bootStartupVerified: isScopeStartupSyncDone(rt.account.id),
+          probeKisAuth: true,
+        });
+        const blocked = assertReadyToEnablePaperAutoTrading(preflight);
+        if (blocked) {
+          return Response.json(
+            {
+              error: blocked,
+              code: "PAPER_PREFLIGHT_NOT_READY",
+              readyForPaperAutoTrading: false,
+              blockers: preflight.blockers,
+            },
+            { status: 409 },
+          );
+        }
+      }
+
       const state = await rt.store.mutateStore((current) => {
         const disclaimerAccepted =
           body.disclaimerAccepted === undefined
