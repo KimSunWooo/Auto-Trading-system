@@ -23,7 +23,7 @@
 | Overseas VTS-B preflight | Quote/Balance/Orderable PASS 가능. 실제 BUY는 미국 정규장+opt-in |
 | Overseas VTS-B2 actual BUY | PREPARED / NOT EXECUTED (opt-in OFF · 1-share first lifecycle) |
 | EC2 PAPER deployment artifacts | Dockerfile / compose / health / docs 준비. 실제 EC2 provisioning 없음 |
-| RDS MySQL mirror | JSON authority. `PERSISTENCE_MODE=mirror`. database SOT 없음 |
+| RDS MySQL ledger | `PERSISTENCE_MODE=database` → DB authority for PAPER trade ledger; JSON optional cache. `mirror` = best-effort. `json` = legacy |
 | PAPER Startup Sync | LIVE_TEST+KIS PAPER: Worker ticks 전 KIS current state 동기화. Historical ledger 보존 |
 | Domestic KIS quote isolation | KIS-only: mock/seed 시세 표시·주문 금지. `source=kis`+freshAt≤15s만 유효. 실패 시 seed/mock fallback 없음 |
 | KIS PAPER WebSocket market data | Domestic H0STCNT0 (`ws://ops.koreainvestment.com:31000`). Continuous REST inquire-price polling removed. Fail-closed on disconnect/stale. REAL WS locked. |
@@ -186,9 +186,11 @@ npm test
 
 로컬에서 예전 프리셋을 쓰려면 `.env.local` 에 `NEXT_PUBLIC_ADMIN_MODE=true` 를 넣고 개발 서버를 재시작합니다. `localhost` 로 열면 이 변수가 없어도 관리자 프리셋이 보입니다.
 
-## RDS MySQL mirror (optional)
+## RDS MySQL ledger
 
-기본값은 `PERSISTENCE_MODE=json` 입니다. JSON 장부가 runtime authority이고, RDS는 아직 source of truth가 아닙니다.
+- `PERSISTENCE_MODE=json` (legacy): JSON file authority, no DB writes.
+- `PERSISTENCE_MODE=mirror`: JSON save then best-effort RDS projection.
+- `PERSISTENCE_MODE=database`: RDS is trading-ledger authority. Intent/order persist must succeed before KIS submit; JSON is optional cache. Restart recovery reconstitutes from DB when `state.json` is missing.
 
 ```bash
 # 읽기 전용 점검. 비밀번호를 출력하지 않습니다.
@@ -196,11 +198,14 @@ npm run db:check
 
 # 로컬 MySQL 8 (기존 앱 compose를 바꾸지 않습니다)
 docker compose -f docker-compose.db.yml up -d
+
+# Optional one-time JSON → DB import (idempotent; no synthetic fills)
+npm run db:import-legacy
 ```
 
-`PERSISTENCE_MODE=mirror` 일 때만 JSON 저장 성공 뒤에 RDS로 projection 합니다. DB 실패는 `DB_MIRROR_DEGRADED`만 기록하고 주문을 재시도하지 않습니다.
+DB 실패 시 브로커 주문을 재전송하지 않습니다. `database` 모드에서 제출 전 실패는 주문 0건, 제출 후 실패는 UNKNOWN입니다.
 
-문서: `docs/DATABASE_ARCHITECTURE.md`, `docs/RDS_OPERATIONS.md`.
+문서: `docs/DATABASE_ARCHITECTURE.md`, `docs/RDS_OPERATIONS.md`, `docs/AI_CONTRACT.md`, `docs/VERIFICATION_REPORT.md`.
 
 
 ## 한국투자증권 모의투자(VTS)
