@@ -35,6 +35,8 @@
 
 로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
 
+운영 PAPER 읽기 전용 대조 절차: [`docs/ops-readonly-checklist.md`](docs/ops-readonly-checklist.md) (`autoTrading=OFF`, 주문/backfill 금지).
+
 유지 중인 안전장치:
 
 - `npm test`는 실제 KIS 주문을 내지 않습니다.
@@ -183,6 +185,28 @@ npm run dev
 ```bash
 npm test
 ```
+
+기본 `npm test`는 격리 fixture만 사용합니다 (`/tmp/master-probe`, 운영 `data/paper-account.json` 불필요).
+
+전체 KR/US production master 파싱·검색은 별도:
+
+```bash
+# 공식 마스터를 작업 디렉터리에 내려받은 뒤:
+#   kospi.zip, kosdaq.zip, konex.zip, nasdaqlisted.txt, otherlisted.txt
+INSTRUMENT_MASTER_PROBE_DIR=/path/to/masters npm run test:instruments-production
+```
+
+`INSTRUMENT_MASTER_PROBE_DIR` 미지정 시 기본값은 `/tmp/master-probe`입니다.
+프로브 파일이 없으면 해당 스위트는 skip 하지 않고 setup 오류로 실패합니다.
+
+PAPER physical ownership DB 통합(D1–D10)은 기본 `npm test`에서 **연결 전에** 다음을 모두 요구하며, 미충족 시 skip합니다 (localhost만으로는 부족):
+
+1. `RUN_PAPER_OWNERSHIP_DB_TESTS=1`
+2. loopback host (`127.0.0.1` / `localhost` / `::1`)
+3. DB 이름 정확히 `auto_trading_test` (운영/공용 `auto_trading` 거부)
+4. `BROKER_CREDENTIAL_MASTER_KEY`
+
+게이트 단위 테스트는 가짜 연결 객체만 사용하며 실제 운영 RDS에 연결하지 않습니다.
 
 로컬에서 예전 프리셋을 쓰려면 `.env.local` 에 `NEXT_PUBLIC_ADMIN_MODE=true` 를 넣고 개발 서버를 재시작합니다. `localhost` 로 열면 이 변수가 없어도 관리자 프리셋이 보입니다.
 

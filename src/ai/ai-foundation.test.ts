@@ -92,8 +92,6 @@ test("reconstitute from MemoryLedger recovers intents/orders without JSON", asyn
       sourceId: null,
       ruleKey: "cash",
       reason: null,
-      brokerCode: null,
-      brokerMessage: null,
       submittedAt: "2026-01-01 00:00:00.000000",
       acceptedAt: null,
       completedAt: null,

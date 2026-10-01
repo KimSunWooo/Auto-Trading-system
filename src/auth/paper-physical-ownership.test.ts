@@ -1,6 +1,13 @@
 /**
  * D1–D10: PAPER physical account ownership — DB unique fingerprint authority.
- * Requires DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY (live RDS or local).
+ *
+ * Live DB path requires ALL of:
+ *   - RUN_PAPER_OWNERSHIP_DB_TESTS=1
+ *   - loopback host (127.0.0.1 / localhost / ::1)
+ *   - database name exactly `auto_trading_test`
+ *   - BROKER_CREDENTIAL_MASTER_KEY
+ * Localhost alone is insufficient. Ops/RDS hosts and shared DB names are refused
+ * before any mysql connect / schema ensure / write.
  * Never places KIS orders (skipLiveValidation).
  */
 import assert from "node:assert/strict";
@@ -17,18 +24,60 @@ import {
 } from "@/src/auth/crypto";
 import { ensureAuthSchema } from "@/src/auth/ensure-schema";
 import { getDb, resetDbClientForTest } from "@/src/db/client";
+import { loadDbConnection } from "@/src/db/config";
 import { loadLocalEnv } from "@/src/db/load-env";
 import * as schema from "@/src/db/schema";
 import {
   ACTIVE_PAPER_PHYSICAL_ALREADY_REGISTERED,
   sanitizePaperPhysicalOwnershipError,
 } from "@/src/runtime/paper-physical-account";
+import {
+  PAPER_OWNERSHIP_DB_TESTS_FLAG,
+  evaluatePaperOwnershipDbAccess,
+} from "@/src/auth/paper-ownership-db-guard";
+
+// Capture ambient env before optional .env.local load so later suites are not polluted
+// when this file is imported under the default `npm test` runner.
+const ENV_KEYS_TO_RESTORE = [
+  "DATABASE_URL",
+  "AWS_RDS_HOST",
+  "AWS_RDS_DATABASE",
+  "AWS_RDS_USERNAME",
+  "AWS_RDS_PASSWORD",
+  "AWS_RDS_PORT",
+  "AWS_RDS_SSL",
+  "AWS_RDS_DB_NAME",
+  "DATABASE_USER_NAME",
+  "DATABASE_PASSWORD",
+  "BROKER_CREDENTIAL_MASTER_KEY",
+  "KIS_MODE",
+  "TRADING_MODE",
+  "ALLOW_LIVE_TRADING",
+  "PERSISTENCE_MODE",
+  PAPER_OWNERSHIP_DB_TESTS_FLAG,
+] as const;
+const envSnapshot: Record<string, string | undefined> = {};
+for (const key of ENV_KEYS_TO_RESTORE) {
+  envSnapshot[key] = process.env[key];
+}
 
 loadLocalEnv();
 
-const hasDb = Boolean(process.env.DATABASE_URL || process.env.AWS_RDS_HOST);
+const cfg = loadDbConnection();
+const access = evaluatePaperOwnershipDbAccess(cfg, process.env);
+const live = access.ok;
+const skipReason = access.ok
+  ? "BROKER_CREDENTIAL_MASTER_KEY required"
+  : access.reason;
 const hasMaster = Boolean(process.env.BROKER_CREDENTIAL_MASTER_KEY?.trim());
-const live = hasDb && hasMaster;
+
+function restoreAmbientEnv(): void {
+  for (const key of ENV_KEYS_TO_RESTORE) {
+    const prev = envSnapshot[key];
+    if (prev === undefined) delete process.env[key];
+    else process.env[key] = prev;
+  }
+}
 
 const createdUserIds: string[] = [];
 const createdAccountIds: string[] = [];
@@ -97,15 +146,29 @@ async function cleanup(): Promise<void> {
 
 test.before(async () => {
   if (!live) return;
+  // Re-check immediately before schema/writes — refuse if env drifted.
+  const again = evaluatePaperOwnershipDbAccess(loadDbConnection(), process.env);
+  if (!again.ok) {
+    throw new Error(`ownership DB gate closed before schema ensure: ${again.reason}`);
+  }
   process.env.ALLOW_LIVE_TRADING = "false";
   resetDbClientForTest();
   await ensureAuthSchema();
 });
 
 test.after(async () => {
-  if (!live) return;
-  await cleanup();
-  resetDbClientForTest();
+  try {
+    if (live) {
+      // Gate again before cleanup deletes — never cleanup against a non-test endpoint.
+      const again = evaluatePaperOwnershipDbAccess(loadDbConnection(), process.env);
+      if (again.ok) {
+        await cleanup();
+      }
+      resetDbClientForTest();
+    }
+  } finally {
+    restoreAmbientEnv();
+  }
 });
 
 test("fingerprint helper: deterministic HMAC, no plaintext dependence in output shape", () => {
@@ -131,7 +194,7 @@ test("D9 duplicate-key DB exception → sanitized application error", () => {
 });
 
 test("D1 sequential duplicate → second rejected; ACTIVE owners = 1", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const user = await createTestUser("d1");
   const accountNo = `88${Date.now().toString().slice(-6)}01`;
@@ -169,7 +232,7 @@ test("D1 sequential duplicate → second rejected; ACTIVE owners = 1", async (t)
 });
 
 test("D2 concurrent same account connect → exactly one succeeds", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const userA = await createTestUser("d2a");
   const userB = await createTestUser("d2b");
@@ -213,7 +276,7 @@ test("D2 concurrent same account connect → exactly one succeeds", async (t) =>
 });
 
 test("D3 cross-user same physical account → second rejected", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const userA = await createTestUser("d3a");
   const userB = await createTestUser("d3b");
@@ -247,7 +310,7 @@ test("D3 cross-user same physical account → second rejected", async (t) => {
 });
 
 test("D4 same user same physical account → second rejected", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const user = await createTestUser("d4");
   const accountNo = `55${Date.now().toString().slice(-6)}04`;
@@ -280,7 +343,7 @@ test("D4 same user same physical account → second rejected", async (t) => {
 });
 
 test("D5 different physical accounts → both succeed", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const user = await createTestUser("d5");
   const stamp = Date.now().toString().slice(-6);
@@ -310,7 +373,7 @@ test("D5 different physical accounts → both succeed", async (t) => {
 });
 
 test("D6 DISABLED historical does not block future ownership after claim release", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const user = await createTestUser("d6");
   const accountNo = `33${Date.now().toString().slice(-6)}06`;
@@ -364,7 +427,7 @@ test("D6 DISABLED historical does not block future ownership after claim release
 });
 
 test("D7 credential rotation same account → no duplicate ownership", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const user = await createTestUser("d7");
   const accountNo = `22${Date.now().toString().slice(-6)}07`;
@@ -397,7 +460,7 @@ test("D7 credential rotation same account → no duplicate ownership", async (t)
 });
 
 test("D8 different account switch → old DISABLED/fingerprint released, new claimed", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const user = await createTestUser("d8");
   const oldNo = `11${Date.now().toString().slice(-6)}08`;
@@ -445,7 +508,7 @@ test("D8 different account switch → old DISABLED/fingerprint released, new cla
 });
 
 test("D10 no plaintext account number or HMAC key logged during connect", async (t) => {
-  if (!live) return t.skip("DATABASE_URL + BROKER_CREDENTIAL_MASTER_KEY required");
+  if (!live) return t.skip(skipReason);
   await cleanup();
   const user = await createTestUser("d10");
   const accountNo = `99${Date.now().toString().slice(-6)}10`;

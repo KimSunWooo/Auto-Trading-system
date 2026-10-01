@@ -49,8 +49,17 @@ test("resetCircuit clears halt when there is no unknown order", () => {
 });
 
 test("LIVE_TEST env cannot raise the 10,000원 order cap", () => {
+  const prev = {
+    TRADING_MODE: process.env.TRADING_MODE,
+    LIVE_TEST_MAX_ORDER_KRW: process.env.LIVE_TEST_MAX_ORDER_KRW,
+    KIS_MODE: process.env.KIS_MODE,
+    BROKER: process.env.BROKER,
+  };
   process.env.TRADING_MODE = "live_test";
   process.env.LIVE_TEST_MAX_ORDER_KRW = "2000000";
+  // PAPER order-policy path must not swallow the LIVE_TEST hard cap under test.
+  delete process.env.KIS_MODE;
+  delete process.env.BROKER;
   try {
     const reason = checkHardLimits(createPaperState(), {
       side: "buy",
@@ -60,8 +69,10 @@ test("LIVE_TEST env cannot raise the 10,000원 order cap", () => {
     });
     assert.match(reason ?? "", /10,000|10000/);
   } finally {
-    delete process.env.TRADING_MODE;
-    delete process.env.LIVE_TEST_MAX_ORDER_KRW;
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

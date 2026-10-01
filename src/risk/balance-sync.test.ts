@@ -65,13 +65,26 @@ test("diffLocalVsKis matches seed cash and empty holdings", () => {
   assert.equal(diff.cashDelta, 0);
 });
 
+/** Cash-compare assertions require non-PAPER semantics (PAPER ignores dnca_tot_amt drift). */
+const CASH_COMPARE_ENV = {
+  BROKER: "kis",
+  KIS_MODE: "",
+  ALLOW_LIVE_TRADING: "false",
+  TRADING_MODE: "paper",
+};
+
 test("diffLocalVsKis flags cash drift without using the 0.015% fee rate", () => {
   const state = createPaperState();
-  const diff = diffLocalVsKis(state, {
-    cash: 9_999_977,
-    d2Cash: 9_999_977,
-    holdings: [],
-  });
+  const diff = diffLocalVsKis(
+    state,
+    {
+      cash: 9_999_977,
+      d2Cash: 9_999_977,
+      holdings: [],
+    },
+    HARD_LIMITS.balanceCashToleranceKrw,
+    CASH_COMPARE_ENV,
+  );
   assert.equal(diff.matched, false);
   assert.equal(diff.cashDelta, 23);
   assert.match(diff.reasons.join(" "), /예수금/);
@@ -122,7 +135,7 @@ test("syncKisBalance halts when KIS cash diverges from local buckets", async () 
   const box = { current: createPaperState() };
   const client = new FakeBalanceClient();
   client.balance.cash = 8_000_000;
-  await syncKisBalance(box, client, Date.now(), { force: true });
+  await syncKisBalance(box, client, Date.now(), { force: true }, CASH_COMPARE_ENV);
   assert.equal(box.current.circuit.halted, true);
   assert.match(box.current.circuit.reason ?? "", /실잔고/);
   assert.equal(box.current.kisBalance?.matched, false);
@@ -153,7 +166,7 @@ test("syncKisBalance does not halt while a working KIS order is open", async () 
   ];
   const client = new FakeBalanceClient();
   client.balance.cash = 1;
-  await syncKisBalance(box, client, Date.now(), { force: true });
+  await syncKisBalance(box, client, Date.now(), { force: true }, CASH_COMPARE_ENV);
   assert.equal(box.current.circuit.halted, false);
   assert.equal(box.current.kisBalance?.matched, false);
 });

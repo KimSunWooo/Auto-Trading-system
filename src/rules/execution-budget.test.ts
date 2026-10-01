@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { setNowMs, withNow } from "@/src/clock";
 import { SEOUL_REGULAR_SESSION_MS } from "@/lib/market-hours";
-import { toBucket } from "@/src/accounts/AccountBucket";
+import { toBucket, type AccountBucket } from "@/src/accounts/AccountBucket";
 import { RuleRunner } from "@/src/rules/RuleRunner";
 import { blankRule } from "@/src/rules/params";
 import { setRuleConfigForTest, syncAllocationsToRules } from "@/src/rules/config";
@@ -79,7 +79,8 @@ test("45s tick × 20 with maxExecutionsPerDay=1 → at most 1 buy", async () => 
     };
     const box = { current: state };
     const alloc0 = box.current.allocations.find((r) => r.ruleId === RULE_ID)!;
-    let bucket = { ...toBucket(alloc0, box.current.positions), lastRunAt: undefined };
+    let bucket: AccountBucket = { ...toBucket(alloc0, box.current.positions) };
+    delete bucket.lastRunAt;
     let buys = 0;
     for (let i = 0; i < 20; i += 1) {
       const t = SEOUL_REGULAR_SESSION_MS + i * 45_000;

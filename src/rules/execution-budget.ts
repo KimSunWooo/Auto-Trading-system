@@ -28,7 +28,11 @@ function countsTowardDaily(order: Order): boolean {
   return order.status === "filled" || order.status === "pending" || order.status === "unknown";
 }
 
-function ruleOrdersOnDay(state: AppState, rule: UserRule, day: string): Order[] {
+function ruleOrdersOnDay(
+  state: Pick<AppState, "orders">,
+  rule: UserRule,
+  day: string,
+): Order[] {
   return state.orders.filter(
     (order) =>
       countsTowardDaily(order) &&
@@ -95,7 +99,8 @@ export function resolveExecutionBudget(
 }
 
 export type BudgetCheckInput = {
-  state: AppState;
+  /** Only the book fields budget checks need — callers need not synthesize a full AppState. */
+  state: Pick<AppState, "orders" | "positions" | "totalDeposit">;
   rule: UserRule;
   bucket: AccountBucket;
   /** Planned buy notional (KRW). */

@@ -70,10 +70,15 @@ test("Test P1: overseas persist-before-POST unit path leaves production JSON unc
   assert.ok(persistCount >= 1, "persist-before-POST must still run");
   assert.equal(sha256File(DEFAULT_STORE_PATH), beforeAccount);
   assert.equal(sha256File(STRATEGY_PATH), beforeStrategy);
-  assert.equal(
-    JSON.stringify(JSON.parse(readFileSync(DEFAULT_STORE_PATH, "utf8")).intents ?? []).includes(
-      "sig:ov:pollution-guard",
-    ),
-    false,
-  );
+  // Production ledger may be absent in CI / cloud agents — never invent it.
+  // When present, prove the unit path did not inject the test intent.
+  if (existsSync(DEFAULT_STORE_PATH)) {
+    const intents = JSON.stringify(
+      (JSON.parse(readFileSync(DEFAULT_STORE_PATH, "utf8")) as { intents?: unknown[] }).intents ??
+        [],
+    );
+    assert.equal(intents.includes("sig:ov:pollution-guard"), false);
+  } else {
+    assert.equal(beforeAccount, "MISSING");
+  }
 });

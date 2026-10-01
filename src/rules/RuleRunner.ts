@@ -51,11 +51,11 @@ async function runInterval(
     return { ...evaluated, lastMessage: "시세 없음 — 매수 보류" };
   }
 
-  const book = state ?? {
+  const book: Pick<AppState, "orders" | "positions" | "totalDeposit"> = state ?? {
     orders: [],
     positions: bucket.positions,
     totalDeposit: Math.max(bucket.balance, 1),
-  } as AppState;
+  };
 
   const blocked = checkExecutionBudget({
     state: book,
@@ -115,11 +115,11 @@ async function runMaCross(
 
   if (crossedUp && regime !== "long") {
     const amount = Math.min(rule.sliceKrw, Math.floor(bucket.balance * rule.buyPct));
-    const book = state ?? {
+    const book: Pick<AppState, "orders" | "positions" | "totalDeposit"> = state ?? {
       orders: [],
       positions: bucket.positions,
       totalDeposit: Math.max(bucket.balance, 1),
-    } as AppState;
+    };
     const blocked = checkExecutionBudget({
       state: book,
       rule,

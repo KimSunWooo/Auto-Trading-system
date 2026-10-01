@@ -306,12 +306,19 @@ test("SIMULATED balance/open/execution failures block new strategy orders", asyn
 test("SIMULATED recon mismatch blocks new orders", async () => {
   process.env.TRADING_MODE = "live_test";
   process.env.BROKER = "kis";
+  // Position qty mismatch is a recon failure under PAPER too (cash drift is ignored on PAPER).
   const filePath = simLockPath("recon");
   tryAcquireWorkerLock("vts-recon", { filePath });
   const client = new FakeKis();
-  client.balance = { cash: 1, d2Cash: 1, holdings: [] };
+  client.balance = {
+    cash: 10_000_000,
+    d2Cash: 10_000_000,
+    holdings: [{ ticker: "005930", name: "삼성전자", qty: 99, avgPrice: 70_000 }],
+  };
   setSharedKisClientForTest(client);
-  const next = await tickState(createPaperState(), new Date(SEOUL_REGULAR_SESSION_MS));
+  const seeded = createPaperState();
+  seeded.positions = [];
+  const next = await tickState(seeded, new Date(SEOUL_REGULAR_SESSION_MS));
   assert.ok(tradingBlocked(next));
   const fill = await new KisBroker({ current: next }, client, "cash").buyMarket("005930", 10_000);
   assert.equal(fill.ok, false);

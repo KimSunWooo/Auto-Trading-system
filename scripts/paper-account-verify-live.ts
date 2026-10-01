@@ -130,7 +130,10 @@ async function main(): Promise<void> {
     }
   }
   console.log("KIS Holding Count:", pre.holdings.length);
-  console.log("KIS dnca_tot_amt:", pre.depositCash.toLocaleString("ko-KR"));
+  console.log(
+    "KIS dnca_tot_amt:",
+    pre.depositCash == null ? "UNAVAILABLE" : pre.depositCash.toLocaleString("ko-KR"),
+  );
   console.log("KIS ord_psbl_cash:", pre.orderableCash?.toLocaleString("ko-KR") ?? "null");
 
   // Startup sync then single post-sync verification (avoid double token/price REST).
