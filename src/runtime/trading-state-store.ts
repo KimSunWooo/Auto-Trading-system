@@ -66,6 +66,7 @@ function toPublicWithRules(
   state: AppState,
   ruleConfig: RuleConfigFile,
   getKisClient?: () => KisApi | undefined,
+  brokerAccountId?: string,
 ): PublicState {
   const clock = getMarketClock();
   const broker = resolveBrokerPublicStatus(getKisClient);
@@ -80,7 +81,7 @@ function toPublicWithRules(
     },
     broker,
     ruleConfig,
-    runtime: buildRuntimePublic(state, { broker }),
+    runtime: buildRuntimePublic(state, { broker, brokerAccountId }),
   };
 }
 
@@ -184,10 +185,12 @@ export function createTradingStateStore(opts: {
     },
     getState: () => withStore((s) => s),
     async getPublicState(ruleConfig) {
-      return withStore((state) => toPublicWithRules(state, ruleConfig, getKisClient));
+      return withStore((state) =>
+        toPublicWithRules(state, ruleConfig, getKisClient, brokerAccountId),
+      );
     },
     toPublic(state, ruleConfig) {
-      return toPublicWithRules(state, ruleConfig, getKisClient);
+      return toPublicWithRules(state, ruleConfig, getKisClient, brokerAccountId);
     },
     async mutateStore(fn) {
       return withStore(async (state) => {
@@ -208,7 +211,7 @@ export function createTradingStateStore(opts: {
           kisClient: tickOpts.tickDeps?.kisClient ?? getKisClient?.(),
         }),
       );
-      return toPublicWithRules(next, ruleConfig, getKisClient);
+      return toPublicWithRules(next, ruleConfig, getKisClient, brokerAccountId);
     },
   };
 

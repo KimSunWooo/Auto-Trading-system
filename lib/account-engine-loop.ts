@@ -109,6 +109,8 @@ async function ensureAccountStartupSync(
     });
     if (healthy) {
       markScopeStartupSyncDone(brokerAccountId, true);
+      // Align process boot flag used by any legacy tradingBlocked(state) callers.
+      markProcessBootStartupVerified(true);
       g.__accountStartupNextAttemptAt?.delete(brokerAccountId);
     } else if (rateLimited) {
       g.__accountStartupNextAttemptAt?.set(brokerAccountId, Date.now() + 30_000);

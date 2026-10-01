@@ -232,10 +232,14 @@ export function mapKisDailyCcldRow(row: Record<string, unknown>): KisDayOrder | 
   const ordTmd = String(row.ord_tmd ?? row.ORD_TMD ?? "").trim();
   const rawPrice = pickQty(row, "ord_unpr", "ORD_UNPR");
 
+  const name =
+    String(row.prdt_name ?? row.PRDT_NAME ?? row.hts_kor_isnm ?? row.HTS_KOR_ISNM ?? "").trim() ||
+    undefined;
+
   return {
     orderNo,
     ticker,
-    name: String(row.prdt_name ?? row.PRDT_NAME ?? row.hts_kor_isnm ?? row.HTS_KOR_ISNM ?? "").trim() || undefined,
+    ...(name ? { name } : {}),
     side: sll === "01" ? "sell" : "buy",
     qty,
     filledQty,
@@ -1299,9 +1303,14 @@ export class KisClient implements KisApi {
     if (kind === "order") {
       return new IndeterminateOrderError(
         name === "TimeoutError" || name === "AbortError" || /timeout|aborted/i.test(message)
-          ? "주문 응답 시간 초과. 체결 여부를 확인해야 합니다."
+          ? "KIS_HTTP_TIMEOUT: 주문 응답 시간 초과. 체결 여부를 확인해야 합니다."
           : `주문 전송 결과를 확인하지 못했습니다. ${message}`,
       );
+    }
+    if (name === "TimeoutError" || name === "AbortError" || /timeout|aborted/i.test(message)) {
+      // AbortSignal.timeout is created per HTTP attempt AFTER scheduler slot grant.
+      // Scheduler queue wait is never wrapped in this AbortSignal.
+      return new Error(`KIS_HTTP_TIMEOUT: ${message}`);
     }
     return err instanceof Error ? err : new Error(message);
   }

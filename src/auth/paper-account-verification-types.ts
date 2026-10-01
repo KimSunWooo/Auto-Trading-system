@@ -9,7 +9,8 @@ export type PaperAccountVerification = {
   freshBrokerQuery: boolean;
   paginationComplete: boolean;
   pagesFetched: number;
-  depositCash: number;
+  /** null = UNAVAILABLE (never coerce inquiry failure to 0). */
+  depositCash: number | null;
   orderableCash: number | null;
   holdings: Array<{
     ticker: string;
@@ -27,4 +28,6 @@ export type PaperAccountVerification = {
   blockers: string[];
   fingerprintPrefix?: string;
   strategyAllocatedCash?: number;
+  /** Shared account runtime snapshot fields when available. */
+  cashSource?: "RUNTIME_SNAPSHOT" | "LIVE_KIS" | "UNAVAILABLE";
 };

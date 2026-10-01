@@ -193,6 +193,24 @@ export type RuntimePublic = {
   realizedPnl?: number;
   unrealizedPnl?: number;
   rdsMirror?: "connected" | "degraded" | "off";
+  /** Account-scoped snapshot shared by Header/Verification/Risk/Worker. */
+  accountSnapshot?: {
+    brokerAccountId: string;
+    credentialReady: boolean;
+    kisAuthReady: boolean;
+    startupSyncStatus: string;
+    bootVerified: boolean;
+    reconciled: boolean;
+    cash: number | null;
+    orderableCash: number | null;
+    holdings: Array<{ ticker: string; name: string; qty: number; avgPrice: number }>;
+    openOrders: number;
+    unknownActiveOrders: number;
+    workerLockHeld: boolean;
+    workerHeartbeatAt: number | null;
+    riskStatus: "READY" | "BLOCKED" | "WARNING";
+    updatedAt: string;
+  };
 };
 
 export type CircuitState = {

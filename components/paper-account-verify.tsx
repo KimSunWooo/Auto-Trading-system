@@ -100,7 +100,9 @@ export function PaperAccountVerifyBanner() {
         <div className="grid gap-3 text-sm sm:grid-cols-3">
           <div>
             <div className="text-xs text-muted-foreground">{data.labels.depositCash}</div>
-            <div className="tabular-nums font-medium">{formatWon(v.depositCash)}</div>
+            <div className="tabular-nums font-medium">
+              {v.depositCash != null ? formatWon(v.depositCash) : "—"}
+            </div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">{data.labels.orderableCash}</div>
@@ -123,6 +125,7 @@ export function PaperAccountVerifyBanner() {
                 .map((h) => `${h.name} ${h.qty}주`)
                 .join(" · ")}
           {v.localPositionsMatched ? " · 로컬 수량 일치" : ""}
+          {v.cashSource ? ` · source=${v.cashSource}` : ""}
         </div>
       </div>
     </div>

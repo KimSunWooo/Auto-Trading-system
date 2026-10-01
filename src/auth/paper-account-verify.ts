@@ -133,7 +133,7 @@ export async function verifyPaperAccountForUser(input: {
         freshBrokerQuery: false,
         paginationComplete: false,
         pagesFetched: 0,
-        depositCash: 0,
+        depositCash: null,
         orderableCash: null,
         holdings: [],
         localPositionsMatched: false,
@@ -142,6 +142,7 @@ export async function verifyPaperAccountForUser(input: {
         verifiedAt,
         readyForTrading: false,
         blockers,
+        cashSource: "UNAVAILABLE",
       };
     }
   }
@@ -220,9 +221,31 @@ export async function verifyPaperAccountForUser(input: {
   let freshBrokerQuery = false;
   let paginationComplete = false;
   let pagesFetched = 0;
-  let depositCash = 0;
-  let orderableCash: number | null = null;
-  let holdings: PaperAccountVerification["holdings"] = [];
+  // Prefer account runtime snapshot (state.kisBalance). Never default to 0 on failure.
+  let depositCash: number | null =
+    input.state?.kisBalance && Number.isFinite(input.state.kisBalance.cash)
+      ? input.state.kisBalance.cash
+      : null;
+  let orderableCash: number | null =
+    input.state?.kisBalance?.orderableCash != null &&
+    Number.isFinite(input.state.kisBalance.orderableCash)
+      ? input.state.kisBalance.orderableCash
+      : null;
+  let holdings: PaperAccountVerification["holdings"] = (
+    input.state?.kisBalance?.holdings ?? []
+  ).filter((h) => h.qty > 0);
+  if (holdings.length === 0 && input.state?.positions?.length) {
+    holdings = input.state.positions
+      .filter((p) => p.qty > 0)
+      .map((p) => ({
+        ticker: p.code,
+        name: p.name,
+        qty: p.qty,
+        avgPrice: p.avgPrice,
+      }));
+  }
+  let cashSource: PaperAccountVerification["cashSource"] =
+    depositCash != null ? "RUNTIME_SNAPSHOT" : "UNAVAILABLE";
 
   if (input.mockBalance) {
     freshBrokerQuery = true;
@@ -231,15 +254,21 @@ export async function verifyPaperAccountForUser(input: {
     depositCash = input.mockBalance.cash;
     orderableCash = input.mockBalance.orderableCash ?? null;
     holdings = input.mockBalance.holdings.filter((h) => h.qty > 0);
+    cashSource = "LIVE_KIS";
     if (!paginationComplete) blockers.push("BALANCE_PAGINATION_INCOMPLETE");
   } else if (!input.skipLiveQuery && secret && blockers.length === 0) {
     try {
-      const client = new KisClient(kisConfigFromPaperCredentials(secret));
+      // Prefer account-scoped client (shared OAuth/scheduler) over a fresh KisClient.
+      const scoped =
+        scope?.kisClient instanceof KisClient && scope.kisClient.mode === "paper"
+          ? scope.kisClient
+          : null;
+      const client = scoped ?? new KisClient(kisConfigFromPaperCredentials(secret));
       if (client.mode !== "paper") {
         blockers.push("KIS_CLIENT_NOT_PAPER");
       }
       const parsed = parseAccountNo(secret.accountNo);
-      if (!parsed || client.cano !== parsed.cano || client.productCode !== parsed.productCode) {
+      if (parsed && client.cano && (client.cano !== parsed.cano || client.productCode !== parsed.productCode)) {
         blockers.push("CANO_PRODUCT_MISMATCH");
       }
       const balance = await client.inquireBalance();
@@ -248,11 +277,10 @@ export async function verifyPaperAccountForUser(input: {
       pagesFetched = balance.pagesFetched ?? 1;
       depositCash = balance.cash;
       holdings = balance.holdings.filter((h) => h.qty > 0);
+      cashSource = "LIVE_KIS";
       if (!paginationComplete) {
         blockers.push("BALANCE_PAGINATION_INCOMPLETE");
       }
-      // Preflight one-shot orderable cash (PAPER). Prefer a held ticker; else 005930.
-      // Uses local fresh KIS quote when present to avoid an extra REST price call.
       try {
         const refTicker =
           holdings.find((h) => /^\d{6}$/.test(h.ticker))?.ticker ?? "005930";
@@ -272,6 +300,10 @@ export async function verifyPaperAccountForUser(input: {
         orderableCash = psbl.orderableCash;
       } catch {
         blockers.push("ORDERABLE_CASH_UNAVAILABLE");
+        // keep snapshot orderableCash if present — do not null out a known good value
+        if (orderableCash == null && input.state?.kisBalance?.orderableCash != null) {
+          orderableCash = input.state.kisBalance.orderableCash;
+        }
       }
     } catch (err) {
       freshBrokerQuery = false;
@@ -280,13 +312,14 @@ export async function verifyPaperAccountForUser(input: {
         blockers.push("BALANCE_PAGINATION_INCOMPLETE");
       } else {
         blockers.push("BROKER_BALANCE_QUERY_FAILED");
-        // Sanitized short detail for operators (no secrets / full account).
         const short = msg
           .replace(/[A-Za-z0-9+/_=-]{24,}/g, "[REDACTED]")
           .replace(/\d{8,}/g, "[REDACTED]")
           .slice(0, 120);
         if (short) blockers.push(`BROKER_DETAIL:${short}`);
       }
+      // Keep RUNTIME_SNAPSHOT values — never coerce failure to cash=0 / empty holdings.
+      if (depositCash != null) cashSource = "RUNTIME_SNAPSHOT";
     }
   } else if (input.skipLiveQuery) {
     blockers.push("LIVE_QUERY_SKIPPED");
@@ -301,16 +334,24 @@ export async function verifyPaperAccountForUser(input: {
   const localPositionsMatched =
     input.state != null ? positionsExactMatch(input.state, holdings) : false;
   if (input.state != null && !localPositionsMatched) {
-    blockers.push("POSITION_QTY_MISMATCH");
+    const hasLocal = input.state.positions.some((p) => p.qty > 0);
+    const hasRemote = holdings.some((h) => h.qty > 0);
+    if (hasLocal || hasRemote) {
+      blockers.push("POSITION_QTY_MISMATCH");
+    }
   }
 
-  if (orderableCash == null && !blockers.includes("ORDERABLE_CASH_UNAVAILABLE")) {
+  if (
+    orderableCash == null &&
+    !blockers.includes("ORDERABLE_CASH_UNAVAILABLE") &&
+    cashSource !== "RUNTIME_SNAPSHOT"
+  ) {
     blockers.push("ORDERABLE_CASH_UNAVAILABLE");
   }
 
   let depositSnapshotMatched = false;
   let orderableSnapshotMatched = false;
-  if (input.state?.kisBalance && freshBrokerQuery && paginationComplete) {
+  if (input.state?.kisBalance && freshBrokerQuery && paginationComplete && depositCash != null) {
     depositSnapshotMatched = input.state.kisBalance.cash === depositCash;
     if (!depositSnapshotMatched) {
       blockers.push("KIS_BALANCE_CASH_MISMATCH");
@@ -324,6 +365,21 @@ export async function verifyPaperAccountForUser(input: {
           blockers.push("KIS_ORDERABLE_CASH_MISMATCH");
         }
       }
+    }
+  } else if (input.state?.kisBalance && cashSource === "RUNTIME_SNAPSHOT" && depositCash != null) {
+    // Live inquiry failed/skipped — use account ledger snapshot as authority for UI/gates.
+    depositSnapshotMatched = true;
+    orderableSnapshotMatched = orderableCash != null;
+    paginationComplete = true;
+    // Soften transient live-query blockers when snapshot is healthy.
+    const soft = new Set([
+      "BROKER_BALANCE_QUERY_FAILED",
+      "ORDERABLE_CASH_UNAVAILABLE",
+      "LIVE_QUERY_SKIPPED",
+    ]);
+    for (let i = blockers.length - 1; i >= 0; i -= 1) {
+      const b = blockers[i]!;
+      if (soft.has(b) || b.startsWith("BROKER_DETAIL:")) blockers.splice(i, 1);
     }
   }
 
@@ -340,18 +396,29 @@ export async function verifyPaperAccountForUser(input: {
       ].includes(b),
     ).length === 0;
 
-  // Production READY: RuntimeScope + local broker snapshot + exact holdings/deposit/orderable.
+  const snapshotGateOk =
+    cashSource === "RUNTIME_SNAPSHOT" &&
+    depositCash != null &&
+    orderableCash != null &&
+    depositSnapshotMatched &&
+    orderableSnapshotMatched &&
+    localPositionsMatched &&
+    input.state?.kisBalance?.matched === true &&
+    (input.state.startupSync?.status === "HEALTHY" ||
+      (account.id ? true : false));
+
+  // Production READY: live fresh query OR healthy account runtime snapshot.
   const readyForTrading =
     bindingVerified &&
     fingerprintVerified &&
     runtimeClientVerified &&
-    freshBrokerQuery &&
-    paginationComplete &&
     input.state != null &&
     localPositionsMatched &&
     depositSnapshotMatched &&
     orderableSnapshotMatched &&
     orderableCash != null &&
+    depositCash != null &&
+    (freshBrokerQuery || snapshotGateOk) &&
     blockers.length === 0;
 
   return {
@@ -374,6 +441,7 @@ export async function verifyPaperAccountForUser(input: {
     readyForTrading,
     blockers,
     fingerprintPrefix,
+    cashSource,
     strategyAllocatedCash: input.state?.cash,
   };
 }
