@@ -79,7 +79,7 @@ export class QuantEngine {
       const broker = root.forRule(rule.id);
       const before = toBucket(alloc, box.current.positions);
       try {
-        const after = await RuleRunner.execute(broker, before, rule);
+        const after = await RuleRunner.execute(broker, before, rule, box.current);
         const live = box.current.allocations.find((row) => row.ruleId === rule.id);
         const cooled = live?.lastMessage?.includes("쿨다운");
         box.current = {

@@ -40,6 +40,8 @@ import {
 
 export type MirrorContext = {
   env?: EnvMap;
+  /** When set, project into this existing broker_account (multi-tenant PAPER owner). */
+  brokerAccountId?: string;
   provenance?: "RUNTIME" | "LEGACY_STATE";
   cash?: Array<{ currency: string; cashBalance: number; orderableAmount: number; source?: string }>;
   fx?: { baseCurrency: string; quoteCurrency: string; rate: number; source: string };
@@ -181,26 +183,38 @@ export async function projectAppState(
       createdAt: now,
       updatedAt: now,
     });
-    const paperPlan = planMirrorPaperBrokerAccount(broker, environment, env);
-    assertActivePaperFingerprint(
-      broker,
-      environment,
-      paperPlan.status,
-      paperPlan.physicalAccountFingerprint,
-    );
-    const brokerAccount = await tx.upsertBrokerAccount({
-      id: stableId("broker-account", `${user.id}:${broker}:${environment}`),
-      userId: user.id,
-      broker,
-      environment,
-      displayName: `${broker} ${environment}`,
-      accountNumberMasked: maskedAccount(env),
-      baseCurrency: "KRW",
-      status: paperPlan.status,
-      isDefault: paperPlan.isDefault,
-      credentialRef: credentialRef(env),
-      physicalAccountFingerprint: paperPlan.physicalAccountFingerprint,
-    });
+
+    let brokerAccount: Awaited<ReturnType<typeof tx.upsertBrokerAccount>>;
+    if (context.brokerAccountId) {
+      const existing = (await tx.listBrokerAccounts()).find((row) => row.id === context.brokerAccountId);
+      if (!existing) {
+        throw new Error(`Mirror target broker_account missing: ${context.brokerAccountId}`);
+      }
+      // Preserve ownership / fingerprint / status — never remount onto bootstrap id.
+      // Pass fingerprint through so ACTIVE PAPER invariant still holds on upsert validate.
+      brokerAccount = existing;
+    } else {
+      const paperPlan = planMirrorPaperBrokerAccount(broker, environment, env);
+      assertActivePaperFingerprint(
+        broker,
+        environment,
+        paperPlan.status,
+        paperPlan.physicalAccountFingerprint,
+      );
+      brokerAccount = await tx.upsertBrokerAccount({
+        id: stableId("broker-account", `${user.id}:${broker}:${environment}`),
+        userId: user.id,
+        broker,
+        environment,
+        displayName: `${broker} ${environment}`,
+        accountNumberMasked: maskedAccount(env),
+        baseCurrency: "KRW",
+        status: paperPlan.status,
+        isDefault: paperPlan.isDefault,
+        credentialRef: credentialRef(env),
+        physicalAccountFingerprint: paperPlan.physicalAccountFingerprint,
+      });
+    }
     if (brokerAccount.credentialRef) {
       await tx.upsertCredentialRef(brokerAccount.id, brokerAccount.credentialRef);
     }
@@ -286,7 +300,7 @@ export async function projectAppState(
       circuitReason: state.circuit.reason ?? null,
       unknownOrderCount: state.circuit.unknownCount ?? 0,
     });
-    await writeAudits(tx, prevState, state, user.id, brokerAccount.id);
+    await writeAudits(tx, prevState, state, brokerAccount.userId || user.id, brokerAccount.id);
 
     if (environment === "PAPER" || environment === "MOCK") {
       const paper = paperOperationPolicy(context.env ?? process.env);
@@ -377,6 +391,16 @@ export async function projectAppState(
       const intent = (state.intents ?? []).find((row) => row.intentId === parent.intentId);
       const intentRow = intent ? await tx.getIntentByKey(brokerAccount.id, intent.intentId.slice(0, 191)) : undefined;
       const status = mapOrderStatus(parent);
+      const children = [...fillChildren(state, parent.id)].sort((a, b) => {
+        if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+        return state.orders.indexOf(b) - state.orders.indexOf(a);
+      });
+      let avgPx = filled > 0 ? parent.price : null;
+      if (children.length > 0) {
+        const q = children.reduce((sum, row) => sum + row.qty, 0);
+        const n = children.reduce((sum, row) => sum + row.qty * row.price, 0);
+        if (q > 0) avgPx = n / q;
+      }
       const result = await tx.upsertOrder({
         id: stableId("order", `${brokerAccount.id}:${parent.id}`),
         brokerAccountId: brokerAccount.id,
@@ -392,7 +416,7 @@ export async function projectAppState(
         requestedPrice: money(parent.price),
         filledQty: money(filled),
         remainingQty: money(remaining),
-        averageFillPrice: filled > 0 ? money(parent.price) : null,
+        averageFillPrice: avgPx != null ? money(avgPx) : null,
         currency: instrument.currency,
         status,
         source: parent.source?.toUpperCase() ?? null,
@@ -408,10 +432,6 @@ export async function projectAppState(
       if (result.inserted) importedOrders += 1;
       await maybeAppendEvent(tx, result.row, result.inserted);
 
-      const children = [...fillChildren(state, parent.id)].sort((a, b) => {
-        if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
-        return state.orders.indexOf(b) - state.orders.indexOf(a);
-      });
       if (children.length > 0) {
         let cumulative = 0;
         for (const [childIndex, child] of children.entries()) {

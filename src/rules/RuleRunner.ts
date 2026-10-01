@@ -4,13 +4,20 @@ import type { IBroker } from "@/src/brokers/IBroker";
 import { sma } from "@/src/strategies/indicators";
 import { findStock } from "@/lib/universe";
 import type { UserRule } from "@/src/rules/params";
+import { checkExecutionBudget } from "@/src/rules/execution-budget";
 import { makeSignalId } from "@/src/runtime/intents";
 import { seoulDay } from "@/src/risk/limits";
+import type { AppState } from "@/lib/types";
 
 export class RuleRunner {
-  static async execute(broker: IBroker, bucket: AccountBucket, rule: UserRule): Promise<AccountBucket> {
-    if (rule.kind === "ma-cross") return runMaCross(broker, bucket, rule);
-    return runInterval(broker, bucket, rule);
+  static async execute(
+    broker: IBroker,
+    bucket: AccountBucket,
+    rule: UserRule,
+    state?: AppState,
+  ): Promise<AccountBucket> {
+    if (rule.kind === "ma-cross") return runMaCross(broker, bucket, rule, state);
+    return runInterval(broker, bucket, rule, state);
   }
 }
 
@@ -18,21 +25,64 @@ async function runInterval(
   broker: IBroker,
   bucket: AccountBucket,
   rule: UserRule,
+  state?: AppState,
 ): Promise<AccountBucket> {
   const now = nowMs();
-  const last = bucket.lastRunAt ? new Date(bucket.lastRunAt).getTime() : 0;
-  if (now - last < rule.intervalMs) {
-    return { ...bucket, lastMessage: "실행 주기 대기 중" };
+  const lastEval = Number(bucket.meta?.lastEvaluatedAtMs ?? 0);
+  // Evaluation cadence (intervalMs) — independent of BUY permission.
+  if (now - lastEval < rule.intervalMs) {
+    return { ...bucket, lastMessage: "조건 평가 주기 대기 중" };
   }
+
+  const evaluated: AccountBucket = {
+    ...bucket,
+    meta: { ...bucket.meta, lastEvaluatedAtMs: now },
+    lastMessage: "조건 평가 완료",
+  };
+
   const amount = Math.min(rule.sliceKrw, Math.floor(bucket.balance * rule.buyPct));
   if (amount < rule.minAmountKrw) {
-    return { ...bucket, lastMessage: "예수금이 적어 이번 주기를 건너뜁니다." };
+    return { ...evaluated, lastMessage: "예수금이 적어 이번 주기를 건너뜁니다." };
   }
-  const signalId = makeSignalId(["sig", "interval", rule.id, rule.ticker, Math.floor(now / Math.max(1, rule.intervalMs))]);
-  const fill = await broker.withIntent({ intentId: signalId, signalId, reason: "interval-buy" }).buyMarket(rule.ticker, amount);
+
+  const quote = await broker.getQuote(rule.ticker);
+  const price = quote?.price ?? bucket.positions.find((p) => p.code === rule.ticker)?.avgPrice ?? 0;
+  if (!(price > 0)) {
+    return { ...evaluated, lastMessage: "시세 없음 — 매수 보류" };
+  }
+
+  const book = state ?? {
+    orders: [],
+    positions: bucket.positions,
+    totalDeposit: Math.max(bucket.balance, 1),
+  } as AppState;
+
+  const blocked = checkExecutionBudget({
+    state: book,
+    rule,
+    bucket: evaluated,
+    amountKrw: amount,
+    price,
+    nowMs: now,
+  });
+  if (blocked) {
+    return { ...evaluated, lastMessage: blocked };
+  }
+
+  const signalId = makeSignalId([
+    "sig",
+    "interval",
+    rule.id,
+    rule.ticker,
+    Math.floor(now / Math.max(1, rule.intervalMs)),
+  ]);
+  const fill = await broker
+    .withIntent({ intentId: signalId, signalId, reason: "interval-buy" })
+    .buyMarket(rule.ticker, amount);
   const name = findStock(rule.ticker)?.name ?? rule.ticker;
   return {
-    ...bucket,
+    ...evaluated,
+    // lastRunAt = last BUY attempt (not evaluation)
     lastRunAt: new Date(now).toISOString(),
     lastMessage: fill.ok
       ? `${name} ${fill.qty}주 조건 매수 (${fill.net.toLocaleString("ko-KR")}원)`
@@ -46,6 +96,7 @@ async function runMaCross(
   broker: IBroker,
   bucket: AccountBucket,
   rule: UserRule,
+  state?: AppState,
 ): Promise<AccountBucket> {
   const quote = await broker.getQuote(rule.ticker);
   if (!quote) return { ...bucket, lastMessage: "시세 없음" };
@@ -64,6 +115,26 @@ async function runMaCross(
 
   if (crossedUp && regime !== "long") {
     const amount = Math.min(rule.sliceKrw, Math.floor(bucket.balance * rule.buyPct));
+    const book = state ?? {
+      orders: [],
+      positions: bucket.positions,
+      totalDeposit: Math.max(bucket.balance, 1),
+    } as AppState;
+    const blocked = checkExecutionBudget({
+      state: book,
+      rule,
+      bucket,
+      amountKrw: amount,
+      price: quote.price,
+      nowMs: nowMs(),
+    });
+    if (blocked) {
+      return {
+        ...bucket,
+        meta: { ...bucket.meta, maRel: currRel },
+        lastMessage: blocked,
+      };
+    }
     const signalId = makeSignalId(["sig", "ma", rule.id, rule.ticker, "long", seoulDay()]);
     const fill = await broker.withIntent({ intentId: signalId, signalId, reason: "ma-buy" }).buyMarket(rule.ticker, amount);
     return {

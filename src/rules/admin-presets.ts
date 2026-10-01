@@ -52,6 +52,9 @@ export const ADMIN_PRESETS: readonly AdminPreset[] = [
       enabled: true,
     },
   },
+  // Level1 preset omits execution budgets in the draft form;
+  // blankRule/parseUserRule leave them unset → resolveExecutionBudget applies
+  // conservative defaults (maxExecutionsPerDay=1, minBuyIntervalMs=1d).
   {
     id: "Level5_Swing",
     label: "중립형",

@@ -123,6 +123,11 @@ test("RuleRunner interval buy uses the ticker from the user rule", async () => {
       sliceKrw: 150_000,
       buyPct: 0.2,
       budget: 7_000_000,
+      maxExecutionsPerDay: 5,
+      minBuyIntervalMs: 1,
+      maxPositionQty: 50,
+      maxDailyBuyKrw: 2_000_000,
+      maxPositionKrw: 7_000_000,
     });
     setRuleConfigForTest({ rules: [rule] });
     const state = makeTestPaperState();
@@ -133,6 +138,7 @@ test("RuleRunner interval buy uses the ticker from the user rule", async () => {
       new FakeBroker(box, "r-interval"),
       { ...toBucket(alloc, box.current.positions), lastRunAt: new Date(0).toISOString() },
       rule,
+      box.current,
     );
     assert.match(after.lastMessage ?? "", /삼성전자|005930|조건 매수/);
     assert.equal(box.current.orders[0]?.code, "005930");

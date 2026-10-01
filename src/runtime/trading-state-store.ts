@@ -150,7 +150,9 @@ export function createTradingStateStore(opts: {
 
     if (dbAuthority) {
       // DB first — throw on failure so callers (KisBroker pre-submit persist) do not order.
-      await mirrorAfterJsonSave(next);
+      await mirrorAfterJsonSave(next, process.env, {
+        brokerAccountId,
+      });
       try {
         await repository.save(next);
       } catch (err) {
@@ -163,7 +165,9 @@ export function createTradingStateStore(opts: {
     }
 
     await repository.save(next);
-    await mirrorAfterJsonSave(next);
+    await mirrorAfterJsonSave(next, process.env, {
+      brokerAccountId,
+    });
   }
 
   function withStore<T>(fn: (state: AppState) => T | Promise<T>): Promise<T> {

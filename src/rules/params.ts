@@ -9,7 +9,11 @@ export type UserRule = {
   /** Optional canonical key e.g. KR:KOSPI:005930. Additive. */
   instrumentKey?: string;
   kind: ConditionKind;
-  /** 실행 주기 (interval 조건식). */
+  /**
+   * Condition evaluation cadence (ms).
+   * For interval rules this is NOT the buy permission cadence —
+   * see minBuyIntervalMs / maxExecutionsPerDay.
+   */
   intervalMs: number;
   fastMa: number;
   slowMa: number;
@@ -21,6 +25,18 @@ export type UserRule = {
   takeProfitPct: number;
   enabled: boolean;
   budget: number;
+  /**
+   * Safe execution budgets. When omitted, resolveExecutionBudget applies
+   * conservative defaults (never unlimited).
+   */
+  maxExecutionsPerDay?: number;
+  maxDailyBuyKrw?: number;
+  maxPositionQty?: number;
+  maxPositionKrw?: number;
+  /** 0–1 fraction of totalDeposit. */
+  maxTotalExposurePct?: number;
+  /** Min gap between BUY attempts; evaluation may still run every intervalMs. */
+  minBuyIntervalMs?: number;
 };
 
 export type RuleConfigFile = {
@@ -63,6 +79,15 @@ export function isLegacyPlaybookId(id: string | undefined): boolean {
   return id === "Level1_Stable" || id === "Level5_Swing" || id === "Level10_Aggressive";
 }
 
+function optionalPositiveInt(value: unknown): number | undefined {
+  const n = asPositive(value);
+  return n != null ? Math.floor(n) : undefined;
+}
+
+function optionalUnit(value: unknown): number | undefined {
+  return asUnitInterval(value);
+}
+
 export function blankRule(partial: Partial<UserRule> = {}): UserRule {
   const rule: UserRule = {
     id: partial.id ?? crypto.randomUUID(),
@@ -82,6 +107,13 @@ export function blankRule(partial: Partial<UserRule> = {}): UserRule {
   };
   if (partial.instrumentId) rule.instrumentId = partial.instrumentId;
   if (partial.instrumentKey) rule.instrumentKey = partial.instrumentKey;
+  // Explicit partials only — omit → resolveExecutionBudget supplies conservative defaults.
+  if (partial.maxExecutionsPerDay != null) rule.maxExecutionsPerDay = partial.maxExecutionsPerDay;
+  if (partial.maxDailyBuyKrw != null) rule.maxDailyBuyKrw = partial.maxDailyBuyKrw;
+  if (partial.maxPositionQty != null) rule.maxPositionQty = partial.maxPositionQty;
+  if (partial.maxPositionKrw != null) rule.maxPositionKrw = partial.maxPositionKrw;
+  if (partial.maxTotalExposurePct != null) rule.maxTotalExposurePct = partial.maxTotalExposurePct;
+  if (partial.minBuyIntervalMs != null) rule.minBuyIntervalMs = partial.minBuyIntervalMs;
   return rule;
 }
 
@@ -109,6 +141,12 @@ export function parseUserRule(raw: unknown, fallbackId?: string): UserRule | nul
     typeof input.instrumentKey === "string" && input.instrumentKey.trim()
       ? input.instrumentKey.trim()
       : undefined;
+  const maxExecutionsPerDay = optionalPositiveInt(input.maxExecutionsPerDay);
+  const maxDailyBuyKrw = optionalPositiveInt(input.maxDailyBuyKrw);
+  const maxPositionQty = optionalPositiveInt(input.maxPositionQty);
+  const maxPositionKrw = optionalPositiveInt(input.maxPositionKrw);
+  const maxTotalExposurePct = optionalUnit(input.maxTotalExposurePct);
+  const minBuyIntervalMs = optionalPositiveInt(input.minBuyIntervalMs);
   return {
     id,
     name: typeof input.name === "string" ? input.name.trim() : "",
@@ -126,6 +164,12 @@ export function parseUserRule(raw: unknown, fallbackId?: string): UserRule | nul
     takeProfitPct: asUnitInterval(input.takeProfitPct) ?? 0.03,
     enabled: input.enabled !== false,
     budget: Math.max(0, Math.round(asNumber(input.budget) ?? 0)),
+    ...(maxExecutionsPerDay != null ? { maxExecutionsPerDay } : {}),
+    ...(maxDailyBuyKrw != null ? { maxDailyBuyKrw } : {}),
+    ...(maxPositionQty != null ? { maxPositionQty } : {}),
+    ...(maxPositionKrw != null ? { maxPositionKrw } : {}),
+    ...(maxTotalExposurePct != null && maxTotalExposurePct > 0 ? { maxTotalExposurePct } : {}),
+    ...(minBuyIntervalMs != null ? { minBuyIntervalMs } : {}),
   };
 }
 
@@ -158,7 +202,7 @@ export function validateRuleConfig(config: RuleConfigFile): string | null {
   for (const rule of config.rules) {
     if (!normalizeTicker(rule.ticker)) return "종목코드 6자리가 필요합니다.";
     if (rule.kind === "interval" && rule.intervalMs < 1_000) {
-      return "실행 주기는 1초 이상이어야 합니다.";
+      return "조건 평가 주기는 1초 이상이어야 합니다.";
     }
     if (rule.kind === "ma-cross" && rule.fastMa >= rule.slowMa) {
       return "단기 이평은 장기 이평보다 짧아야 합니다.";
@@ -166,6 +210,21 @@ export function validateRuleConfig(config: RuleConfigFile): string | null {
     if (rule.buyPct <= 0 || rule.buyPct > 1) return "1회 매수 비중은 0과 1 사이여야 합니다.";
     if (rule.stopLossPct <= 0 || rule.stopLossPct > 1) return "손절 비율이 올바르지 않습니다.";
     if (rule.takeProfitPct < 0 || rule.takeProfitPct > 1) return "익절 비율이 올바르지 않습니다.";
+    if (rule.maxExecutionsPerDay != null && rule.maxExecutionsPerDay < 1) {
+      return "일일 실행 한도는 1 이상이어야 합니다.";
+    }
+    if (rule.maxDailyBuyKrw != null && rule.maxDailyBuyKrw < rule.minAmountKrw) {
+      return "일일 매수 한도가 최소 매수 금액보다 작습니다.";
+    }
+    if (rule.maxPositionQty != null && rule.maxPositionQty < 1) {
+      return "포지션 수량 한도는 1 이상이어야 합니다.";
+    }
+    if (
+      rule.maxTotalExposurePct != null &&
+      (rule.maxTotalExposurePct <= 0 || rule.maxTotalExposurePct > 1)
+    ) {
+      return "노출 한도는 0과 1 사이여야 합니다.";
+    }
   }
   return null;
 }

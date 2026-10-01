@@ -30,7 +30,13 @@
       "stopLossPct": 0.05,
       "takeProfitPct": 0.03,
       "enabled": false,
-      "budget": 7000000
+      "budget": 7000000,
+      "maxExecutionsPerDay": 1,
+      "maxDailyBuyKrw": 150000,
+      "maxPositionQty": 20,
+      "maxPositionKrw": 7000000,
+      "maxTotalExposurePct": 0.5,
+      "minBuyIntervalMs": 86400000
     }
   ]
 }
