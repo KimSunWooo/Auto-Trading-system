@@ -1,6 +1,9 @@
 /**
  * Per-account trading state store — own queue, no global mutable path swap.
  * Public broker status prefers the account RuntimeScope KisClient over process.env.
+ *
+ * PERSISTENCE_MODE=database: DB is trading-ledger authority. JSON is optional cache.
+ * Restart recovery can reconstitute from DB when state.json is missing.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -9,7 +12,10 @@ import { getMarketClock } from "@/lib/market-hours";
 import type { AppState, BrokerPublicStatus, PublicState } from "@/lib/types";
 import { JsonStateRepository } from "@/src/persistence/json-state-repository";
 import { hydratePersistedState, toPublic as bootstrapToPublic } from "@/lib/store";
-import { mirrorAfterJsonSave } from "@/src/db/mirror";
+import { mirrorAfterJsonSave, resolveMirrorLedger } from "@/src/db/mirror";
+import { isDatabaseLedgerAuthority } from "@/src/db/config";
+import { DatabaseLedgerError } from "@/src/db/persist";
+import { reconstituteAppStateFromLedger } from "@/src/db/reconstitute-state";
 import { isNodeTestProcess } from "@/src/runtime/test-process";
 import type { RuleConfigFile } from "@/src/rules/params";
 import {
@@ -21,6 +27,7 @@ import type { KisApi } from "@/src/brokers/kis-client";
 
 export type TradingStateStore = {
   readonly statePath: string;
+  readonly brokerAccountId?: string;
   /** Rebind account KisClient authority (RuntimeScope rebuild / credential rotate). */
   bindKisClient(getKisClient: () => KisApi | undefined): void;
   getState(): Promise<AppState>;
@@ -39,6 +46,14 @@ type StoreInternal = TradingStateStore & {
 };
 
 const stores = new Map<string, StoreInternal>();
+
+function brokerAccountIdFromStatePath(statePath: string): string | undefined {
+  // .../data/accounts/<uuid>/state.json
+  const parts = statePath.split(path.sep);
+  const idx = parts.lastIndexOf("accounts");
+  if (idx >= 0 && parts[idx + 1]) return parts[idx + 1];
+  return undefined;
+}
 
 function resolveBrokerPublicStatus(getKisClient?: () => KisApi | undefined): BrokerPublicStatus {
   const client = getKisClient?.();
@@ -71,6 +86,7 @@ function toPublicWithRules(
 
 export function createTradingStateStore(opts: {
   statePath: string;
+  brokerAccountId?: string;
   /** When true, skip writes under node:test (matches bootstrap DEFAULT_STORE_PATH behavior). */
   skipPersistUnderTest?: boolean;
   /**
@@ -89,11 +105,29 @@ export function createTradingStateStore(opts: {
   }
 
   const repository = new JsonStateRepository(absolute);
+  const brokerAccountId = opts.brokerAccountId ?? brokerAccountIdFromStatePath(absolute);
   let queue: Promise<unknown> = Promise.resolve();
   let getKisClient = opts.getKisClient;
 
   async function loadState(): Promise<AppState> {
-    return hydratePersistedState(await repository.load());
+    const loaded = await repository.load();
+    if (loaded.ok) {
+      return hydratePersistedState(loaded);
+    }
+    if (isDatabaseLedgerAuthority() && brokerAccountId) {
+      const ledger = await resolveMirrorLedger();
+      if (ledger) {
+        try {
+          return await reconstituteAppStateFromLedger(ledger, brokerAccountId);
+        } catch (err) {
+          console.error(
+            `[trading-state-store] DB reconstitute failed for ${brokerAccountId}:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+    return hydratePersistedState(loaded);
   }
 
   function mergePersistedControlledRun(incoming: AppState): AppState {
@@ -111,6 +145,22 @@ export function createTradingStateStore(opts: {
   async function saveState(state: AppState): Promise<void> {
     if (opts.skipPersistUnderTest && isNodeTestProcess()) return;
     const next = mergePersistedControlledRun(state);
+    const dbAuthority = isDatabaseLedgerAuthority();
+
+    if (dbAuthority) {
+      // DB first — throw on failure so callers (KisBroker pre-submit persist) do not order.
+      await mirrorAfterJsonSave(next);
+      try {
+        await repository.save(next);
+      } catch (err) {
+        console.error(
+          "[trading-state-store] JSON cache save failed after DB commit:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return;
+    }
+
     await repository.save(next);
     await mirrorAfterJsonSave(next);
   }
@@ -126,6 +176,7 @@ export function createTradingStateStore(opts: {
 
   const store: StoreInternal = {
     statePath: absolute,
+    brokerAccountId,
     _getKisClient: () => getKisClient?.(),
     bindKisClient(next) {
       getKisClient = next;
@@ -171,3 +222,5 @@ export function resetTradingStateStoresForTest(): void {
 
 /** Re-export bootstrap toPublic for callers that still use global store. */
 export { bootstrapToPublic };
+
+export { DatabaseLedgerError };

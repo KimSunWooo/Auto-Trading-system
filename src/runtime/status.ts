@@ -93,7 +93,7 @@ export function buildRuntimePublic(
     realizedPnl: realizedFromOrders(state, run?.startedAt),
     unrealizedPnl: unrealizedFromState(state),
     rdsMirror:
-      db.mode !== "mirror"
+      db.mode === "json"
         ? "off"
         : db.lastError
           ? "degraded"

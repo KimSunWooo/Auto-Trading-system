@@ -4,8 +4,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuthError } from "@/src/auth/guards";
+import { PaperAccountSelectionError } from "@/src/auth/select-paper-account";
 import {
+  AccountCredentialError,
   AccountNotConnectedError,
+  classifyAccountConnectionError,
   runtimeJsonError,
 } from "@/src/runtime/resolve-trading-runtime";
 import { isAdminPresetUiEnabled, isLocalAdminHost } from "@/src/rules/admin-presets";
@@ -22,6 +25,35 @@ test("no PAPER account maps to 409 ACCOUNT_NOT_CONNECTED", async () => {
   assert.equal(res.status, 409);
   const body = await res.json();
   assert.equal(body.code, "ACCOUNT_NOT_CONNECTED");
+});
+
+test("credential decrypt failure maps to 409 CREDENTIAL_DECRYPT_FAILED", async () => {
+  const res = runtimeJsonError(
+    new AccountCredentialError("CREDENTIAL_DECRYPT_FAILED", "decrypt failed"),
+  );
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.code, "CREDENTIAL_DECRYPT_FAILED");
+});
+
+test("classifyAccountConnectionError covers selection and credential codes", () => {
+  assert.equal(
+    classifyAccountConnectionError(new AccountNotConnectedError())?.code,
+    "ACCOUNT_NOT_CONNECTED",
+  );
+  assert.equal(
+    classifyAccountConnectionError(
+      new PaperAccountSelectionError("ACCOUNT_SELECTION_REQUIRED", "pick one"),
+    )?.code,
+    "ACCOUNT_SELECTION_REQUIRED",
+  );
+  assert.equal(
+    classifyAccountConnectionError(
+      new AccountCredentialError("CREDENTIAL_MISSING", "missing"),
+    )?.code,
+    "CREDENTIAL_MISSING",
+  );
+  assert.equal(classifyAccountConnectionError(new Error("other")), null);
 });
 
 test("ADMIN UI helpers never authorize via localhost or env flag", () => {

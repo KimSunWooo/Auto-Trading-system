@@ -286,6 +286,31 @@ export class MysqlSession implements LedgerSession {
     };
   }
 
+  async listIntentsByAccount(accountId: string): Promise<IntentRow[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.orderIntents)
+      .where(eq(schema.orderIntents.brokerAccountId, accountId));
+    return rows.map((row) => ({
+      id: row.id,
+      brokerAccountId: row.brokerAccountId,
+      instrumentId: row.instrumentId,
+      intentKey: row.intentKey,
+      ruleKey: row.ruleKey,
+      source: row.source,
+      side: row.side,
+      quantity: String(row.quantity),
+      referencePrice: row.referencePrice == null ? null : String(row.referencePrice),
+      orderType: row.orderType,
+      tradingMode: row.tradingMode,
+      status: row.status,
+      reason: row.reason,
+      createdAt: String(row.createdAt),
+      updatedAt: String(row.updatedAt),
+      completedAt: row.completedAt == null ? null : String(row.completedAt),
+    }));
+  }
+
   async upsertOrder(row: OrderRow): Promise<{ row: OrderRow; inserted: boolean }> {
     const existing =
       (await this.getOrderByLocalId(row.brokerAccountId, row.localOrderId)) ??
@@ -370,6 +395,14 @@ export class MysqlSession implements LedgerSession {
           sameOdno(row.brokerOrderNo, brokerOrderNo) &&
           (!brokerOrderDate || row.brokerOrderDate === brokerOrderDate),
       );
+  }
+
+  async listOrdersByAccount(accountId: string): Promise<OrderRow[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.orders)
+      .where(eq(schema.orders.brokerAccountId, accountId));
+    return rows.map(mapOrder);
   }
 
   async lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined> {

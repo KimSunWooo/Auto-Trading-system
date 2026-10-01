@@ -1,10 +1,10 @@
 import type { AppState } from "@/lib/types";
 import { dbConfigured, persistenceMode, type PersistenceMode } from "@/src/db/config";
+import { persistTradingLedger } from "@/src/db/persist";
 import { getMysqlLedger } from "@/src/db/mysql-ledger";
-import { projectAppState, type MirrorContext } from "@/src/db/projector";
+import type { MirrorContext } from "@/src/db/projector";
 import {
   recordMirrorDegraded,
-  recordMirrorSuccess,
   snapshotDatabaseStatus,
   type DatabasePublicStatus,
 } from "@/src/db/status";
@@ -14,7 +14,7 @@ import { isNodeTestProcess } from "@/src/runtime/test-process";
 
 let testLedger: Ledger | null = null;
 
-/** Tests only. Production always uses MySQL when mode=mirror and DATABASE_URL is set. */
+/** Tests only. Production always uses MySQL when mode=mirror|database and DATABASE_URL is set. */
 export function setMirrorLedgerForTest(ledger: Ledger | null): void {
   testLedger = ledger;
 }
@@ -29,35 +29,32 @@ export async function resolveMirrorLedger(env: EnvMap = process.env): Promise<Le
 }
 
 /**
- * JSON save has already succeeded. Mirror is best-effort.
- * Failures record DB_MIRROR_DEGRADED and never throw — broker retry stays 0.
+ * After local AppState mutation:
+ * - json: no DB write
+ * - mirror: best-effort DB projection (never throws)
+ * - database: required DB projection (throws DatabaseLedgerError)
+ *
+ * Broker retry stays 0 on failure — do not resubmit.
  */
 export async function mirrorAfterJsonSave(
   state: AppState,
   env: EnvMap = process.env,
   context: MirrorContext = {},
 ): Promise<void> {
-  const mode = persistenceMode(env);
-  if (mode !== "mirror") return;
-  const ledger = await resolveMirrorLedger(env);
-  if (!ledger) {
-    recordMirrorDegraded("DATABASE_URL missing");
-    return;
-  }
-  try {
-    await projectAppState(ledger, state, { ...context, env });
-    recordMirrorSuccess();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "mirror failed";
-    recordMirrorDegraded(message);
-  }
+  await persistTradingLedger(state, env, context);
 }
 
 export function publicDatabaseStatus(env: EnvMap = process.env): DatabasePublicStatus {
   const mode: PersistenceMode = persistenceMode(env);
   const configured = dbConfigured(env) || testLedger != null;
+  const enabled = (mode === "mirror" || mode === "database") && configured;
   return snapshotDatabaseStatus({
-    enabled: mode === "mirror" && configured,
+    enabled,
     mode,
   });
+}
+
+/** @deprecated use persistTradingLedger — kept for callers that recorded degrade only */
+export function noteMirrorUnavailable(message: string): void {
+  recordMirrorDegraded(message);
 }

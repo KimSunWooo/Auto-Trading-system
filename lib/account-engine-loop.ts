@@ -127,6 +127,28 @@ async function ensureAccountStartupSync(
 }
 
 /**
+ * Non-blocking kick of account Startup Sync — shares in-flight promise with the worker.
+ * Login/home must not await KIS; dashboard polls sync status separately.
+ */
+export function kickAccountStartupSync(brokerAccountId: string): void {
+  if (isNodeTestProcess() || g.__accountEngineShuttingDown) return;
+  void (async () => {
+    try {
+      const accounts = await listActivePaperAccounts();
+      const account = accounts.find((row) => row.id === brokerAccountId);
+      if (!account) return;
+      const rt = await resolveTradingRuntimeForAccount(account);
+      await ensureAccountStartupSync(account.id, rt.store, rt.scope.kisClient);
+    } catch (err) {
+      console.error(
+        `[account-worker:${brokerAccountId}] kick sync failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  })();
+}
+
+/**
  * Auto-trading activation gate (Phase 22). Observation ticks may still run;
  * order path remains blocked by tickState / autoRunAllowed / startup sync.
  */
@@ -154,10 +176,18 @@ async function tickOneAccount(
   try {
     rt = await resolveTradingRuntimeForAccount(account);
   } catch (err) {
-    console.error(
-      `[account-worker:${account.id}] resolve failed:`,
-      err instanceof Error ? err.message : err,
-    );
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[account-worker:${account.id}] resolve failed:`, msg);
+    // Credential/master-key failures will not heal without operator action — back off hard.
+    if (/Unsupported state|authenticate data|MASTER_KEY|decrypt|credentials not found|CREDENTIAL_/i.test(msg)) {
+      g.__accountStartupNextAttemptAt ??= new Map();
+      g.__accountStartupNextAttemptAt.set(account.id, Date.now() + 120_000);
+    }
+    return;
+  }
+
+  g.__accountStartupNextAttemptAt ??= new Map();
+  if ((g.__accountStartupNextAttemptAt.get(account.id) ?? 0) > Date.now()) {
     return;
   }
 

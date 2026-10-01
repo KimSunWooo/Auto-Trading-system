@@ -27,6 +27,12 @@ import {
   type RuleConfigStore,
 } from "@/src/runtime/rule-config-store";
 import { persistStateNow } from "@/lib/store";
+import type {
+  AccountConnectionIssue,
+  AccountConnectionIssueCode,
+} from "@/src/runtime/account-connection-types";
+
+export type { AccountConnectionIssue, AccountConnectionIssueCode };
 
 export type ResolvedTradingRuntime = {
   user: AuthUser;
@@ -44,6 +50,32 @@ export class AccountNotConnectedError extends Error {
   }
 }
 
+/** Credential load/decrypt failed — never treat as a healthy connected account. */
+export class AccountCredentialError extends Error {
+  readonly code: "CREDENTIAL_MISSING" | "CREDENTIAL_DECRYPT_FAILED";
+  constructor(
+    code: "CREDENTIAL_MISSING" | "CREDENTIAL_DECRYPT_FAILED",
+    message: string,
+  ) {
+    super(message);
+    this.name = "AccountCredentialError";
+    this.code = code;
+  }
+}
+
+export function classifyAccountConnectionError(err: unknown): AccountConnectionIssue | null {
+  if (err instanceof AccountNotConnectedError) {
+    return { code: "ACCOUNT_NOT_CONNECTED", message: err.message };
+  }
+  if (err instanceof AccountCredentialError) {
+    return { code: err.code, message: err.message };
+  }
+  if (err instanceof PaperAccountSelectionError) {
+    return { code: err.code, message: err.message };
+  }
+  return null;
+}
+
 export { findDefaultPaperAccount, PaperAccountSelectionError };
 
 async function buildScopeForAccount(
@@ -57,17 +89,33 @@ async function buildScopeForAccount(
   // Bind public broker status to this account's RuntimeScope KisClient — never global env.
   const store = createTradingStateStore({
     statePath,
+    brokerAccountId: account.id,
     getKisClient: () => getRuntimeScope(account.id)?.kisClient,
   });
   const rules = createRuleConfigStore(strategyPath);
 
   let scope = getRuntimeScope(account.id);
   if (!scope || scope.userId !== user.id) {
-    scope = await createAccountRuntimeScope({
-      userId: user.id,
-      brokerAccountId: account.id,
-      persistState: (state) => store.persistStateNow(state),
-    });
+    try {
+      scope = await createAccountRuntimeScope({
+        userId: user.id,
+        brokerAccountId: account.id,
+        persistState: (state) => store.persistStateNow(state),
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "credential load failed";
+      if (/not found|credentials/i.test(msg)) {
+        throw new AccountCredentialError("CREDENTIAL_MISSING", msg);
+      }
+      if (
+        /BROKER_CREDENTIAL_MASTER_KEY|auth tag|Unsupported state|Invalid credential|decrypt|bad decrypt/i.test(
+          msg,
+        )
+      ) {
+        throw new AccountCredentialError("CREDENTIAL_DECRYPT_FAILED", msg);
+      }
+      throw err;
+    }
   } else {
     scope.persistState = (state) => store.persistStateNow(state);
   }
@@ -134,6 +182,12 @@ export function runtimeJsonError(err: unknown): Response {
     return Response.json({ error: err.message }, { status: err.status });
   }
   if (err instanceof AccountNotConnectedError) {
+    return Response.json(
+      { error: err.message, code: err.code },
+      { status: 409 },
+    );
+  }
+  if (err instanceof AccountCredentialError) {
     return Response.json(
       { error: err.message, code: err.code },
       { status: 409 },

@@ -1,37 +1,43 @@
 # Database Architecture
 
-AWS RDS MySQL is a **mirror ledger**. It is not the trading source of truth in this stage.
+AWS RDS MySQL holds the **PAPER trading ledger**. JSON files are no longer the recovery source of truth when `PERSISTENCE_MODE=database`.
 
 ## Source of Truth policy
 
 ```text
-Trading Core
+Trading Core (AppState in memory)
     ↓
-AppState
-    ↓
-JsonStateRepository  →  data/paper-account.json   (runtime authority)
-    ↓ success
-RDS Mirror Projector →  auto_trading             (PERSISTENCE_MODE=mirror only)
+PERSISTENCE_MODE=database
+    ↓ required
+RDS Ledger Projector → auto_trading  (intents, orders, executions, positions, …)
+    ↓ optional cache
+JsonStateRepository  → data/accounts/<id>/state.json
 ```
 
 | Store | Role |
 | --- | --- |
-| Filesystem JSON | Runtime authority while migrating. VTS test artifacts. `strategy-config.json`. |
-| AWS RDS MySQL | Permanent trade ledger (orders, executions, trades, snapshots). Mirror only. |
+| AWS RDS MySQL | **Authority** for PAPER trade ledger under `PERSISTENCE_MODE=database`. Restart recovery reconstitutes intents/orders/positions from DB when `state.json` is missing. |
+| Filesystem JSON | Optional runtime cache + strategy-config.json / fixtures / VTS artifacts. Not required for PAPER trade recovery in `database` mode. |
 | Redis | Quote cache, universe search, worker lock, pub/sub. **Not** order/fill source of truth. |
 
-`PERSISTENCE_MODE=json` (default): existing program behavior. No DB writes.
+`PERSISTENCE_MODE=json` (legacy): JSON file authority. No DB writes.
 `PERSISTENCE_MODE=mirror`: JSON save succeeds, then best-effort DB projection.
-`PERSISTENCE_MODE=database` is **not implemented**. Do not promote RDS until mirror is proven.
+`PERSISTENCE_MODE=database`: DB projection is **required** before new KIS submit. Failure → order 0건 (pre-submit) or UNKNOWN without resubmit (post-submit).
 
-## Mirror failure safety
+## Database mode failure safety
 
-Broker / AppState transition completes first. If RDS write fails:
+- Intent/ledger persist failure **before** KIS POST → gate reject, broker submit count **0**.
+- Persist failure **after** KIS accept → mark UNKNOWN; **never resubmit**.
+- DB outage is not hidden by treating JSON as healthy authority.
+- After DB recovery, reconcile open orders/reservations/positions before re-enabling new orders.
 
-- JSON state remains valid
-- `DB_MIRROR_DEGRADED` is recorded
-- Broker retry count stays **0**
-- DB rollback is not a broker rollback
+## Migration from JSON
+
+1. Backup `data/accounts/*/state.json` and confirm RDS connectivity (`npm run db:check`).
+2. Dry-run import: `npm run db:import-legacy` (idempotent projection; positions without fill evidence stay `LEGACY_STATE`).
+3. Set `PERSISTENCE_MODE=database` and restart the server process (`PAPER_RUNTIME_OWNER` change also requires restart).
+4. Verify UI/API can list intents/orders after deleting or renaming a test account `state.json`.
+5. Rollback: set `PERSISTENCE_MODE=mirror` or `json` and restore JSON backup. Do not force-push or wipe history.
 
 Never: KIS fill success → DB failure → resubmit order.
 

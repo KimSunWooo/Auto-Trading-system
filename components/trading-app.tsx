@@ -69,6 +69,13 @@ export function TradingApp({
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
+    // Drop any client-cached trading state before the next login paints.
+    try {
+      sessionStorage.clear();
+      localStorage.removeItem("trading-state-cache");
+    } catch {
+      /* ignore storage access errors */
+    }
     window.location.href = "/login";
   }
 

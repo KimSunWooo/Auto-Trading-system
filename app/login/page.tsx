@@ -24,7 +24,7 @@ export default function LoginPage() {
       setError(body.error ?? "failed");
       return;
     }
-    window.location.href = "/mypage";
+    window.location.href = "/";
   }
 
   return (

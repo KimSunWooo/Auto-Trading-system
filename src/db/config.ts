@@ -1,6 +1,6 @@
 import type { EnvMap } from "@/src/runtime/trading-mode";
 
-export type PersistenceMode = "json" | "mirror";
+export type PersistenceMode = "json" | "mirror" | "database";
 
 export type DbConnectionConfig = {
   host: string;
@@ -18,7 +18,13 @@ function envOf(env: EnvMap, key: string): string {
 export function persistenceMode(env: EnvMap = process.env): PersistenceMode {
   const raw = envOf(env, "PERSISTENCE_MODE").toLowerCase();
   if (raw === "mirror") return "mirror";
+  if (raw === "database" || raw === "db") return "database";
   return "json";
+}
+
+/** True when RDS is the trading-ledger authority (not best-effort mirror). */
+export function isDatabaseLedgerAuthority(env: EnvMap = process.env): boolean {
+  return persistenceMode(env) === "database";
 }
 
 export function databaseName(env: EnvMap = process.env): string {
@@ -56,7 +62,6 @@ export function loadDbConnection(env: EnvMap = process.env): DbConnectionConfig 
   warnDeprecatedPasswordAlias(env);
   const passwordFallback =
     envOf(env, "DATABASE_PASSWORD") ||
-    envOf(env, "DATABASE_PASSOWORD") ||
     envOf(env, "AWS_RDS_PASSWORD");
 
   if (url) {

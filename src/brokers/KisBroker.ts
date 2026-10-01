@@ -26,6 +26,7 @@ import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
 import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
 import { brokerQuoteFromSnapshot } from "@/src/market-data/ws-quote-feed";
+import { DatabaseLedgerError, assertDatabaseLedgerReadyForOrders } from "@/src/db/persist";
 
 /**
  * 한국투자증권 Open API adapter.
@@ -320,7 +321,21 @@ export class KisBroker implements IBroker {
       ) {
         return orders.toFill(pending);
       }
-      await this.persistState(this.box.current);
+      const dbBlock = assertDatabaseLedgerReadyForOrders();
+      if (dbBlock) return orders.gateReject(this.ruleKey, ticker, "buy", dbBlock);
+      try {
+        await this.persistState(this.box.current);
+      } catch (err) {
+        if (err instanceof DatabaseLedgerError) {
+          return orders.gateReject(
+            this.ruleKey,
+            ticker,
+            "buy",
+            `DB intent/ledger 저장 실패 — 주문 0건 (${err.message})`,
+          );
+        }
+        throw err;
+      }
       try {
         const placed = await this.client.orderCash({
           ticker,
@@ -335,10 +350,31 @@ export class KisBroker implements IBroker {
           `주문 접수(${placed.orderNo}). 체결수량은 체결내역으로만 반영합니다.`,
           { krxOrgNo: placed.krxOrgNo, ordDvsn },
         );
-        await this.persistState(this.box.current);
+        try {
+          await this.persistState(this.box.current);
+        } catch (err) {
+          // Already submitted — do not resubmit. Mark UNKNOWN if DB write fails.
+          if (err instanceof DatabaseLedgerError) {
+            return orders.unknown(
+              pending.id,
+              `주문은 접수됐으나 DB 저장 실패 — 재전송하지 않음 (${err.message})`,
+            );
+          }
+          throw err;
+        }
         await settleOpenOrders(this.box, this.client);
         await refreshBrokerBalanceSnapshot(this.box, this.client);
-        await this.persistState(this.box.current);
+        try {
+          await this.persistState(this.box.current);
+        } catch (err) {
+          if (err instanceof DatabaseLedgerError) {
+            return orders.unknown(
+              pending.id,
+              `체결 조회 후 DB 저장 실패 — 재전송하지 않음 (${err.message})`,
+            );
+          }
+          throw err;
+        }
         const latest = this.box.current.orders.find((row) => row.id === pending.id);
         return latest ? orders.toFill(latest) : working;
       } catch (err) {
@@ -386,7 +422,21 @@ export class KisBroker implements IBroker {
       ) {
         return orders.toFill(pending);
       }
-      await this.persistState(this.box.current);
+      const dbBlock = assertDatabaseLedgerReadyForOrders();
+      if (dbBlock) return orders.gateReject(this.ruleKey, ticker, "sell", dbBlock);
+      try {
+        await this.persistState(this.box.current);
+      } catch (err) {
+        if (err instanceof DatabaseLedgerError) {
+          return orders.gateReject(
+            this.ruleKey,
+            ticker,
+            "sell",
+            `DB intent/ledger 저장 실패 — 주문 0건 (${err.message})`,
+          );
+        }
+        throw err;
+      }
       try {
         const placed = await this.client.orderCash({
           ticker,
@@ -401,10 +451,30 @@ export class KisBroker implements IBroker {
           `주문 접수(${placed.orderNo}). 체결수량은 체결내역으로만 반영합니다.`,
           { krxOrgNo: placed.krxOrgNo, ordDvsn },
         );
-        await this.persistState(this.box.current);
+        try {
+          await this.persistState(this.box.current);
+        } catch (err) {
+          if (err instanceof DatabaseLedgerError) {
+            return orders.unknown(
+              pending.id,
+              `주문은 접수됐으나 DB 저장 실패 — 재전송하지 않음 (${err.message})`,
+            );
+          }
+          throw err;
+        }
         await settleOpenOrders(this.box, this.client);
         await refreshBrokerBalanceSnapshot(this.box, this.client);
-        await this.persistState(this.box.current);
+        try {
+          await this.persistState(this.box.current);
+        } catch (err) {
+          if (err instanceof DatabaseLedgerError) {
+            return orders.unknown(
+              pending.id,
+              `체결 조회 후 DB 저장 실패 — 재전송하지 않음 (${err.message})`,
+            );
+          }
+          throw err;
+        }
         const latest = this.box.current.orders.find((row) => row.id === pending.id);
         return latest ? orders.toFill(latest) : working;
       } catch (err) {

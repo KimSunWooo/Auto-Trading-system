@@ -38,6 +38,7 @@ export type LedgerSession = {
   getInstrument(id: string): Promise<InstrumentRow | undefined>;
   upsertIntent(row: IntentRow): Promise<{ row: IntentRow; inserted: boolean }>;
   getIntentByKey(accountId: string, intentKey: string): Promise<IntentRow | undefined>;
+  listIntentsByAccount(accountId: string): Promise<IntentRow[]>;
   upsertOrder(row: OrderRow): Promise<{ row: OrderRow; inserted: boolean }>;
   getOrder(id: string): Promise<OrderRow | undefined>;
   getOrderByLocalId(accountId: string, localOrderId: string): Promise<OrderRow | undefined>;
@@ -46,6 +47,7 @@ export type LedgerSession = {
     brokerOrderNo: string,
     brokerOrderDate?: string | null,
   ): Promise<OrderRow | undefined>;
+  listOrdersByAccount(accountId: string): Promise<OrderRow[]>;
   lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined>;
   appendOrderEvent(row: OrderEventRow): Promise<void>;
   insertExecution(row: ExecutionRow): Promise<{ row: ExecutionRow; inserted: boolean }>;
@@ -316,6 +318,10 @@ export class MemorySession implements LedgerSession {
     );
   }
 
+  async listIntentsByAccount(accountId: string): Promise<IntentRow[]> {
+    return [...this.state.intents.values()].filter((item) => item.brokerAccountId === accountId);
+  }
+
   async upsertOrder(row: OrderRow): Promise<{ row: OrderRow; inserted: boolean }> {
     const byLocal = [...this.state.orders.values()].find(
       (item) => item.brokerAccountId === row.brokerAccountId && item.localOrderId === row.localOrderId,
@@ -360,6 +366,10 @@ export class MemorySession implements LedgerSession {
         sameOdno(item.brokerOrderNo, brokerOrderNo) &&
         (!brokerOrderDate || item.brokerOrderDate === brokerOrderDate),
     );
+  }
+
+  async listOrdersByAccount(accountId: string): Promise<OrderRow[]> {
+    return [...this.state.orders.values()].filter((item) => item.brokerAccountId === accountId);
   }
 
   async lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined> {
