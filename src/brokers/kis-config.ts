@@ -26,6 +26,8 @@ export const KIS_TR = {
   daily: "FHKST03010100",
   /** 주식일별주문체결조회 3개월 이내. Open Orders/Executions 공통. */
   dailyCcld: { paper: "VTTC0081R", real: "TTTC0081R" },
+  /** 주식일별주문체결조회 3개월 이전. */
+  dailyCcldPast: { paper: "VTSC9215R", real: "CTSC9215R" },
   /** Alias of dailyCcld. Domestic open orders are CCLD_DVSN=02, not inquire-nccs. */
   openOrders: { paper: "VTTC0081R", real: "TTTC0081R" },
   cancel: { paper: "VTTC0013U", real: "TTTC0013U" },

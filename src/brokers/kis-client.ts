@@ -65,6 +65,8 @@ export type KisCashOrder = {
 export type KisDayOrder = {
   orderNo: string;
   ticker: string;
+  /** Official product name when present (`prdt_name` / `hts_kor_isnm`). */
+  name?: string;
   side: "buy" | "sell";
   qty: number;
   filledQty: number;
@@ -165,6 +167,16 @@ export interface KisApi {
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
   inquireDailyCcld(): Promise<KisDayOrder[]>;
+  /**
+   * Date-range daily order/execution inquiry (PAPER/REAL).
+   * Uses VTTC0081R/TTTC0081R within ~90 days; VTSC9215R/CTSC9215R for older starts.
+   */
+  inquireDailyCcldRange?(opts: {
+    startDt: string;
+    endDt: string;
+    ccldDvsn?: KisCcldDvsn;
+    pdno?: string;
+  }): Promise<KisDayOrder[]>;
   inquireOpenOrders(): Promise<KisDayOrder[]>;
   inquireBalance(): Promise<KisAccountBalance>;
   inquirePsblOrder?(input: { ticker: string; price: number }): Promise<KisPsblOrder>;
@@ -223,6 +235,7 @@ export function mapKisDailyCcldRow(row: Record<string, unknown>): KisDayOrder | 
   return {
     orderNo,
     ticker,
+    name: String(row.prdt_name ?? row.PRDT_NAME ?? row.hts_kor_isnm ?? row.HTS_KOR_ISNM ?? "").trim() || undefined,
     side: sll === "01" ? "sell" : "buy",
     qty,
     filledQty,
@@ -515,6 +528,91 @@ export class KisClient implements KisApi {
   async inquireOpenOrders(): Promise<KisDayOrder[]> {
     const rows = await this.inquireDailyCcldRows("02");
     return rows.filter((row) => row.orderNo);
+  }
+
+  /**
+   * Period inquiry for historical recovery. Paginates CTX_AREA until exhausted or page cap.
+   * Does not place orders. Respects PAPER REST scheduler.
+   */
+  async inquireDailyCcldRange(opts: {
+    startDt: string;
+    endDt: string;
+    ccldDvsn?: KisCcldDvsn;
+    pdno?: string;
+  }): Promise<KisDayOrder[]> {
+    this.assertConfigured();
+    const startDt = String(opts.startDt).replace(/\D/g, "").slice(0, 8);
+    const endDt = String(opts.endDt).replace(/\D/g, "").slice(0, 8);
+    if (startDt.length !== 8 || endDt.length !== 8) {
+      throw new Error("inquireDailyCcldRange requires YYYYMMDD startDt/endDt");
+    }
+    const ccldDvsn = opts.ccldDvsn ?? "00";
+    const pdno = String(opts.pdno ?? "").replace(/\D/g, "").slice(-6);
+    const daysFromStart =
+      (Date.UTC(
+        Number(startDt.slice(0, 4)),
+        Number(startDt.slice(4, 6)) - 1,
+        Number(startDt.slice(6, 8)),
+      ) -
+        Date.UTC(
+          Number(yyyymmddSeoul(new Date()).slice(0, 4)),
+          Number(yyyymmddSeoul(new Date()).slice(4, 6)) - 1,
+          Number(yyyymmddSeoul(new Date()).slice(6, 8)),
+        )) /
+      86_400_000;
+    // start older than ~90 days → past TR
+    const usePast = daysFromStart < -90;
+    const trId = usePast
+      ? KIS_TR.dailyCcldPast[this.config.mode]
+      : KIS_TR.dailyCcld[this.config.mode];
+
+    const out: KisDayOrder[] = [];
+    let fk = "";
+    let nk = "";
+    const maxPages = 20;
+    const seen = new Set<string>();
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const tokenKey = `${fk}|${nk}`;
+      if (page > 0 && seen.has(tokenKey)) break;
+      if (page > 0) seen.add(tokenKey);
+
+      const json = await this.uapi(
+        "GET",
+        "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+        {
+          trId,
+          timeoutMs: HARD_LIMITS.quoteTimeoutMs,
+          query: {
+            CANO: this.config.cano,
+            ACNT_PRDT_CD: this.config.productCode,
+            INQR_STRT_DT: startDt,
+            INQR_END_DT: endDt,
+            SLL_BUY_DVSN_CD: "00",
+            PDNO: pdno || "",
+            CCLD_DVSN: ccldDvsn,
+            INQR_DVSN: "00",
+            INQR_DVSN_3: "00",
+            ORD_GNO_BRNO: "",
+            ODNO: "",
+            INQR_DVSN_1: "",
+            EXCG_ID_DVSN_CD: KIS_EXCHANGE.krx,
+            CTX_AREA_FK100: fk,
+            CTX_AREA_NK100: nk,
+          },
+        },
+      );
+      const raw = json.output1 ?? json.output ?? [];
+      const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+      for (const row of rows) {
+        const mapped = mapKisDailyCcldRow(row);
+        if (mapped && (mapped.orderNo || mapped.ticker)) out.push(mapped);
+      }
+      fk = String(json.ctx_area_fk100 ?? json.CTX_AREA_FK100 ?? "").trim();
+      nk = String(json.ctx_area_nk100 ?? json.CTX_AREA_NK100 ?? "").trim();
+      if (!fk && !nk) break;
+    }
+    return out;
   }
 
   private async inquireDailyCcldRows(ccldDvsn: KisCcldDvsn): Promise<KisDayOrder[]> {
