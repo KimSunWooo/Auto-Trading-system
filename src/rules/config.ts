@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Allocation, AppState } from "@/lib/types";
 import { cashFromAllocations } from "@/src/accounts/defaults";
+import { applyBudgetSync } from "@/src/rules/allocation-ratio";
 import {
   CASH_RULE_ID,
   EMPTY_RULE_CONFIG,
@@ -117,34 +118,8 @@ export function cashAllocation(totalDeposit: number, extraBalance?: number): All
 }
 
 export function syncAllocationsToRules(state: AppState, rules: UserRule[] = getRuleConfig().rules): AppState {
-  const prev = new Map(state.allocations.map((row) => [row.ruleId, row]));
-  const used = rules.reduce((sum, row) => sum + Math.max(0, row.budget), 0);
-  if (used > state.totalDeposit) {
-    throw new Error("룰 예산 합계가 총 예수금을 초과합니다.");
-  }
-  const allocations: Allocation[] = [
-    cashAllocation(state.totalDeposit - used, prev.get(CASH_RULE_ID)?.balance),
-  ];
-  for (const rule of rules) {
-    const prior = prev.get(rule.id);
-    allocations.push({
-      ruleId: rule.id,
-      budget: rule.budget,
-      balance: prior?.balance ?? rule.budget,
-      enabled: rule.enabled,
-      lastRunAt: prior?.lastRunAt,
-      lastMessage: prior?.lastMessage,
-      meta: prior?.meta ?? {},
-    });
-  }
-  const cashRow = allocations[0];
-  const others = allocations.slice(1).reduce((sum, row) => sum + row.balance, 0);
-  if (cashRow) cashRow.balance = Math.max(0, state.totalDeposit - others);
-  return {
-    ...state,
-    allocations,
-    cash: cashFromAllocations(allocations),
-  };
+  // Shared path: orderable-ratio + legacy fixed, no totalDeposit-as-orderable, no cash mint.
+  return applyBudgetSync(state, rules);
 }
 
 /**

@@ -71,7 +71,14 @@ export function loadDbConnection(env: EnvMap = process.env): DbConnectionConfig 
     if (fromHost) return fromHost;
   }
 
-  const host = envOf(env, "AWS_RDS_DATABASE");
+  // Some env files put host/db in AWS_RDS_DATABASE (e.g. host.rds.../dbname).
+  // DNS requires bare hostname; DB name comes from AWS_RDS_DB_NAME / DATABASE_URL.
+  const hostRaw = envOf(env, "AWS_RDS_DATABASE");
+  const host = hostRaw.includes("/") ? hostRaw.split("/", 1)[0]!.trim() : hostRaw;
+  const pathDb =
+    hostRaw.includes("/") && hostRaw.split("/", 1)[1]
+      ? hostRaw.split("/", 1)[1]!.trim()
+      : "";
   const user = userFallback;
   const password = passwordFallback;
   if (!host || !user || !password) return null;
@@ -80,7 +87,7 @@ export function loadDbConnection(env: EnvMap = process.env): DbConnectionConfig 
     port: Number(envOf(env, "AWS_RDS_PORT") || "3306"),
     user,
     password,
-    database: databaseName(env),
+    database: databaseName(env) || pathDb || "auto_trading",
     ssl: envOf(env, "AWS_RDS_SSL") !== "false",
   };
 }

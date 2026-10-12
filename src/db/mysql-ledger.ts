@@ -1,7 +1,17 @@
 import { and, desc, eq, sql } from "drizzle-orm";
-import { getDb, type AppDb } from "@/src/db/client";
+import { drizzle } from "drizzle-orm/mysql2";
+import { getDb, getMysqlPool, type AppDb } from "@/src/db/client";
 import type { Ledger, LedgerSession } from "@/src/db/ledger";
 import { decodeCursor, encodeCursor } from "@/src/db/ledger";
+import {
+  acquirePoolConnection,
+  LEDGER_ACQUIRE_TIMEOUT_MS,
+  LEDGER_TX_TIMEOUT_MS,
+  LedgerCommitUncertainError,
+  LedgerTxStaleError,
+  LedgerTxTimeoutError,
+  type LedgerTxOpts,
+} from "@/src/db/ledger-tx";
 import * as schema from "@/src/db/schema";
 import type {
   AccountSnapshotRow,
@@ -42,6 +52,22 @@ function clampLimit(limit?: number): number {
   const n = Number(limit ?? 50);
   if (!Number.isFinite(n)) return 50;
   return Math.min(100, Math.max(1, Math.floor(n)));
+}
+
+function mapBrokerAccount(row: typeof schema.brokerAccounts.$inferSelect): BrokerAccountRow {
+  return {
+    id: row.id,
+    userId: row.userId,
+    broker: row.broker,
+    environment: row.environment,
+    displayName: row.displayName,
+    accountNumberMasked: row.accountNumberMasked,
+    baseCurrency: row.baseCurrency,
+    status: row.status,
+    isDefault: Boolean(row.isDefault),
+    credentialRef: row.credentialRef,
+    physicalAccountFingerprint: row.physicalAccountFingerprint ?? null,
+  };
 }
 
 export class MysqlSession implements LedgerSession {
@@ -151,19 +177,17 @@ export class MysqlSession implements LedgerSession {
 
   async listBrokerAccounts(): Promise<BrokerAccountRow[]> {
     const rows = await this.db.select().from(schema.brokerAccounts);
-    return rows.map((row) => ({
-      id: row.id,
-      userId: row.userId,
-      broker: row.broker,
-      environment: row.environment,
-      displayName: row.displayName,
-      accountNumberMasked: row.accountNumberMasked,
-      baseCurrency: row.baseCurrency,
-      status: row.status,
-      isDefault: Boolean(row.isDefault),
-      credentialRef: row.credentialRef,
-      physicalAccountFingerprint: row.physicalAccountFingerprint ?? null,
-    }));
+    return rows.map((row) => mapBrokerAccount(row));
+  }
+
+  async getBrokerAccount(id: string): Promise<BrokerAccountRow | undefined> {
+    const rows = await this.db
+      .select()
+      .from(schema.brokerAccounts)
+      .where(eq(schema.brokerAccounts.id, id))
+      .limit(1);
+    const row = rows[0];
+    return row ? mapBrokerAccount(row) : undefined;
   }
 
   async upsertCredentialRef(accountId: string, secretRef: string): Promise<void> {
@@ -796,6 +820,9 @@ export class MysqlSession implements LedgerSession {
       circuitKind: row.circuitKind,
       circuitReason: row.circuitReason,
       unknownOrderCount: row.unknownOrderCount,
+      lastEngineAt: row.lastEngineAt == null ? null : String(row.lastEngineAt),
+      lastBalanceSyncAt: row.lastBalanceSyncAt == null ? null : String(row.lastBalanceSyncAt),
+      lastOrderAt: row.lastOrderAt == null ? null : String(row.lastOrderAt),
     };
   }
 
@@ -811,6 +838,9 @@ export class MysqlSession implements LedgerSession {
         circuitKind: row.circuitKind,
         circuitReason: row.circuitReason,
         unknownOrderCount: row.unknownOrderCount,
+        lastEngineAt: row.lastEngineAt ?? null,
+        lastBalanceSyncAt: row.lastBalanceSyncAt ?? null,
+        lastOrderAt: row.lastOrderAt ?? null,
       })
       .onDuplicateKeyUpdate({
         set: {
@@ -821,6 +851,9 @@ export class MysqlSession implements LedgerSession {
           circuitKind: row.circuitKind,
           circuitReason: row.circuitReason,
           unknownOrderCount: row.unknownOrderCount,
+          lastEngineAt: row.lastEngineAt ?? null,
+          lastBalanceSyncAt: row.lastBalanceSyncAt ?? null,
+          lastOrderAt: row.lastOrderAt ?? null,
         },
       });
   }
@@ -1184,11 +1217,96 @@ function mapTrade(row: typeof schema.trades.$inferSelect): TradeRow {
 export class MysqlLedger implements Ledger {
   constructor(private readonly db: AppDb) {}
 
-  async transaction<T>(fn: (tx: LedgerSession) => Promise<T>): Promise<T> {
-    return this.db.transaction(async (tx) => {
-      const session = new MysqlSession(tx as unknown as AppDb);
-      return fn(session);
-    });
+  async transaction<T>(
+    fn: (tx: LedgerSession) => Promise<T>,
+    opts?: LedgerTxOpts,
+  ): Promise<T> {
+    const timeoutMs = opts?.timeoutMs ?? LEDGER_TX_TIMEOUT_MS;
+    const acquireMs = opts?.acquireTimeoutMs ?? LEDGER_ACQUIRE_TIMEOUT_MS;
+    const pool = getMysqlPool();
+    if (!pool) {
+      // Fallback for tests that inject drizzle-only db without pool.
+      return this.db.transaction(async (tx) => {
+        const session = new MysqlSession(tx as unknown as AppDb);
+        return fn(session);
+      });
+    }
+
+    opts?.onStage?.("db_acquire");
+    const conn = await acquirePoolConnection(pool, acquireMs);
+    let destroyed = false;
+    let finishing = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const destroy = async () => {
+      if (destroyed) return;
+      destroyed = true;
+      try {
+        await conn.destroy();
+      } catch {
+        /* ignore */
+      }
+    };
+    try {
+      opts?.onStage?.("tx_begin");
+      await conn.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+      await conn.beginTransaction();
+      const txDb = drizzle(conn, { schema, mode: "default" });
+      const session = new MysqlSession(txDb as unknown as AppDb);
+      const work = (async () => {
+        opts?.onStage?.("project");
+        const result = await fn(session);
+        if (opts?.isCurrent && !opts.isCurrent()) {
+          throw new LedgerTxStaleError();
+        }
+        opts?.onStage?.("commit");
+        finishing = true;
+        await conn.commit();
+        return result;
+      })();
+      const result = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new LedgerTxTimeoutError()), timeoutMs);
+        }),
+      ]);
+      return result;
+    } catch (err) {
+      // Timeout/stale: destroy so a late Promise.race loser cannot commit on a released conn.
+      if (err instanceof LedgerTxTimeoutError || err instanceof LedgerTxStaleError) {
+        const timedOutDuringCommit = err instanceof LedgerTxTimeoutError && finishing;
+        try {
+          opts?.onStage?.("rollback");
+          if (!destroyed && !finishing) await conn.rollback();
+        } catch {
+          /* destroy below */
+        }
+        await destroy();
+        if (timedOutDuringCommit) {
+          // Server may have committed; do not claim success or invite blind retry.
+          throw new LedgerCommitUncertainError(
+            "Ledger commit timed out after commit began — outcome uncertain",
+          );
+        }
+      } else if (!destroyed && !finishing) {
+        try {
+          opts?.onStage?.("rollback");
+          await conn.rollback();
+        } catch {
+          await destroy();
+        }
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+      opts?.onStage?.("release");
+      if (!destroyed) {
+        try {
+          conn.release();
+        } catch {
+          await destroy();
+        }
+      }
+    }
   }
 }
 

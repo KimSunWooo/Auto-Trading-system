@@ -35,7 +35,19 @@
 
 로컬 검증은 변경 후 `npm test` / `npx tsc --noEmit` / `npm run build` / `npm run db:check` 로 다시 측정한다. README의 과거 pass 수를 그대로 믿지 마세요.
 
+Worker tick → DB persist 정체 수정·readiness·주문가능금액 비율 배분: [`docs/WORKER_PERSIST_AND_ALLOCATION.md`](docs/WORKER_PERSIST_AND_ALLOCATION.md), 검증 기록 [`docs/VERIFICATION_WORKER_ALLOCATION_2026-10-12.md`](docs/VERIFICATION_WORKER_ALLOCATION_2026-10-12.md).
+
 운영 PAPER 읽기 전용 대조 절차: [`docs/ops-readonly-checklist.md`](docs/ops-readonly-checklist.md) (`autoTrading=OFF`, 주문/backfill 금지).
+
+### 로컬 실행
+
+```bash
+cp .env.example .env.local   # KIS PAPER + DATABASE_URL 등 채움
+npm ci
+npm run dev                  # http://127.0.0.1:43147
+```
+
+`PERSISTENCE_MODE=database` 권장. JSON은 캐시일 뿐 거래 장부 SoT가 아니다.
 
 유지 중인 안전장치:
 

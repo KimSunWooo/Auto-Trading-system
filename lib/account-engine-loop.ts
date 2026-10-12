@@ -27,6 +27,7 @@ import {
 import { resolveTradingRuntimeForAccount } from "@/src/runtime/resolve-trading-runtime";
 import { isNodeTestProcess } from "@/src/runtime/test-process";
 import { gatePaperWorkerStart } from "@/src/runtime/paper-runtime-owner";
+import { getWorkerProgress } from "@/src/runtime/worker-progress";
 
 const g = globalThis as typeof globalThis & {
   __accountEngine?: NodeJS.Timeout;
@@ -34,6 +35,8 @@ const g = globalThis as typeof globalThis & {
   __accountWorkerIds?: Map<string, string>;
   __accountStartupPromises?: Map<string, Promise<void>>;
   __accountStartupNextAttemptAt?: Map<string, number>;
+  /** Per-account in-flight tick — prevents overlapping interval ticks. */
+  __accountTickInflight?: Map<string, Promise<void>>;
 };
 
 function accountWorkerId(brokerAccountId: string): string {
@@ -109,7 +112,6 @@ async function ensureAccountStartupSync(
     });
     if (healthy) {
       markScopeStartupSyncDone(brokerAccountId, true);
-      // Align process boot flag used by any legacy tradingBlocked(state) callers.
       markProcessBootStartupVerified(true);
       g.__accountStartupNextAttemptAt?.delete(brokerAccountId);
     } else if (rateLimited) {
@@ -174,50 +176,79 @@ async function tickOneAccount(
   account: typeof schema.brokerAccounts.$inferSelect,
 ): Promise<void> {
   if (g.__accountEngineShuttingDown) return;
-  let rt: Awaited<ReturnType<typeof resolveTradingRuntimeForAccount>>;
-  try {
-    rt = await resolveTradingRuntimeForAccount(account);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[account-worker:${account.id}] resolve failed:`, msg);
-    // Credential/master-key failures will not heal without operator action — back off hard.
-    if (/Unsupported state|authenticate data|MASTER_KEY|decrypt|credentials not found|CREDENTIAL_/i.test(msg)) {
-      g.__accountStartupNextAttemptAt ??= new Map();
-      g.__accountStartupNextAttemptAt.set(account.id, Date.now() + 120_000);
+
+  g.__accountTickInflight ??= new Map();
+  if (g.__accountTickInflight.has(account.id)) {
+    // Backpressure: skip overlapping interval while prior tick (incl. DB persist) runs.
+    const progress = getWorkerProgress(account.id);
+    console.info(
+      `[account-worker:${account.id.slice(0, 8)}] skip overlapping tick stage=${progress?.stage ?? "unknown"} tickId=${progress?.tickId ?? "-"}`,
+    );
+    return;
+  }
+
+  const run = (async () => {
+    let rt: Awaited<ReturnType<typeof resolveTradingRuntimeForAccount>>;
+    try {
+      rt = await resolveTradingRuntimeForAccount(account);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[account-worker:${account.id}] resolve failed:`, msg);
+      if (/Unsupported state|authenticate data|MASTER_KEY|decrypt|credentials not found|CREDENTIAL_/i.test(msg)) {
+        g.__accountStartupNextAttemptAt ??= new Map();
+        g.__accountStartupNextAttemptAt.set(account.id, Date.now() + 120_000);
+      }
+      return;
     }
-    return;
+
+    g.__accountStartupNextAttemptAt ??= new Map();
+    if ((g.__accountStartupNextAttemptAt.get(account.id) ?? 0) > Date.now()) {
+      return;
+    }
+
+    const workerId = accountWorkerId(account.id);
+    const locked =
+      tryAcquireWorkerLock(workerId, { filePath: rt.scope.lockPath }) ||
+      heartbeatWorkerLock({ filePath: rt.scope.lockPath, workerId });
+    if (!locked) {
+      console.error(`[account-worker:${account.id}] lock not acquired — skip tick`);
+      return;
+    }
+
+    // Keep lock heartbeat alive during long persist without starting another tick.
+    const hb = setInterval(() => {
+      heartbeatWorkerLock({ filePath: rt.scope.lockPath, workerId });
+    }, Math.max(2_000, Math.floor(HARD_LIMITS.minTickMs / 2)));
+
+    try {
+      await ensureAccountStartupSync(account.id, rt.store, rt.scope.kisClient);
+
+      const rules = rt.rules.get();
+      await rt.store.tickAndGet(rules, {
+        source: "worker",
+        tickDeps: {
+          kisClient: rt.scope.kisClient,
+          persistState: rt.scope.persistState,
+          ruleConfig: rules,
+          forceBalanceSync: false,
+          startupSyncVerified: isScopeStartupSyncDone(account.id),
+          workerLockPath: rt.scope.lockPath,
+          quoteHub: rt.scope.quoteHub,
+          quoteConsumerId: rt.scope.brokerAccountId,
+        },
+      });
+    } finally {
+      clearInterval(hb);
+      heartbeatWorkerLock({ filePath: rt.scope.lockPath, workerId });
+    }
+  })();
+
+  g.__accountTickInflight.set(account.id, run);
+  try {
+    await run;
+  } finally {
+    g.__accountTickInflight.delete(account.id);
   }
-
-  g.__accountStartupNextAttemptAt ??= new Map();
-  if ((g.__accountStartupNextAttemptAt.get(account.id) ?? 0) > Date.now()) {
-    return;
-  }
-
-  const workerId = accountWorkerId(account.id);
-  const locked =
-    tryAcquireWorkerLock(workerId, { filePath: rt.scope.lockPath }) ||
-    heartbeatWorkerLock({ filePath: rt.scope.lockPath, workerId });
-  if (!locked) {
-    console.error(`[account-worker:${account.id}] lock not acquired — skip tick`);
-    return;
-  }
-
-  await ensureAccountStartupSync(account.id, rt.store, rt.scope.kisClient);
-
-  const rules = rt.rules.get();
-  await rt.store.tickAndGet(rules, {
-    source: "worker",
-    tickDeps: {
-      kisClient: rt.scope.kisClient,
-      persistState: rt.scope.persistState,
-      ruleConfig: rules,
-      forceBalanceSync: false,
-      startupSyncVerified: isScopeStartupSyncDone(account.id),
-      workerLockPath: rt.scope.lockPath,
-      quoteHub: rt.scope.quoteHub,
-      quoteConsumerId: rt.scope.brokerAccountId,
-    },
-  });
 }
 
 async function runAccountTicks(): Promise<void> {
@@ -249,11 +280,9 @@ export function startAccountEngineLoop(): {
     return { started: false, allowed: true, reason: "already-running" };
   }
   if (isNodeTestProcess()) {
-    // Ownership gate passed; node:test must not run live account ticks.
     return { started: false, allowed: true, reason: "test-process" };
   }
   g.__accountEngineShuttingDown = false;
-  // Account scopes use per-account startup flags; do not bind bootstrap process flag.
   markProcessBootStartupVerified(false);
   void runAccountTicks().catch((err: unknown) => {
     console.error("[account-worker]", err instanceof Error ? err.message : err);
@@ -291,6 +320,7 @@ export function stopAccountEngineLoopForTest(): void {
   g.__accountEngineShuttingDown = false;
   g.__accountStartupPromises = new Map();
   g.__accountStartupNextAttemptAt = new Map();
+  g.__accountTickInflight = new Map();
   if (g.__accountWorkerIds) {
     for (const [, workerId] of g.__accountWorkerIds) {
       releaseWorkerLock(workerId);

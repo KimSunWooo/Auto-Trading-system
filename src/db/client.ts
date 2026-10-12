@@ -48,12 +48,19 @@ export function createMysqlPool(env: EnvMap = process.env): mysql.Pool | null {
     database: cfg.database,
     waitForConnections: true,
     connectionLimit: 8,
+    queueLimit: 16,
     connectTimeout: 5_000,
     enableKeepAlive: true,
     timezone: "Z",
     dateStrings: true,
     ssl: cfg.ssl ? { rejectUnauthorized: false } : undefined,
   });
+}
+
+/** Shared pool for explicit connection checkout (timeout/rollback). */
+export function getMysqlPool(env: EnvMap = process.env): mysql.Pool | null {
+  if (!pool) pool = createMysqlPool(env);
+  return pool;
 }
 
 export function getDb(env: EnvMap = process.env): AppDb | null {

@@ -5,7 +5,7 @@ import { US_SEED_UNIVERSE } from "@/src/markets/overseas/instruments";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { paperOperationPolicy } from "@/src/risk/order-policy";
 import { getRuleConfig } from "@/src/rules/config";
-import { CASH_RULE_ID } from "@/src/rules/params";
+import { CASH_RULE_ID, type RuleConfigFile } from "@/src/rules/params";
 import type { EnvMap } from "@/src/runtime/trading-mode";
 import { bootstrapUserEmail } from "@/src/db/config";
 import { newId, stableId } from "@/src/db/ids";
@@ -26,7 +26,7 @@ import {
 import { money, moneyNumber } from "@/src/db/money";
 import { mysqlDateUtc, toMysqlUtc } from "@/src/db/time";
 import { applyExecutionToTrade, openTrade } from "@/src/db/trade-cycle";
-import type { ExecutionRow, OrderRow, PositionRow, ReconItemRow } from "@/src/db/rows";
+import type { ExecutionRow, IntentRow, OrderRow, PositionRow, ReconItemRow } from "@/src/db/rows";
 import {
   assertActivePaperFingerprint,
   planMirrorPaperBrokerAccount,
@@ -42,7 +42,12 @@ export type MirrorContext = {
   env?: EnvMap;
   /** When set, project into this existing broker_account (multi-tenant PAPER owner). */
   brokerAccountId?: string;
+  /** Account-scoped rules — prefer over bootstrap getRuleConfig(). */
+  ruleConfig?: RuleConfigFile;
   provenance?: "RUNTIME" | "LEGACY_STATE";
+  /** full = import/legacy; tick = worker persist (referenced instruments, skip unchanged history). */
+  projectMode?: "full" | "tick";
+  txOpts?: import("@/src/db/ledger-tx").LedgerTxOpts;
   cash?: Array<{ currency: string; cashBalance: number; orderableAmount: number; source?: string }>;
   fx?: { baseCurrency: string; quoteCurrency: string; rate: number; source: string };
   recon?: {
@@ -120,6 +125,22 @@ function knownCodes(state: AppState): string[] {
   return [...codes].filter(Boolean);
 }
 
+/** Tick persist: only instruments referenced by the live book / enabled rules. */
+function referencedCodes(state: AppState, ruleConfig?: RuleConfigFile): string[] {
+  const codes = new Set<string>();
+  for (const pos of state.positions) codes.add(pos.code);
+  for (const order of state.orders) codes.add(order.code);
+  for (const intent of state.intents ?? []) codes.add(intent.ticker);
+  for (const cond of state.conditions) if (cond.code) codes.add(cond.code);
+  for (const plan of state.dcaPlans) if (plan.code) codes.add(plan.code);
+  for (const code of Object.keys(state.quotes ?? {})) codes.add(code);
+  const rules = ruleConfig?.rules ?? [];
+  for (const rule of rules) {
+    if (rule.enabled && rule.ticker) codes.add(rule.ticker);
+  }
+  return [...codes].filter(Boolean);
+}
+
 async function ensureInstrument(tx: LedgerSession, code: string) {
   const info = describeInstrument(code);
   return tx.upsertInstrument({
@@ -170,30 +191,36 @@ export async function projectAppState(
   const env = context.env ?? process.env;
   const warnings: string[] = [];
   return ledger.transaction(async (tx) => {
+    const tick = context.projectMode === "tick";
     const environment = ledgerEnvironment(env);
     const broker = ledgerBroker(env);
     const email = bootstrapUserEmail(env);
     const now = toMysqlUtc(state.updatedAt);
-    const user = await tx.upsertUser({
-      id: stableId("user", email.toLowerCase()),
-      email,
-      displayName: "LOCAL_OWNER",
-      role: "USER",
-      status: "ACTIVE",
-      createdAt: now,
-      updatedAt: now,
-    });
+    const bootstrapUserId = stableId("user", email.toLowerCase());
+    const user = tick
+      ? undefined
+      : await tx.upsertUser({
+          id: bootstrapUserId,
+          email,
+          displayName: "LOCAL_OWNER",
+          role: "USER",
+          status: "ACTIVE",
+          createdAt: now,
+          updatedAt: now,
+        });
 
     let brokerAccount: Awaited<ReturnType<typeof tx.upsertBrokerAccount>>;
     if (context.brokerAccountId) {
-      const existing = (await tx.listBrokerAccounts()).find((row) => row.id === context.brokerAccountId);
+      const existing = await tx.getBrokerAccount(context.brokerAccountId);
       if (!existing) {
         throw new Error(`Mirror target broker_account missing: ${context.brokerAccountId}`);
       }
       // Preserve ownership / fingerprint / status — never remount onto bootstrap id.
-      // Pass fingerprint through so ACTIVE PAPER invariant still holds on upsert validate.
       brokerAccount = existing;
     } else {
+      if (!user) {
+        throw new Error("Mirror user missing");
+      }
       const paperPlan = planMirrorPaperBrokerAccount(broker, environment, env);
       assertActivePaperFingerprint(
         broker,
@@ -215,22 +242,31 @@ export async function projectAppState(
         physicalAccountFingerprint: paperPlan.physicalAccountFingerprint,
       });
     }
-    if (brokerAccount.credentialRef) {
+    if (brokerAccount.credentialRef && !tick) {
       await tx.upsertCredentialRef(brokerAccount.id, brokerAccount.credentialRef);
     }
 
-    for (const code of knownCodes(state)) {
+    for (const code of tick ? referencedCodes(state, context.ruleConfig) : knownCodes(state)) {
       await ensureInstrument(tx, code);
     }
 
-    const rules = getRuleConfig().rules ?? [];
+    // Account-scoped persist must use context.ruleConfig — never bootstrap getRuleConfig.
+    const rules =
+      context.ruleConfig?.rules ??
+      (context.brokerAccountId ? [] : getRuleConfig().rules) ??
+      [];
     const ruleKeys = new Set<string>([CASH_RULE_ID, ...state.allocations.map((row) => row.ruleId), ...rules.map((row) => row.id)]);
+    if (!tick) {
     for (const key of ruleKeys) {
       const cfg = rules.find((row) => row.id === key);
+      // Never upsert a non-cash rule with null configJson — that wiped DB strategy params.
+      if (!cfg && key !== CASH_RULE_ID) {
+        continue;
+      }
       const instrumentId = cfg?.ticker ? (await ensureInstrument(tx, cfg.ticker)).id : null;
       await tx.upsertTradingRule({
         id: stableId("trading-rule", `${brokerAccount.id}:${key}`),
-        userId: user.id,
+        userId: user?.id ?? brokerAccount.userId,
         brokerAccountId: brokerAccount.id,
         ruleKey: key,
         instrumentId,
@@ -246,8 +282,9 @@ export async function projectAppState(
         takeProfitPct: cfg ? money(cfg.takeProfitPct) : null,
         budget: money(cfg?.budget ?? state.allocations.find((row) => row.ruleId === key)?.budget ?? 0),
         enabled: cfg?.enabled ?? state.allocations.find((row) => row.ruleId === key)?.enabled ?? true,
-        configJson: cfg ?? null,
+        configJson: cfg ?? (key === CASH_RULE_ID ? { id: CASH_RULE_ID, kind: "CASH" } : null),
       });
+    }
     }
     for (const alloc of state.allocations) {
       await tx.upsertRuleAllocation({
@@ -290,18 +327,46 @@ export async function projectAppState(
     }
 
     const prevState = await tx.getTradingAccountState(brokerAccount.id);
+    const unknownOrderCount =
+      state.circuit.unknownCount ??
+      state.orders.filter((order) => order.status === "unknown").length;
+    const lastBalanceSyncAt =
+      state.lastBalanceSyncAt != null && Number.isFinite(state.lastBalanceSyncAt)
+        ? toMysqlUtc(state.lastBalanceSyncAt)
+        : (prevState?.lastBalanceSyncAt ?? null);
+    const lastEngineAt =
+      state.lastEngineAt != null && Number.isFinite(state.lastEngineAt)
+        ? toMysqlUtc(state.lastEngineAt)
+        : (prevState?.lastEngineAt ?? null);
+    // Re-read flags immediately before write so a concurrent Settings OFF
+    // commit is not overwritten by a stale in-flight tick book.
+    const latestFlags = (await tx.getTradingAccountState(brokerAccount.id)) ?? prevState;
+    const autoTradingEnabled =
+      tick && latestFlags && !latestFlags.autoTradingEnabled
+        ? false
+        : Boolean(state.settings.autoTrading);
     await tx.upsertTradingAccountState({
       brokerAccountId: brokerAccount.id,
-      autoTradingEnabled: Boolean(state.settings.autoTrading),
+      autoTradingEnabled,
       onboardingComplete: Boolean(state.settings.onboardingComplete),
       liquidating: Boolean(state.settings.liquidating),
       circuitHalted: Boolean(state.circuit.halted),
       circuitKind: state.circuit.kind ?? null,
       circuitReason: state.circuit.reason ?? null,
-      unknownOrderCount: state.circuit.unknownCount ?? 0,
+      unknownOrderCount,
+      lastBalanceSyncAt,
+      lastEngineAt,
+      lastOrderAt: latestFlags?.lastOrderAt ?? prevState?.lastOrderAt ?? null,
     });
-    await writeAudits(tx, prevState, state, brokerAccount.userId || user.id, brokerAccount.id);
+    await writeAudits(
+      tx,
+      prevState,
+      state,
+      brokerAccount.userId || user?.id || bootstrapUserId,
+      brokerAccount.id,
+    );
 
+    if (!tick) {
     if (environment === "PAPER" || environment === "MOCK") {
       const paper = paperOperationPolicy(context.env ?? process.env);
       await tx.upsertRiskLimits({
@@ -329,6 +394,7 @@ export async function projectAppState(
         maxDailyLoss: null,
         allowTrading: false,
       });
+    }
     }
 
     let importedIntents = 0;
@@ -533,7 +599,7 @@ export async function projectAppState(
     await snapshotRecon(tx, brokerAccount.id, state, context, now);
 
     return {
-      userId: user.id,
+      userId: brokerAccount.userId || user?.id || bootstrapUserId,
       brokerAccountId: brokerAccount.id,
       environment,
       imported: {
@@ -545,7 +611,7 @@ export async function projectAppState(
       },
       warnings,
     };
-  });
+  }, context.txOpts);
 }
 
 async function insertExecution(

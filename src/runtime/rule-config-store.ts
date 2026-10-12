@@ -1,7 +1,8 @@
 /**
  * Per-path rule config store — no global mutable RULE_CONFIG_PATH swap.
+ * Re-reads from disk when mtime changes so worker vs API route caches stay aligned.
  */
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import {
   EMPTY_RULE_CONFIG,
@@ -19,10 +20,18 @@ export type RuleConfigStore = {
   commit(next: RuleConfigFile): RuleConfigFile;
 };
 
-const caches = new Map<string, { mtimeHint: number; value: RuleConfigFile }>();
+const caches = new Map<string, { mtimeMs: number; value: RuleConfigFile }>();
 
 function clone(value: RuleConfigFile): RuleConfigFile {
   return structuredClone(value);
+}
+
+function fileMtimeMs(absolute: string): number {
+  try {
+    return statSync(absolute).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 export function createRuleConfigStore(configPath: string): RuleConfigStore {
@@ -42,16 +51,19 @@ export function createRuleConfigStore(configPath: string): RuleConfigStore {
   function persist(next: RuleConfigFile): void {
     mkdirSync(path.dirname(absolute), { recursive: true });
     writeFileSync(absolute, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-    caches.set(absolute, { mtimeHint: Date.now(), value: clone(next) });
+    caches.set(absolute, { mtimeMs: fileMtimeMs(absolute) || Date.now(), value: clone(next) });
   }
 
   return {
     configPath: absolute,
     get() {
+      const mtimeMs = fileMtimeMs(absolute);
       const cached = caches.get(absolute);
-      if (cached) return clone(cached.value);
+      if (cached && cached.mtimeMs === mtimeMs && mtimeMs > 0) {
+        return clone(cached.value);
+      }
       const value = read();
-      caches.set(absolute, { mtimeHint: Date.now(), value: clone(value) });
+      caches.set(absolute, { mtimeMs: mtimeMs || Date.now(), value: clone(value) });
       return clone(value);
     },
     commit(next) {

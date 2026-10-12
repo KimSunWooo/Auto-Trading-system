@@ -5,6 +5,7 @@ import { sma } from "@/src/strategies/indicators";
 import { findStock } from "@/lib/universe";
 import type { UserRule } from "@/src/rules/params";
 import { checkExecutionBudget } from "@/src/rules/execution-budget";
+import { planBuyAmountKrw, strategyBudgetView } from "@/src/rules/allocation-ratio";
 import { makeSignalId } from "@/src/runtime/intents";
 import { seoulDay } from "@/src/risk/limits";
 import type { AppState } from "@/lib/types";
@@ -19,6 +20,36 @@ export class RuleRunner {
     if (rule.kind === "ma-cross") return runMaCross(broker, bucket, rule, state);
     return runInterval(broker, bucket, rule, state);
   }
+}
+
+function resolveBuyPlan(
+  rule: UserRule,
+  bucket: AccountBucket,
+  price: number,
+  state?: AppState,
+): { amount: number; blockReason: string | null } {
+  if (state) {
+    const view = strategyBudgetView(state, rule, nowMs());
+    if (view.buyableCash == null) {
+      return { amount: 0, blockReason: view.blockReason ?? "매수가능금액 없음" };
+    }
+    const planned = planBuyAmountKrw({
+      buyableCash: view.buyableCash,
+      buyPct: rule.buyPct,
+      sliceKrw: rule.sliceKrw,
+      minAmountKrw: rule.minAmountKrw,
+      price,
+    });
+    return { amount: planned.amountKrw, blockReason: planned.blockReason };
+  }
+  const planned = planBuyAmountKrw({
+    buyableCash: Math.max(0, bucket.balance),
+    buyPct: rule.buyPct,
+    sliceKrw: rule.sliceKrw,
+    minAmountKrw: rule.minAmountKrw,
+    price,
+  });
+  return { amount: planned.amountKrw, blockReason: planned.blockReason };
 }
 
 async function runInterval(
@@ -40,16 +71,20 @@ async function runInterval(
     lastMessage: "조건 평가 완료",
   };
 
-  const amount = Math.min(rule.sliceKrw, Math.floor(bucket.balance * rule.buyPct));
-  if (amount < rule.minAmountKrw) {
-    return { ...evaluated, lastMessage: "예수금이 적어 이번 주기를 건너뜁니다." };
-  }
-
   const quote = await broker.getQuote(rule.ticker);
   const price = quote?.price ?? bucket.positions.find((p) => p.code === rule.ticker)?.avgPrice ?? 0;
   if (!(price > 0)) {
     return { ...evaluated, lastMessage: "시세 없음 — 매수 보류" };
   }
+
+  const plan = resolveBuyPlan(rule, evaluated, price, state);
+  if (plan.blockReason || !(plan.amount > 0)) {
+    return {
+      ...evaluated,
+      lastMessage: plan.blockReason ?? "예수금이 적어 이번 주기를 건너뜁니다.",
+    };
+  }
+  const amount = plan.amount;
 
   const book: Pick<AppState, "orders" | "positions" | "totalDeposit"> = state ?? {
     orders: [],
@@ -114,7 +149,15 @@ async function runMaCross(
   const name = findStock(rule.ticker)?.name ?? rule.ticker;
 
   if (crossedUp && regime !== "long") {
-    const amount = Math.min(rule.sliceKrw, Math.floor(bucket.balance * rule.buyPct));
+    const plan = resolveBuyPlan(rule, bucket, quote.price, state);
+    if (plan.blockReason || !(plan.amount > 0)) {
+      return {
+        ...bucket,
+        meta: { ...bucket.meta, maRel: currRel },
+        lastMessage: plan.blockReason ?? "매수가능금액 부족",
+      };
+    }
+    const amount = plan.amount;
     const book: Pick<AppState, "orders" | "positions" | "totalDeposit"> = state ?? {
       orders: [],
       positions: bucket.positions,

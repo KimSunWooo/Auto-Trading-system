@@ -87,12 +87,13 @@ async function buildScopeForAccount(
   const statePath = path.join(dir, "state.json");
   const strategyPath = path.join(dir, "strategy-config.json");
   // Bind public broker status to this account's RuntimeScope KisClient — never global env.
+  const rules = createRuleConfigStore(strategyPath);
   const store = createTradingStateStore({
     statePath,
     brokerAccountId: account.id,
     getKisClient: () => getRuntimeScope(account.id)?.kisClient,
+    getRuleConfig: () => rules.get(),
   });
-  const rules = createRuleConfigStore(strategyPath);
 
   let scope = getRuntimeScope(account.id);
   if (!scope || scope.userId !== user.id) {

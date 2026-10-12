@@ -1,5 +1,8 @@
 export type ConditionKind = "interval" | "ma-cross";
 
+/** How strategy cash ceiling is derived. Never reinterpret buyPct as allocationPct. */
+export type BudgetMode = "legacy_fixed" | "orderable_ratio";
+
 export type UserRule = {
   id: string;
   name: string;
@@ -17,14 +20,31 @@ export type UserRule = {
   intervalMs: number;
   fastMa: number;
   slowMa: number;
-  /** 1회 매수 금액 = min(sliceKrw, 룰 예수금 * buyPct). */
+  /**
+   * 1회 매수 비율 — fraction of this strategy's current buyable cash for one signal.
+   * NOT the account allocation ratio (see allocationPct).
+   */
   buyPct: number;
+  /** Optional KRW cap applied after buyPct. */
   sliceKrw: number;
   minAmountKrw: number;
   stopLossPct: number;
   takeProfitPct: number;
   enabled: boolean;
+  /**
+   * Legacy fixed KRW budget. Kept for compatibility; ignored as source of truth
+   * when budgetMode === "orderable_ratio".
+   */
   budget: number;
+  /**
+   * orderable_ratio (default for new rules) | legacy_fixed (existing without allocationPct).
+   */
+  budgetMode?: BudgetMode;
+  /**
+   * Strategy allocation ratio of distributable PAPER orderable cash (0–1).
+   * Distinct from buyPct.
+   */
+  allocationPct?: number;
   /**
    * Safe execution budgets. When omitted, resolveExecutionBudget applies
    * conservative defaults (never unlimited).
@@ -41,6 +61,8 @@ export type UserRule = {
 
 export type RuleConfigFile = {
   rules: UserRule[];
+  /** Monotonic config version for optimistic concurrency. */
+  version?: number;
 };
 
 export const CASH_RULE_ID = "cash";
@@ -89,6 +111,14 @@ function optionalUnit(value: unknown): number | undefined {
 }
 
 export function blankRule(partial: Partial<UserRule> = {}): UserRule {
+  const hasLegacyBudget =
+    partial.budget != null &&
+    partial.budget > 0 &&
+    partial.allocationPct == null &&
+    partial.budgetMode !== "orderable_ratio";
+  const budgetMode: BudgetMode =
+    partial.budgetMode ??
+    (hasLegacyBudget ? "legacy_fixed" : "orderable_ratio");
   const rule: UserRule = {
     id: partial.id ?? crypto.randomUUID(),
     name: partial.name ?? "",
@@ -104,7 +134,12 @@ export function blankRule(partial: Partial<UserRule> = {}): UserRule {
     takeProfitPct: partial.takeProfitPct ?? 0.03,
     enabled: partial.enabled ?? true,
     budget: partial.budget ?? 0,
+    budgetMode,
   };
+  if (partial.allocationPct != null) rule.allocationPct = partial.allocationPct;
+  else if (budgetMode === "orderable_ratio" && partial.allocationPct === undefined && !hasLegacyBudget) {
+    rule.allocationPct = 0;
+  }
   if (partial.instrumentId) rule.instrumentId = partial.instrumentId;
   if (partial.instrumentKey) rule.instrumentKey = partial.instrumentKey;
   // Explicit partials only — omit → resolveExecutionBudget supplies conservative defaults.
@@ -147,6 +182,33 @@ export function parseUserRule(raw: unknown, fallbackId?: string): UserRule | nul
   const maxPositionKrw = optionalPositiveInt(input.maxPositionKrw);
   const maxTotalExposurePct = optionalUnit(input.maxTotalExposurePct);
   const minBuyIntervalMs = optionalPositiveInt(input.minBuyIntervalMs);
+
+  const buyPctRaw = asNumber(input.buyPct);
+  if (buyPctRaw != null && !(buyPctRaw >= 0 && buyPctRaw <= 1)) {
+    return null;
+  }
+  const allocationPctRaw = asNumber(input.allocationPct);
+  if (allocationPctRaw != null && !(allocationPctRaw >= 0 && allocationPctRaw <= 1)) {
+    return null;
+  }
+  const budgetRaw = asNumber(input.budget);
+  if (budgetRaw != null && (!Number.isFinite(budgetRaw) || budgetRaw < 0)) {
+    return null;
+  }
+
+  const explicitMode =
+    input.budgetMode === "legacy_fixed" || input.budgetMode === "orderable_ratio"
+      ? (input.budgetMode as BudgetMode)
+      : undefined;
+  const hasAllocationPct = allocationPctRaw != null;
+  const budgetMode: BudgetMode =
+    explicitMode ??
+    (hasAllocationPct
+      ? "orderable_ratio"
+      : budgetRaw != null && budgetRaw > 0
+        ? "legacy_fixed"
+        : "orderable_ratio");
+
   return {
     id,
     name: typeof input.name === "string" ? input.name.trim() : "",
@@ -157,13 +219,15 @@ export function parseUserRule(raw: unknown, fallbackId?: string): UserRule | nul
     intervalMs: Math.round(asPositive(input.intervalMs) ?? 60_000),
     fastMa,
     slowMa,
-    buyPct: asUnitInterval(input.buyPct) ?? 0.1,
+    buyPct: buyPctRaw != null ? buyPctRaw : 0.1,
     sliceKrw: Math.round(asPositive(input.sliceKrw) ?? 100_000),
     minAmountKrw: Math.round(asPositive(input.minAmountKrw) ?? 10_000),
     stopLossPct: asUnitInterval(input.stopLossPct) ?? 0.05,
     takeProfitPct: asUnitInterval(input.takeProfitPct) ?? 0.03,
     enabled: input.enabled !== false,
-    budget: Math.max(0, Math.round(asNumber(input.budget) ?? 0)),
+    budget: Math.max(0, Math.round(budgetRaw ?? 0)),
+    budgetMode,
+    ...(hasAllocationPct ? { allocationPct: allocationPctRaw } : budgetMode === "orderable_ratio" ? { allocationPct: 0 } : {}),
     ...(maxExecutionsPerDay != null ? { maxExecutionsPerDay } : {}),
     ...(maxDailyBuyKrw != null ? { maxDailyBuyKrw } : {}),
     ...(maxPositionQty != null ? { maxPositionQty } : {}),
@@ -182,20 +246,77 @@ export function mergeRuleConfig(raw: unknown): RuleConfigFile {
     const parsed = parseUserRule(row);
     if (parsed) rules.push(parsed);
   }
-  return { rules };
+  const version = asNumber(input.version);
+  return {
+    rules,
+    ...(version != null && Number.isInteger(version) && version >= 0 ? { version } : {}),
+  };
 }
 
 export function overlayRuleConfig(base: RuleConfigFile, raw: unknown): RuleConfigFile {
-  if (!raw || typeof raw !== "object") return { rules: base.rules.map((row) => ({ ...row })) };
+  if (!raw || typeof raw !== "object") {
+    return {
+      rules: base.rules.map((row) => ({ ...row })),
+      ...(base.version != null ? { version: base.version } : {}),
+    };
+  }
   const input = raw as Record<string, unknown>;
-  if (Array.isArray(input.rules)) return mergeRuleConfig(raw);
+  if (Array.isArray(input.rules)) {
+    const merged = mergeRuleConfig(raw);
+    return {
+      ...merged,
+      version: merged.version ?? base.version,
+    };
+  }
+  // Partial single-rule patch: merge onto existing rule so omitted fields are not defaulted away.
+  if (typeof input.id === "string" && input.id.trim()) {
+    const rules = base.rules.map((row) => ({ ...row }));
+    const idx = rules.findIndex((row) => row.id === input.id);
+    if (idx < 0) {
+      const single = parseUserRule(raw);
+      if (!single) {
+        return {
+          rules: base.rules.map((row) => ({ ...row })),
+          ...(base.version != null ? { version: base.version } : {}),
+        };
+      }
+      rules.push(single);
+      return { rules, ...(base.version != null ? { version: base.version } : {}) };
+    }
+    const prev = rules[idx]!;
+    const patched = parseUserRule({ ...prev, ...input }, prev.id);
+    if (!patched) throw new Error("잘못된 전략 설정 값입니다.");
+    // Preserve fields that parseUserRule may have defaulted when omitted from partial.
+    rules[idx] = {
+      ...prev,
+      ...patched,
+      buyPct: input.buyPct !== undefined ? patched.buyPct : prev.buyPct,
+      sliceKrw: input.sliceKrw !== undefined ? patched.sliceKrw : prev.sliceKrw,
+      minAmountKrw: input.minAmountKrw !== undefined ? patched.minAmountKrw : prev.minAmountKrw,
+      stopLossPct: input.stopLossPct !== undefined ? patched.stopLossPct : prev.stopLossPct,
+      takeProfitPct: input.takeProfitPct !== undefined ? patched.takeProfitPct : prev.takeProfitPct,
+      budget: input.budget !== undefined ? patched.budget : prev.budget,
+      budgetMode: input.budgetMode !== undefined || input.allocationPct !== undefined
+        ? patched.budgetMode
+        : prev.budgetMode,
+      allocationPct:
+        input.allocationPct !== undefined ? patched.allocationPct : prev.allocationPct,
+      enabled: input.enabled !== undefined ? patched.enabled : prev.enabled,
+    };
+    return { rules, ...(base.version != null ? { version: base.version } : {}) };
+  }
   const single = parseUserRule(raw);
-  if (!single) return { rules: base.rules.map((row) => ({ ...row })) };
+  if (!single) {
+    return {
+      rules: base.rules.map((row) => ({ ...row })),
+      ...(base.version != null ? { version: base.version } : {}),
+    };
+  }
   const rules = base.rules.map((row) => ({ ...row }));
   const idx = rules.findIndex((row) => row.id === single.id);
   if (idx >= 0) rules[idx] = { ...rules[idx], ...single };
   else rules.push(single);
-  return { rules };
+  return { rules, ...(base.version != null ? { version: base.version } : {}) };
 }
 
 export function validateRuleConfig(config: RuleConfigFile): string | null {
@@ -207,9 +328,18 @@ export function validateRuleConfig(config: RuleConfigFile): string | null {
     if (rule.kind === "ma-cross" && rule.fastMa >= rule.slowMa) {
       return "단기 이평은 장기 이평보다 짧아야 합니다.";
     }
-    if (rule.buyPct <= 0 || rule.buyPct > 1) return "1회 매수 비중은 0과 1 사이여야 합니다.";
+    if (!(rule.buyPct > 0) || rule.buyPct > 1) return "1회 매수 비중은 0과 1 사이여야 합니다.";
     if (rule.stopLossPct <= 0 || rule.stopLossPct > 1) return "손절 비율이 올바르지 않습니다.";
     if (rule.takeProfitPct < 0 || rule.takeProfitPct > 1) return "익절 비율이 올바르지 않습니다.";
+    if (rule.budgetMode === "orderable_ratio" || rule.allocationPct != null) {
+      const pct = rule.allocationPct ?? 0;
+      if (!Number.isFinite(pct) || pct < 0 || pct > 1) {
+        return "전략 배정 비율은 0과 1 사이여야 합니다.";
+      }
+    }
+    if (rule.budget < 0 || !Number.isFinite(rule.budget)) {
+      return "레거시 예산이 올바르지 않습니다.";
+    }
     if (rule.maxExecutionsPerDay != null && rule.maxExecutionsPerDay < 1) {
       return "일일 실행 한도는 1 이상이어야 합니다.";
     }
@@ -225,6 +355,19 @@ export function validateRuleConfig(config: RuleConfigFile): string | null {
     ) {
       return "노출 한도는 0과 1 사이여야 합니다.";
     }
+  }
+  let activePctSum = 0;
+  for (const rule of config.rules) {
+    if (!rule.enabled) continue;
+    const mode =
+      rule.budgetMode ??
+      (rule.allocationPct != null ? "orderable_ratio" : "legacy_fixed");
+    if (mode === "orderable_ratio") {
+      activePctSum += Math.max(0, rule.allocationPct ?? 0);
+    }
+  }
+  if (activePctSum > 1 + 1e-9) {
+    return `활성 전략 배정 비율 합계 ${(activePctSum * 100).toFixed(2)}%가 100%를 초과합니다.`;
   }
   return null;
 }

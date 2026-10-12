@@ -248,6 +248,10 @@ export type TradingAccountStateRow = {
   circuitKind: string | null;
   circuitReason: string | null;
   unknownOrderCount: number;
+  /** Last completed engine tick persist (UTC mysql datetime). */
+  lastEngineAt?: string | null;
+  lastBalanceSyncAt?: string | null;
+  lastOrderAt?: string | null;
 };
 
 export type TradingRuleRow = {

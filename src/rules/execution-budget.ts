@@ -137,7 +137,10 @@ export function checkExecutionBudget(input: BudgetCheckInput): string | null {
     return "매수 실행 주기 대기 중 (평가만 수행)";
   }
 
-  const estQty = Math.max(1, Math.floor(amountKrw / price));
+  const estQty = Math.floor(amountKrw / price);
+  if (estQty < 1) {
+    return "1주 매수 자금 부족";
+  }
   const heldQty = state.positions
     .filter((p) => p.code === rule.ticker)
     .reduce((sum, p) => sum + p.qty, 0);

@@ -80,6 +80,7 @@ export type LedgerSession = {
   insertAudit(row: AuditLogRow): Promise<void>;
   insertMigrationRun(row: MigrationRunRow): Promise<void>;
   listBrokerAccounts(): Promise<BrokerAccountRow[]>;
+  getBrokerAccount(id: string): Promise<BrokerAccountRow | undefined>;
   getUser(id: string): Promise<UserRow | undefined>;
   listBuyHistory(filter: HistoryFilter): Promise<Page<BuyHistoryRow>>;
   listTrades(filter: HistoryFilter): Promise<Page<TradeRow & { symbol?: string; name?: string; market?: string }>>;
@@ -106,7 +107,10 @@ export type LedgerSession = {
 };
 
 export type Ledger = {
-  transaction<T>(fn: (tx: LedgerSession) => Promise<T>): Promise<T>;
+  transaction<T>(
+    fn: (tx: LedgerSession) => Promise<T>,
+    opts?: import("@/src/db/ledger-tx").LedgerTxOpts,
+  ): Promise<T>;
 };
 
 export type MemoryState = {
@@ -214,15 +218,45 @@ function matchesRange(value: string, from?: string, to?: string): boolean {
 export class MemoryLedger implements Ledger {
   snapshot: MemoryState = emptyState();
 
-  async transaction<T>(fn: (tx: LedgerSession) => Promise<T>): Promise<T> {
+  async transaction<T>(
+    fn: (tx: LedgerSession) => Promise<T>,
+    opts?: import("@/src/db/ledger-tx").LedgerTxOpts,
+  ): Promise<T> {
+    const {
+      LedgerTxStaleError,
+      LedgerTxTimeoutError,
+      LEDGER_TX_TIMEOUT_MS,
+    } = await import("@/src/db/ledger-tx");
+    const timeoutMs = opts?.timeoutMs ?? LEDGER_TX_TIMEOUT_MS;
+    opts?.onStage?.("db_acquire");
+    opts?.onStage?.("tx_begin");
     const working = cloneState(this.snapshot);
     const session = new MemorySession(working);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     try {
-      const result = await fn(session);
-      this.snapshot = working;
+      const result = await Promise.race([
+        fn(session).then((value) => {
+          if (timedOut) throw new LedgerTxTimeoutError();
+          if (opts?.isCurrent && !opts.isCurrent()) throw new LedgerTxStaleError();
+          opts?.onStage?.("commit");
+          this.snapshot = working;
+          return value;
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(new LedgerTxTimeoutError());
+          }, timeoutMs);
+        }),
+      ]);
       return result;
     } catch (err) {
+      opts?.onStage?.("rollback");
       throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+      opts?.onStage?.("release");
     }
   }
 }
@@ -279,6 +313,10 @@ export class MemorySession implements LedgerSession {
 
   async listBrokerAccounts(): Promise<BrokerAccountRow[]> {
     return [...this.state.brokerAccounts.values()];
+  }
+
+  async getBrokerAccount(id: string): Promise<BrokerAccountRow | undefined> {
+    return this.state.brokerAccounts.get(id);
   }
 
   async upsertCredentialRef(accountId: string, secretRef: string): Promise<void> {
