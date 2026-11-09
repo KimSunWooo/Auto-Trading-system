@@ -185,6 +185,14 @@ export type RuntimePublic = {
   lastErrorAt?: string;
   ordersAllowed: boolean;
   autoTrading: "on" | "paused" | "stopped";
+  /** Operator intent from settings — independent of session/worker readiness. */
+  operatorAutoTrading?: boolean;
+  /** Worker lock held + this-boot Startup Sync verified. */
+  workerReady?: boolean;
+  /** ON saved but regular session closed — wait for next orderable session. */
+  sessionWaiting?: boolean;
+  /** Concrete order block reason when ordersAllowed is false. */
+  orderBlockReason?: string | null;
   selectedStrategy?: string;
   currentSymbols?: string[];
   soakStatus?: "idle" | "running" | "paused" | "stopped";

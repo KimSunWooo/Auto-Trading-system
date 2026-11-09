@@ -446,7 +446,9 @@ export function preTradeGate(
   }
   const inquiry = run?.lastInquiry;
   if (inquiry) {
-    if (!inquiry.quoteOk) return { ok: false, blocked: "Quote query unhealthy" };
+    // Per-ticker quoteHealthy above is authoritative. Global quoteOk only
+    // reflects hub/book connectivity — do not block a healthy target ticker
+    // because an unrelated watchlist name lagged.
     if (!inquiry.balanceOk) return { ok: false, blocked: "Broker balance unhealthy" };
     if (!inquiry.orderableOk && input.side === "buy") {
       return { ok: false, blocked: "Orderable cash unhealthy" };
@@ -575,10 +577,10 @@ export function resumeTransientUnknownStop(state: AppState, env: EnvMap = proces
   const run = state.controlledRun;
   if (!run) return state;
   const clock = getMarketClock(new Date(nowMs()));
+  // Preserve operator OFF / emergency — never force autoTrading back on.
   const resumed = recordControlledEvent(
     {
       ...state,
-      settings: { ...state.settings, autoTrading: true },
       circuit: {
         halted: false,
         kind: undefined,

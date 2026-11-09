@@ -122,14 +122,31 @@ export function createTradingStateStore(opts: {
 
   async function loadState(): Promise<AppState> {
     const loaded = await repository.load();
-    if (loaded.ok) {
-      return hydratePersistedState(loaded);
-    }
+    // DB ledger mode: orders/intents/positions/fills come from DB. JSON is a
+    // cache for settings/quotes — never let a stale JSON book overwrite newer DB rows.
     if (isDatabaseLedgerAuthority() && brokerAccountId) {
       const ledger = await resolveMirrorLedger();
       if (ledger) {
         try {
-          return await reconstituteAppStateFromLedger(ledger, brokerAccountId);
+          const fromDb = await reconstituteAppStateFromLedger(ledger, brokerAccountId);
+          if (loaded.ok) {
+            const cached = hydratePersistedState(loaded);
+            return {
+              ...cached,
+              orders: fromDb.orders,
+              intents: fromDb.intents,
+              positions: fromDb.positions,
+              settings: {
+                ...cached.settings,
+                autoTrading: fromDb.settings.autoTrading,
+                onboardingComplete: fromDb.settings.onboardingComplete,
+                liquidating: fromDb.settings.liquidating,
+              },
+              circuit: fromDb.circuit.halted ? fromDb.circuit : cached.circuit,
+              updatedAt: fromDb.updatedAt ?? cached.updatedAt,
+            };
+          }
+          return fromDb;
         } catch (err) {
           console.error(
             `[trading-state-store] DB reconstitute failed for ${brokerAccountId}:`,
@@ -137,6 +154,9 @@ export function createTradingStateStore(opts: {
           );
         }
       }
+    }
+    if (loaded.ok) {
+      return hydratePersistedState(loaded);
     }
     return hydratePersistedState(loaded);
   }

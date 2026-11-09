@@ -307,6 +307,8 @@ export class KisBroker implements IBroker {
       const qty = qtyOverride ?? Math.floor(amount / (limitPrice && limitPrice > 0 ? limitPrice : last));
       const gate = orders.canBuy(this.ruleKey, qty, last, ticker);
       if (!gate.ok) return orders.gateReject(this.ruleKey, ticker, "buy", gate.reason);
+      const dbBlock = assertDatabaseLedgerReadyForOrders();
+      if (dbBlock) return orders.gateReject(this.ruleKey, ticker, "buy", dbBlock);
       const pending = orders.begin(this.ruleKey, ticker, "buy", qty, price, {
         source: this.source,
         sourceId: this.sourceId,
@@ -321,16 +323,13 @@ export class KisBroker implements IBroker {
       ) {
         return orders.toFill(pending);
       }
-      const dbBlock = assertDatabaseLedgerReadyForOrders();
-      if (dbBlock) return orders.gateReject(this.ruleKey, ticker, "buy", dbBlock);
       try {
         await this.persistState(this.box.current);
       } catch (err) {
         if (err instanceof DatabaseLedgerError) {
-          return orders.gateReject(
-            this.ruleKey,
-            ticker,
-            "buy",
+          // POST not called — close local pending so it cannot promote to UNKNOWN_ACTIVE.
+          return orders.rejectRemote(
+            pending.id,
             `DB intent/ledger 저장 실패 — 주문 0건 (${err.message})`,
           );
         }
@@ -408,6 +407,8 @@ export class KisBroker implements IBroker {
     let price = 0;
     try {
       price = ordDvsn === "limit" && limitPrice ? limitPrice : await this.getCurrentPrice(ticker);
+      const dbBlock = assertDatabaseLedgerReadyForOrders();
+      if (dbBlock) return orders.gateReject(this.ruleKey, ticker, "sell", dbBlock);
       const pending = orders.begin(this.ruleKey, ticker, "sell", qty, price, {
         source: this.source,
         sourceId: this.sourceId,
@@ -422,16 +423,12 @@ export class KisBroker implements IBroker {
       ) {
         return orders.toFill(pending);
       }
-      const dbBlock = assertDatabaseLedgerReadyForOrders();
-      if (dbBlock) return orders.gateReject(this.ruleKey, ticker, "sell", dbBlock);
       try {
         await this.persistState(this.box.current);
       } catch (err) {
         if (err instanceof DatabaseLedgerError) {
-          return orders.gateReject(
-            this.ruleKey,
-            ticker,
-            "sell",
+          return orders.rejectRemote(
+            pending.id,
             `DB intent/ledger 저장 실패 — 주문 0건 (${err.message})`,
           );
         }

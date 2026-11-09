@@ -234,6 +234,27 @@ test("transient Reconciliation UNKNOWN soak-stop resumes when HEALTHY", () => {
   assert.equal(autoStopReason(resumed), null);
 });
 
+test("resumeTransientUnknownStop preserves operator autoTrading OFF", () => {
+  const state = healthyPaper();
+  state.settings.autoTrading = false;
+  state.controlledRun = {
+    ...state.controlledRun!,
+    status: "stopped",
+    autoStopReason: "Reconciliation UNKNOWN",
+    stoppedAt: "2026-09-17T05:50:29.601Z",
+  };
+  state.circuit = {
+    halted: true,
+    kind: "soak-stop",
+    reason: "Reconciliation UNKNOWN",
+    unknownCount: 0,
+  };
+  const resumed = resumeTransientUnknownStop(state);
+  assert.equal(resumed.settings.autoTrading, false);
+  assert.equal(resumed.circuit.halted, false);
+  assert.notEqual(resumed.controlledRun?.status, "stopped");
+});
+
 test("resume refuses MISMATCH and does not flatten the Samsung position", () => {
   const state = healthyPaper();
   state.controlledRun = {

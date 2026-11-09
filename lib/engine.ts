@@ -219,16 +219,18 @@ async function refreshLiveQuotes(
     }
     const client = kisClient ?? getSharedKisClient();
     const result = await refreshQuotesFromWebSocket(box, hub, client, codes);
-    box.current = noteQuoteResult(box.current, result.ok);
-    if (!result.ok && isLiveLike()) {
-      const detail = !result.connected
-        ? "KIS WebSocket disconnected — 신규 주문을 막았습니다."
-        : result.stale.length
-          ? "KIS WebSocket 시세가 만료되어 신규 주문을 막았습니다."
-          : "KIS WebSocket 시세가 없어 신규 주문을 막았습니다.";
-      box.current = markInquiryFailure(box.current, "data", detail);
+    // Global quoteOk follows hub connectivity only. Missing/stale names stay
+    // on result for per-ticker order/strategy gates.
+    const hubOk = result.connected;
+    box.current = noteQuoteResult(box.current, hubOk);
+    if (!hubOk && isLiveLike()) {
+      box.current = markInquiryFailure(
+        box.current,
+        "data",
+        "KIS WebSocket disconnected — 신규 주문을 막았습니다.",
+      );
     }
-    return result.ok;
+    return hubOk;
   }
 
   // MOCK / tests without hub: legacy broker.getQuote path.

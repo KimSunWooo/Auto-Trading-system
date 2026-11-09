@@ -371,6 +371,13 @@ export class OrderManager {
       reason,
     });
     if (patched.order) this.box.current = patched.state;
+    const intentId = patched.order?.intentId;
+    if (intentId) {
+      this.box.current = patchIntent(this.box.current, intentId, {
+        status: "rejected",
+        orderId: patched.order?.id,
+      });
+    }
     const fill = patched.order
       ? this.toFill(patched.order)
       : this.reject("", "buy", reason);

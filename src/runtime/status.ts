@@ -126,6 +126,21 @@ export function buildRuntimePublic(
     lastErrorAt: safety.lastErrorAt ?? state.circuit?.openedAt,
     ordersAllowed: ordersCurrentlyAllowed(state, bootVerified) && !blocked && clock.open,
     autoTrading,
+    operatorAutoTrading: Boolean(state.settings.autoTrading),
+    workerReady:
+      workerHealthy &&
+      (bootVerified !== false) &&
+      (accountSnapshot ? accountSnapshot.workerLockHeld && accountSnapshot.bootVerified : workerHealthy),
+    sessionWaiting: Boolean(state.settings.autoTrading) && !clock.open && !blocked,
+    orderBlockReason: !state.settings.autoTrading
+      ? "자동 실행이 꺼져 있습니다."
+      : !state.settings.disclaimerAccepted
+        ? "이용 동의 전에는 매매 실행이 잠겨 있습니다."
+        : blocked
+          ? blocked
+          : !clock.open
+            ? `정규장 아님 — 다음 주문 가능 세션까지 대기`
+            : null,
     selectedStrategy: run?.strategyName,
     currentSymbols: run?.symbols,
     soakStatus: run?.status,

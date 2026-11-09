@@ -251,7 +251,10 @@ export async function refreshQuotesFromWebSocket(
   }
 
   box.current = { ...box.current, quotes: nextQuotes };
-  const ok = missing.length === 0 && stale.length === 0 && projected === tickers.length;
+  // Hub connectivity is the global health signal. Per-ticker missing/stale are
+  // returned for order/strategy gates — one lagging watchlist name must not
+  // fail the whole refresh.
+  const ok = connected;
   return { ok, connected, projected, missing, stale, inquirePriceSeeds: seeds };
 }
 

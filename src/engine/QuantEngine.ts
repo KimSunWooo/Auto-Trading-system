@@ -10,6 +10,7 @@ import type { AppState } from "@/lib/types";
 import { getMarketClock } from "@/lib/market-hours";
 import { nowMs } from "@/src/clock";
 import { tradingBlocked } from "@/src/risk/circuit";
+import { quoteHealthy } from "@/src/runtime/controlled-run";
 import { CASH_RULE_ID, type RuleConfigFile } from "@/src/rules/params";
 import type { KisApi } from "@/src/brokers/kis-client";
 
@@ -61,6 +62,17 @@ export class QuantEngine {
           ...box.current,
           allocations: box.current.allocations.map((row) =>
             row.ruleId === rule.id ? { ...row, lastMessage: blocked } : row,
+          ),
+        };
+        continue;
+      }
+      if (rule.ticker && !quoteHealthy(box.current, rule.ticker)) {
+        box.current = {
+          ...box.current,
+          allocations: box.current.allocations.map((row) =>
+            row.ruleId === rule.id
+              ? { ...row, lastMessage: `${rule.ticker} 시세 없음/만료 — 해당 전략만 보류` }
+              : row,
           ),
         };
         continue;

@@ -35,6 +35,7 @@ export async function PATCH(request: Request) {
           workerLockPath: rt.scope.lockPath,
           kisClient: rt.scope.kisClient,
           mutateStore: (fn) => rt.store.mutateStore(fn),
+          getState: () => rt.store.getState(),
           refreshIfNeeded: true,
           probeKisAuth: true,
         });

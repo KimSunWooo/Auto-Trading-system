@@ -11,11 +11,7 @@ import {
 } from "@/src/db/config";
 import { resolveMirrorLedger } from "@/src/db/mirror";
 import { projectAppState, type MirrorContext } from "@/src/db/projector";
-import {
-  recordMirrorDegraded,
-  recordMirrorSuccess,
-  snapshotDatabaseStatus,
-} from "@/src/db/status";
+import { recordMirrorDegraded, recordMirrorSuccess } from "@/src/db/status";
 import type { EnvMap } from "@/src/runtime/trading-mode";
 import {
   LEDGER_TX_TIMEOUT_MS,
@@ -91,17 +87,14 @@ export async function persistTradingLedger(
   }
 }
 
+/**
+ * Config readiness only — never process-global lastError / optional mirror degrade.
+ * Per-account/intent authority is the successful persistTradingLedger call before KIS POST.
+ */
 export function assertDatabaseLedgerReadyForOrders(env: EnvMap = process.env): string | null {
   if (!isDatabaseLedgerAuthority(env)) return null;
   if (!dbConfigured(env)) {
     return "PERSISTENCE_MODE=database but DATABASE_URL is not configured — 신규 주문 차단";
-  }
-  const dbStatus = snapshotDatabaseStatus({
-    enabled: true,
-    mode: "database",
-  });
-  if (dbStatus.lastError) {
-    return "DB ledger degraded — 신규 주문 차단";
   }
   return null;
 }

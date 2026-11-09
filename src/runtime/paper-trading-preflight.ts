@@ -22,17 +22,14 @@ import {
   PaperAccountSelectionError,
 } from "@/src/auth/select-paper-account";
 import {
-  emptyStartupSync,
   findActiveUnknownOrder,
-  markProcessBootStartupVerified,
-  runPaperStartupSync,
   usesPaperStartupSync,
 } from "@/src/runtime/startup-sync";
 import {
   isScopeStartupSyncDone,
-  markScopeStartupSyncDone,
   getRuntimeScope,
 } from "@/src/runtime/runtime-scope";
+import { awaitAccountStartupSync } from "@/lib/account-engine-loop";
 import { workerLockHealthy } from "@/src/runtime/worker-lock";
 import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 import { tradingBlocked } from "@/src/risk/circuit";
@@ -108,6 +105,8 @@ export type PaperTradingPreflight = {
     workerLockPath?: string;
     marketOpen?: boolean;
     quoteSample?: { ticker: string; name?: string; fresh: boolean; source?: string };
+    /** Soft diagnostic — never blocks PATCH ON by itself. */
+    marketDataNote?: string;
   };
 };
 
@@ -385,15 +384,12 @@ export function evaluatePaperTradingPreflight(input: {
           source: any.source,
         };
       }
-      pushBlocker(
-        blockers,
-        blockerDetails,
-        entries.length === 0 ? "QUOTE_MISSING" : "QUOTE_STALE_OR_MOCK",
+      // Diagnostic only — off-hours / missing quote samples must not block ON save.
+      // Order path still requires a fresh per-ticker KIS quote before submit.
+      details.marketDataNote =
         entries.length === 0
-          ? "시세 견본이 없습니다."
-          : "신선하고 모의/시드가 아닌 KIS 시세가 필요합니다.",
-        true,
-      );
+          ? "QUOTE_MISSING"
+          : "QUOTE_STALE_OR_MOCK";
     }
   }
 
@@ -464,6 +460,7 @@ export function evaluatePaperTradingPreflight(input: {
   const riskGateOk = checks.risk === "PASS";
 
   const uniqueBlockers = [...new Set(blockers)].filter((b) => !isSuccessStatus(b));
+  // marketDataReady is diagnostic for ON save — session/order gates enforce quotes later.
   const readyForPaperAutoTrading =
     paperModeConfirmed &&
     realTradingDisabled &&
@@ -473,7 +470,6 @@ export function evaluatePaperTradingPreflight(input: {
     startupSyncReady &&
     reconciliationHealthy &&
     workerLockReady &&
-    marketDataReady &&
     riskGateOk &&
     idempotencyReady &&
     unknownOrdersClear &&
@@ -600,6 +596,7 @@ export async function runPaperTradingPreflightService(input: {
   workerLockPath?: string;
   kisClient?: KisApi;
   mutateStore?: MutateStore;
+  getState?: () => Promise<AppState>;
   /** Re-run Startup Sync / quote refresh in this process when needed. */
   refreshIfNeeded?: boolean;
   probeKisAuth?: boolean;
@@ -623,6 +620,7 @@ async function executePaperTradingPreflightService(input: {
   workerLockPath?: string;
   kisClient?: KisApi;
   mutateStore?: MutateStore;
+  getState?: () => Promise<AppState>;
   refreshIfNeeded?: boolean;
   probeKisAuth?: boolean;
   env?: EnvMap;
@@ -737,7 +735,8 @@ async function executePaperTradingPreflightService(input: {
   let state = input.state;
   let boot = isScopeStartupSyncDone(account.id);
 
-  // 5. Startup Sync in THIS process when needed
+  // 5. Startup Sync — reuse worker in-flight promise; never invent boot from
+  // persisted HEALTHY alone or a single balance probe.
   if (
     input.refreshIfNeeded &&
     credentialOk &&
@@ -752,24 +751,17 @@ async function executePaperTradingPreflightService(input: {
       state.startupSync.status !== "HEALTHY";
     if (needsSync) {
       try {
-        state = await input.mutateStore(async (current) => {
-          const marked = {
-            ...current,
-            settings: { ...current.settings, autoTrading: current.settings.autoTrading },
-            startupSync: {
-              ...(current.startupSync ?? emptyStartupSync()),
-              status: "SYNCING" as const,
-              message: "Preflight Startup Sync (inquiries only)",
-            },
-          };
-          const result = await runPaperStartupSync(marked, client);
-          return result.state;
-        });
-        if (state.startupSync?.status === "HEALTHY") {
-          markScopeStartupSyncDone(account.id, true);
-          markProcessBootStartupVerified(true);
-          boot = true;
+        boot = await awaitAccountStartupSync(
+          account.id,
+          { mutateStore: input.mutateStore },
+          client,
+        );
+        if (input.getState) {
+          state = await input.getState();
+        } else {
+          state = await input.mutateStore(async (current) => current);
         }
+        boot = isScopeStartupSyncDone(account.id);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isKisRateLimitMessage(msg) || err instanceof KisRateLimitError) {
@@ -778,23 +770,9 @@ async function executePaperTradingPreflightService(input: {
             err instanceof KisRateLimitError ? err.retryAfterMs : retryAfterMs ?? 1_500;
         }
       }
-    } else if (!boot && state?.startupSync?.status === "HEALTHY") {
-      // Persisted HEALTHY from another process is not enough — re-verify with balance.
-      try {
-        await client.inquireBalance();
-        markScopeStartupSyncDone(account.id, true);
-        markProcessBootStartupVerified(true);
-        boot = true;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (isKisRateLimitMessage(msg)) {
-          kisAuthStatus = "RATE_LIMITED";
-          retryAfterMs = 1_500;
-        }
-      }
     }
 
-    // 8. Fresh quote sample (read-only, rate-limited)
+    // Quote sample is diagnostic only (off-hours may fail) — never required for ON.
     if (state && boot && state.startupSync?.status === "HEALTHY") {
       try {
         state = await ensureFreshQuoteSample(state, client, input.mutateStore);
@@ -857,6 +835,8 @@ export async function runPaperTradingPreflightForUser(input: {
   brokerAccountId?: string;
   kisClient?: KisApi;
   mutateStore?: MutateStore;
+  /** Optional fresh read after shared Startup Sync (preferred over identity mutate). */
+  getState?: () => Promise<AppState>;
   refreshIfNeeded?: boolean;
 }): Promise<PaperTradingPreflight & { account?: { id: string; masked: string } }> {
   return runPaperTradingPreflightService({

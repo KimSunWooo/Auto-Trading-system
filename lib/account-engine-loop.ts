@@ -63,9 +63,19 @@ async function listActivePaperAccounts() {
     );
 }
 
-async function ensureAccountStartupSync(
+/**
+ * Shared Startup Sync for account worker and settings preflight.
+ * Reuses in-flight promise per account so PATCH and worker never dual-sync.
+ */
+export async function awaitAccountStartupSync(
   brokerAccountId: string,
-  store: Awaited<ReturnType<typeof resolveTradingRuntimeForAccount>>["store"],
+  store: {
+    mutateStore: (
+      fn: (
+        state: import("@/lib/types").AppState,
+      ) => import("@/lib/types").AppState | Promise<import("@/lib/types").AppState>,
+    ) => Promise<import("@/lib/types").AppState>;
+  },
   kisClient: Awaited<ReturnType<typeof resolveTradingRuntimeForAccount>>["scope"]["kisClient"],
 ): Promise<boolean> {
   if (!usesPaperStartupSync()) {
@@ -142,7 +152,7 @@ export function kickAccountStartupSync(brokerAccountId: string): void {
       const account = accounts.find((row) => row.id === brokerAccountId);
       if (!account) return;
       const rt = await resolveTradingRuntimeForAccount(account);
-      await ensureAccountStartupSync(account.id, rt.store, rt.scope.kisClient);
+      await awaitAccountStartupSync(account.id, rt.store, rt.scope.kisClient);
     } catch (err) {
       console.error(
         `[account-worker:${brokerAccountId}] kick sync failed:`,
@@ -221,7 +231,7 @@ async function tickOneAccount(
     }, Math.max(2_000, Math.floor(HARD_LIMITS.minTickMs / 2)));
 
     try {
-      await ensureAccountStartupSync(account.id, rt.store, rt.scope.kisClient);
+      await awaitAccountStartupSync(account.id, rt.store, rt.scope.kisClient);
 
       const rules = rt.rules.get();
       await rt.store.tickAndGet(rules, {

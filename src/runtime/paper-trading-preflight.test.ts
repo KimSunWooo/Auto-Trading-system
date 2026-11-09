@@ -245,7 +245,7 @@ test("all gates pass → readyForPaperAutoTrading", () => {
   });
 });
 
-test("stale/mock quote blocks marketDataReady", () => {
+test("stale/mock quote is diagnostic — does not block ON save", () => {
   const state = healthyState();
   for (const q of Object.values(state.quotes)) {
     q.source = "mock";
@@ -264,7 +264,9 @@ test("stale/mock quote blocks marketDataReady", () => {
       env: PAPER_ENV,
     });
     assert.equal(pre.marketDataReady, false);
-    assert.equal(pre.readyForPaperAutoTrading, false);
+    assert.equal(pre.details.marketDataNote, "QUOTE_STALE_OR_MOCK");
+    assert.equal(pre.readyForPaperAutoTrading, true);
+    assert.equal(assertReadyToEnablePaperAutoTrading(pre), null);
   });
 });
 
