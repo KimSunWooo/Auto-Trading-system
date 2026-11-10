@@ -41,6 +41,10 @@ export type StrategyBudgetView = {
 function isOpenBuyReservation(order: Order): boolean {
   if (order.side !== "buy") return false;
   if (order.parentOrderId) return false;
+  // Past soak/history classes are not active reservations.
+  if (order.activeClass === "ORPHANED_LOCAL" || order.activeClass === "HISTORICAL_MATCHED") {
+    return false;
+  }
   return (
     order.status === "pending" ||
     order.status === "unknown" ||

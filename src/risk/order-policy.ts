@@ -194,15 +194,25 @@ function isHistoricalOrOrphaned(order: Order): boolean {
   return order.activeClass === "ORPHANED_LOCAL" || order.activeClass === "HISTORICAL_MATCHED";
 }
 
+/**
+ * Active working order for duplicate-submit protection.
+ * ORPHANED_LOCAL / HISTORICAL_MATCHED never block new submits.
+ */
+export function isActiveWorkingOrder(
+  order: Order,
+  opts: { ruleId?: string; ticker?: string; side?: "buy" | "sell" } = {},
+): boolean {
+  if (order.parentOrderId) return false;
+  if (isHistoricalOrOrphaned(order)) return false;
+  if (order.status !== "pending" && order.status !== "unknown") return false;
+  if (opts.side && order.side !== opts.side) return false;
+  if (opts.ruleId && order.ruleId !== opts.ruleId) return false;
+  if (opts.ticker && order.code !== opts.ticker) return false;
+  return true;
+}
+
 export function existingOpenBuy(state: AppState, ticker: string): Order | undefined {
-  return state.orders.find(
-    (order) =>
-      !order.parentOrderId &&
-      !isHistoricalOrOrphaned(order) &&
-      order.side === "buy" &&
-      order.code === ticker &&
-      (order.status === "pending" || order.status === "unknown"),
-  );
+  return state.orders.find((order) => isActiveWorkingOrder(order, { ticker, side: "buy" }));
 }
 
 export function testRunBuyCount(state: AppState, sinceIso?: string): number {

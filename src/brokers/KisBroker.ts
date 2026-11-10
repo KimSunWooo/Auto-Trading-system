@@ -26,7 +26,12 @@ import {
   workerLockAllowsTrading,
   preTradeGate,
 } from "@/src/runtime/controlled-run";
-import { mergeLiveIntoDailyCloses } from "@/src/market-data/daily-history";
+import {
+  mergeLiveIntoDailyBars,
+  seoulTradeDate,
+  closesFromBars,
+  type DailyCloseBar,
+} from "@/src/market-data/daily-history";
 import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
 import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
@@ -96,17 +101,32 @@ export class KisBroker implements IBroker {
       return this.fromBook(ticker);
     }
     try {
-      const [live, daily] = await Promise.all([
+      const [live, dailyBars] = await Promise.all([
         this.client.inquirePrice(ticker),
-        this.client.inquireDailyCloses(ticker),
+        this.client.inquireDailyBars
+          ? this.client.inquireDailyBars(ticker)
+          : this.client.inquireDailyCloses(ticker).then((closes) =>
+              closes.map((close) => ({ tradeDate: "", close })),
+            ),
       ]);
       const stock = findStock(ticker);
       const prev = this.box.current.quotes[ticker];
       const tick = tickSize(live.price);
-      const history =
-        daily.length > 0
-          ? mergeLiveIntoDailyCloses(daily, live.price)
-          : mergeLiveIntoDailyCloses(prev?.history ?? [], live.price);
+      const bars = dailyBars as DailyCloseBar[];
+      const dated = bars.filter((b) => b.tradeDate.length === 8);
+      let history: number[];
+      if (dated.length > 0) {
+        history = closesFromBars(
+          mergeLiveIntoDailyBars(dated, {
+            tradeDate: seoulTradeDate(),
+            price: live.price,
+          }),
+        );
+      } else {
+        const undated = bars.map((b) => b.close).filter((n) => n > 0);
+        // Undated / empty: never invent a new day from live ticks.
+        history = undated.length > 0 ? undated.slice(-40) : (prev?.history?.slice(-40) ?? []);
+      }
       const quote: BrokerQuote = {
         ticker,
         name: live.name || prev?.name || stock?.name || ticker,

@@ -27,6 +27,7 @@ import { makeSignalId } from "@/src/runtime/intents";
 import { nowMs } from "@/src/clock";
 import { engineReconciliationFlag } from "@/src/risk/kis-balance-semantics";
 import {
+  appliesControlledRunOrderGates,
   applyAutoStop,
   autoStopReason,
   bumpTick,
@@ -37,7 +38,7 @@ import {
   syncHttpAudit,
 } from "@/src/runtime/controlled-run";
 import { startupSyncBlocksTrading, usesPaperStartupSync } from "@/src/runtime/startup-sync";
-import { invalidateNonKisQuotes } from "@/src/runtime/quote-policy";
+import { invalidateNonKisQuotes, isFreshKisQuote } from "@/src/runtime/quote-policy";
 import {
   refreshQuotesFromWebSocket,
   peekPaperQuoteHub,
@@ -146,6 +147,20 @@ export function createPaperState(): AppState {
     positionChanges: 0,
     executionChanges: 0,
     message: "test fixture",
+  };
+  // Live PAPER buy path requires fresh ord_psbl_cash — fixture includes it.
+  const syncedAt = new Date().toISOString();
+  state.kisBalance = {
+    syncedAt,
+    fetchedAt: syncedAt,
+    cash: 10_000_000,
+    d2Cash: 10_000_000,
+    orderableCash: 9_500_000,
+    holdings: [],
+    cashDelta: 0,
+    matched: true,
+    freshness: "fresh",
+    message: "test fixture orderable",
   };
   return state;
 }
@@ -288,7 +303,21 @@ export async function evaluateConditions(
   for (const cond of box.current.conditions) {
     if (!cond.watching || cond.status !== "watching") continue;
     const quote = box.current.quotes[cond.code];
-    if (!quote) continue;
+    if (!quote || (isLiveLike() && !isFreshKisQuote(quote))) {
+      // Preserve watching/status — only note wait reason for this ticker.
+      const waitMsg = !quote
+        ? `${cond.code} 시세 없음 — 조건 감시 유지`
+        : `${cond.code} 시세 만료 — 조건 감시 유지`;
+      box.current = {
+        ...box.current,
+        conditions: box.current.conditions.map((c) =>
+          c.id === cond.id && c.watching && c.status === "watching"
+            ? { ...c, message: waitMsg }
+            : c,
+        ),
+      };
+      continue;
+    }
     if (!conditionMatches(cond, quote)) continue;
 
     if (cond.orderPriceType === "limit" && cond.limitPrice) {
@@ -310,7 +339,24 @@ export async function evaluateConditions(
           ? await broker.buyLimit(cond.code, cond.limitPrice, cond.qty * cond.limitPrice)
           : await broker.buyMarket(cond.code, cond.qty * quote.price);
 
-    if (!fill.ok && (fill.reason ?? "").includes("미체결")) continue;
+    // Pre-broker quote/reject hold: keep watching for retry (intent dedupe protects resubmit).
+    if (!fill.ok && fill.status !== "pending" && fill.status !== "unknown") {
+      const reason = fill.reason ?? "";
+      if (
+        /시세|만료|미연결|WebSocket|주문가능|대기|미체결 주문/i.test(reason) ||
+        reason.includes("미체결")
+      ) {
+        box.current = {
+          ...box.current,
+          conditions: box.current.conditions.map((c) =>
+            c.id === cond.id
+              ? { ...c, watching: true, status: "watching" as const, message: reason }
+              : c,
+          ),
+        };
+        continue;
+      }
+    }
 
     const updatedCond: AutoCondition =
       fill.status === "unknown"
@@ -367,39 +413,64 @@ export async function evaluateDca(
     if (!plan.enabled) continue;
     if (new Date(plan.nextRunAt).getTime() > now) continue;
     const quote = box.current.quotes[plan.code];
-    if (!quote) continue;
-
-    const qty = Math.floor(plan.amountKrw / quote.price);
-    const scheduled: DcaPlan = {
-      ...plan,
-      nextRunAt: new Date(now + plan.intervalSec * 1000).toISOString(),
-      runCount: plan.runCount + 1,
-    };
-
-    if (qty < 1) {
+    if (!quote || (isLiveLike() && !isFreshKisQuote(quote))) {
+      const waitMsg = !quote
+        ? `${plan.code} 시세 없음 — DCA 회차 유지`
+        : `${plan.code} 시세 만료 — DCA 회차 유지`;
       box.current = {
         ...box.current,
         dcaPlans: box.current.dcaPlans.map((p) =>
-          p.id === plan.id
-            ? { ...scheduled, lastMessage: "1주 미만이라 이번 회차는 건너뜁니다." }
-            : p,
+          p.id === plan.id ? { ...p, lastMessage: waitMsg } : p,
         ),
       };
       continue;
     }
 
+    const qty = Math.floor(plan.amountKrw / quote.price);
+    if (qty < 1) {
+      // Still advance schedule — funds/price make this round impossible, not a quote hold.
+      const skipped: DcaPlan = {
+        ...plan,
+        nextRunAt: new Date(now + plan.intervalSec * 1000).toISOString(),
+        runCount: plan.runCount + 1,
+        lastMessage: "1주 미만이라 이번 회차는 건너뜁니다.",
+      };
+      box.current = {
+        ...box.current,
+        dcaPlans: box.current.dcaPlans.map((p) => (p.id === plan.id ? skipped : p)),
+      };
+      continue;
+    }
+
+    const nextRunCount = plan.runCount + 1;
     const fill = await root
       .forRule(plan.ruleId ?? CASH_RULE_ID)
       .withSource("dca", plan.id)
       .withIntent({
-        intentId: makeSignalId(["sig", "dca", plan.id, scheduled.runCount]),
-        signalId: makeSignalId(["sig", "dca", plan.id, scheduled.runCount]),
+        intentId: makeSignalId(["sig", "dca", plan.id, nextRunCount]),
+        signalId: makeSignalId(["sig", "dca", plan.id, nextRunCount]),
         reason: "dca",
       })
       .buyMarket(plan.code, plan.amountKrw);
 
+    // Pre-broker hold (stale quote at submit, orderable cash, etc.): keep runCount/nextRunAt.
+    if (!fill.ok && fill.status !== "pending" && fill.status !== "unknown") {
+      const reason = fill.reason ?? "DCA 보류";
+      if (/시세|만료|미연결|WebSocket|주문가능|대기|미체결 주문/i.test(reason)) {
+        box.current = {
+          ...box.current,
+          dcaPlans: box.current.dcaPlans.map((p) =>
+            p.id === plan.id ? { ...p, lastMessage: reason } : p,
+          ),
+        };
+        continue;
+      }
+    }
+
     const updatedPlan: DcaPlan = {
-      ...scheduled,
+      ...plan,
+      nextRunAt: new Date(now + plan.intervalSec * 1000).toISOString(),
+      runCount: nextRunCount,
       lastMessage: fill.ok
         ? `${fill.qty}주 적립 매수`
         : fill.status === "pending"
@@ -574,7 +645,8 @@ export async function tickState(
     });
   }
   box.current = resumeTransientUnknownStop(box.current);
-  const stop = box.current.controlledRun
+  // Leftover soak controlledRun under database must not re-open soak-stop on ops PAPER.
+  const stop = appliesControlledRunOrderGates(box.current)
     ? autoStopReason(box.current, process.env, brokerOpts.safety)
     : null;
   if (stop) {

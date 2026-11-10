@@ -328,6 +328,9 @@ export function validateRuleConfig(config: RuleConfigFile): string | null {
     if (rule.kind === "ma-cross" && rule.fastMa >= rule.slowMa) {
       return "단기 이평은 장기 이평보다 짧아야 합니다.";
     }
+    if (rule.kind === "ma-cross" && (rule.slowMa > 40 || rule.fastMa > 40)) {
+      return "이동평균 기간은 지원 일봉 40봉 이하여야 합니다.";
+    }
     if (!(rule.buyPct > 0) || rule.buyPct > 1) return "1회 매수 비중은 0과 1 사이여야 합니다.";
     if (rule.stopLossPct <= 0 || rule.stopLossPct > 1) return "손절 비율이 올바르지 않습니다.";
     if (rule.takeProfitPct < 0 || rule.takeProfitPct > 1) return "익절 비율이 올바르지 않습니다.";

@@ -18,7 +18,12 @@ import {
   getQuoteHub,
 } from "@/src/market-data/kis-realtime-registry";
 import { kisCredentialSessionKey } from "@/src/market-data/kis-approval";
-import { mergeLiveIntoDailyCloses } from "@/src/market-data/daily-history";
+import {
+  closesFromBars,
+  mergeLiveIntoDailyBars,
+  seoulTradeDate,
+  type DailyCloseBar,
+} from "@/src/market-data/daily-history";
 
 /** Process-local: tickers that already received one-time inquirePrice metadata seed. */
 const metadataSeeded = new Set<string>();
@@ -208,10 +213,24 @@ export async function refreshQuotesFromWebSocket(
     }
 
     try {
-      const daily = await client.inquireDailyCloses(code);
-      history = mergeLiveIntoDailyCloses(daily.length > 0 ? daily : history, snap.price);
+      const bars: DailyCloseBar[] = client.inquireDailyBars
+        ? await client.inquireDailyBars(code)
+        : (await client.inquireDailyCloses(code)).map((close) => ({ tradeDate: "", close }));
+      const dated = bars.filter((b) => b.tradeDate.length === 8);
+      if (dated.length > 0) {
+        history = closesFromBars(
+          mergeLiveIntoDailyBars(dated, {
+            tradeDate: seoulTradeDate(snap.receivedAt),
+            price: snap.price,
+          }),
+        );
+      } else if (bars.some((b) => b.close > 0)) {
+        // Undated closes only — keep as-is, do not append live ticks as fake days.
+        history = bars.map((b) => b.close).slice(-40);
+      }
+      // else keep prior history unchanged
     } catch {
-      history = mergeLiveIntoDailyCloses(history, snap.price);
+      // Daily inquire failed — keep prior history; do not accumulate live ticks as days.
     }
 
     // prevClose must come from verified seed/prior snapshot — never WS current price.
@@ -287,6 +306,7 @@ export function brokerQuoteFromSnapshot(
     low: snap.low || snap.price,
     prevClose: prev?.prevClose && prev.prevClose > 0 ? prev.prevClose : 0,
     volume: snap.volume,
-    history: mergeLiveIntoDailyCloses(prev?.history ?? [], snap.price),
+    // Snapshot helper has no dated daily chart — preserve prior history only.
+    history: prev?.history?.length ? prev.history.slice(-40) : [],
   };
 }

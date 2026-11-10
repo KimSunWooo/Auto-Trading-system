@@ -148,16 +148,19 @@ test("C. KIS getQuote success → source=kis and freshAt set", async () => {
   assert.equal(isFreshKisQuote(book), true);
 });
 
-test("D. KIS quote failure → no mock fallback", async () => {
+test("D. KIS quote failure → no mock fallback (per-ticker; no account-wide quoteOk blast)", async () => {
   liveKisEnv();
   const box = { current: makeTestPaperState() };
   box.current.quotes = { "035720": mockQuote(undefined, 99_999) };
+  const prevSafetyKind = box.current.safety?.kind ?? "ok";
   const client = new FakeKis();
   client.failPrice = new Error("inquirePrice down");
   const broker = new KisBroker(box, client);
   const quote = await broker.getQuote("035720");
   assert.equal(quote, null);
-  assert.equal(box.current.safety?.kind, "market_data_unavailable");
+  // One ticker REST failure must not flip account-wide market_data_unavailable.
+  assert.notEqual(box.current.safety?.kind, "market_data_unavailable");
+  assert.equal(box.current.safety?.kind ?? "ok", prevSafetyKind);
   // Persisted mock price must not be returned as a live quote.
   assert.equal(box.current.quotes["035720"]?.source, "mock");
   assert.equal(box.current.quotes["035720"]?.price, 99_999);

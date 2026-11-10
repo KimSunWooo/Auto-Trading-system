@@ -166,6 +166,8 @@ export interface KisApi {
   readonly productCode?: string;
   inquirePrice(ticker: string): Promise<KisPrice>;
   inquireDailyCloses(ticker: string): Promise<number[]>;
+  /** Dated daily closes (Seoul trade date YYYYMMDD) when the client supports it. */
+  inquireDailyBars?(ticker: string): Promise<Array<{ tradeDate: string; close: number }>>;
   inquireDailyCcld(): Promise<KisDayOrder[]>;
   /**
    * Date-range daily order/execution inquiry (PAPER/REAL).
@@ -316,7 +318,10 @@ export class KisClient implements KisApi {
   private inflight = 0;
   private readonly waiters: Array<() => void> = [];
   private readonly priceCache = new Map<string, { at: number; value: KisPrice }>();
-  private readonly dailyCache = new Map<string, { at: number; value: number[] }>();
+  private readonly dailyCache = new Map<
+    string,
+    { at: number; value: number[]; bars: Array<{ tradeDate: string; close: number }> }
+  >();
   /** PAPER REST serial queue — wait ≠ HTTP retry. */
   private restTail: Promise<void> = Promise.resolve();
   private lastRestAt = 0;
@@ -420,10 +425,10 @@ export class KisClient implements KisApi {
     return value;
   }
 
-  async inquireDailyCloses(ticker: string): Promise<number[]> {
+  async inquireDailyBars(ticker: string): Promise<Array<{ tradeDate: string; close: number }>> {
     this.assertConfigured();
     const cached = this.dailyCache.get(ticker);
-    if (cached && Date.now() - cached.at < 10 * 60_000) return cached.value;
+    if (cached && Date.now() - cached.at < 10 * 60_000) return cached.bars;
 
     const end = new Date();
     const start = addDays(end, -90);
@@ -445,15 +450,28 @@ export class KisClient implements KisApi {
       );
       const raw = json.output2 ?? json.output;
       const rows = Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
-      const closes = rows
-        .map((row) => asNumber(row.stck_clpr))
-        .filter((n) => n > 0)
+      const bars = rows
+        .map((row) => {
+          const close = asNumber(row.stck_clpr);
+          const tradeDate = String(row.stck_bsop_date ?? row.stck_bsop_date ?? "")
+            .replace(/\D/g, "")
+            .slice(0, 8);
+          if (!(close > 0) || tradeDate.length !== 8) return null;
+          return { tradeDate, close };
+        })
+        .filter((row): row is { tradeDate: string; close: number } => row != null)
         .reverse();
-      this.dailyCache.set(ticker, { at: Date.now(), value: closes });
-      return closes;
+      const closes = bars.map((b) => b.close);
+      this.dailyCache.set(ticker, { at: Date.now(), value: closes, bars });
+      return bars;
     } catch {
       return [];
     }
+  }
+
+  async inquireDailyCloses(ticker: string): Promise<number[]> {
+    const bars = await this.inquireDailyBars(ticker);
+    return bars.map((b) => b.close);
   }
 
   async orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }> {

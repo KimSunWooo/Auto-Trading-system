@@ -68,6 +68,18 @@ function seedLiveQuote(state: ReturnType<typeof createPaperState>, ticker = "005
     transport: "ws",
     freshAt: now,
   };
+  state.kisBalance = {
+    syncedAt: new Date(now).toISOString(),
+    fetchedAt: new Date(now).toISOString(),
+    cash: 10_000_000,
+    d2Cash: 10_000_000,
+    orderableCash: 9_000_000,
+    holdings: [],
+    cashDelta: 0,
+    matched: true,
+    freshness: "fresh",
+    message: "ok",
+  };
 }
 
 function fakeClient(orderCashCalls: { n: number }) {

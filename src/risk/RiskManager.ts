@@ -15,6 +15,7 @@ import { autoRunAllowed } from "@/src/rules/disclaimer";
 import { blockSafety, safetyOf } from "@/src/runtime/safety";
 import { isLiveLike } from "@/src/runtime/trading-mode";
 import { recordControlledEvent } from "@/src/runtime/controlled-run";
+import { isFreshKisQuote } from "@/src/runtime/quote-policy";
 import { nowIso, nowMs } from "@/src/clock";
 import { accountValue } from "@/src/accounts/portfolio";
 
@@ -486,7 +487,20 @@ export class RiskManager {
     for (const pos of snapshot) {
       if (pos.qty < 1) continue;
       const quote = this.box.current.quotes[pos.code];
-      if (isLiveLike() && (quote?.source !== "kis" || !quote.freshAt)) continue;
+      if (isLiveLike() && !isFreshKisQuote(quote)) {
+        this.box.current = {
+          ...this.box.current,
+          allocations: this.box.current.allocations.map((row) =>
+            row.ruleId === pos.ruleId
+              ? {
+                  ...row,
+                  lastMessage: `${pos.name} 시세 없음/만료 — 손절·익절 보류`,
+                }
+              : row,
+          ),
+        };
+        continue;
+      }
       const last = quote?.price ?? pos.avgPrice;
       const rule = rules.find((row) => row.id === pos.ruleId);
       const stopPct = rule?.stopLossPct ?? product.stopLossPct;
@@ -503,26 +517,74 @@ export class RiskManager {
           `${pos.name} ${label} (${Math.round(pct * 100)}%)`,
         );
       }
-      await sellBandSlices(broker().forRule(pos.ruleId), pos.code, pos.qty, last, quote?.prevClose);
+      const fill = await sellBandSlices(
+        broker().forRule(pos.ruleId),
+        pos.code,
+        pos.qty,
+        last,
+        quote?.prevClose,
+      );
       const key = `${pos.ruleId}:${pos.code}`;
-      const prevSafety = safetyOf(this.box.current);
-      this.box.current = {
-        ...this.box.current,
-        safety: {
-          ...prevSafety,
-          closedByStop: { ...prevSafety.closedByStop, [key]: seoulDay() },
-          blockedBuys: [...prevSafety.blockedBuys, key],
-        },
-        allocations: this.box.current.allocations.map((row) =>
-          row.ruleId === pos.ruleId
-            ? {
-                ...row,
-                lastMessage: `${pos.name} ${label} (${Math.round(pct * 100)}%, 평단 대비)`,
-                lastRunAt: nowIso(),
-              }
-            : row,
-        ),
-      };
+      // closedByStop only after confirmed flatten fill — pending/unknown keep intent protection.
+      if (fill.ok) {
+        const prevSafety = safetyOf(this.box.current);
+        this.box.current = {
+          ...this.box.current,
+          safety: {
+            ...prevSafety,
+            closedByStop: { ...prevSafety.closedByStop, [key]: seoulDay() },
+            blockedBuys: [...prevSafety.blockedBuys, key],
+          },
+          allocations: this.box.current.allocations.map((row) =>
+            row.ruleId === pos.ruleId
+              ? {
+                  ...row,
+                  lastMessage: `${pos.name} ${label} 체결 (${Math.round(pct * 100)}%, 평단 대비)`,
+                  lastRunAt: nowIso(),
+                }
+              : row,
+          ),
+        };
+      } else if (fill.status === "pending") {
+        this.box.current = {
+          ...this.box.current,
+          allocations: this.box.current.allocations.map((row) =>
+            row.ruleId === pos.ruleId
+              ? {
+                  ...row,
+                  lastMessage: `${pos.name} ${label} 접수 (체결 대기)`,
+                  lastRunAt: nowIso(),
+                }
+              : row,
+          ),
+        };
+      } else if (fill.status === "unknown") {
+        this.box.current = {
+          ...this.box.current,
+          allocations: this.box.current.allocations.map((row) =>
+            row.ruleId === pos.ruleId
+              ? {
+                  ...row,
+                  lastMessage: `${pos.name} ${label} 결과 미확인`,
+                  lastRunAt: nowIso(),
+                }
+              : row,
+          ),
+        };
+      } else {
+        this.box.current = {
+          ...this.box.current,
+          allocations: this.box.current.allocations.map((row) =>
+            row.ruleId === pos.ruleId
+              ? {
+                  ...row,
+                  lastMessage: `${pos.name} ${label} 거절: ${fill.reason ?? "알 수 없음"}`,
+                  lastRunAt: nowIso(),
+                }
+              : row,
+          ),
+        };
+      }
     }
   }
 }

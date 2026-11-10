@@ -209,8 +209,8 @@ test("resumeTransientUnknownStop preserves operator autoTrading OFF", () => {
   assert.equal(resumed.settings.autoTrading, false);
 });
 
-test("mergeLiveIntoDailyCloses does not duplicate equal last close", () => {
+test("mergeLiveIntoDailyCloses without dates does not invent bars from live ticks", () => {
   assert.deepEqual(mergeLiveIntoDailyCloses([1, 2, 3], 3), [1, 2, 3]);
-  assert.deepEqual(mergeLiveIntoDailyCloses([1, 2, 3], 4), [1, 2, 3, 4]);
-  assert.deepEqual(mergeLiveIntoDailyCloses([], 10), [10]);
+  assert.deepEqual(mergeLiveIntoDailyCloses([1, 2, 3], 4), [1, 2, 3]);
+  assert.deepEqual(mergeLiveIntoDailyCloses([], 10), []);
 });

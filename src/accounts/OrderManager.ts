@@ -23,6 +23,11 @@ import { executionLocked } from "@/src/rules/disclaimer";
 import { guardLog } from "@/src/rules/guard-log";
 import { noteRuleOutcome, ruleThrottleReason } from "@/src/rules/throttle";
 import { checkHardLimits, seoulDay } from "@/src/risk/limits";
+import { isActiveWorkingOrder } from "@/src/risk/order-policy";
+import {
+  distributableOrderableCash,
+  readOrderableCashSnapshot,
+} from "@/src/rules/allocation-ratio";
 import { findIntent, findOrderByIntent, patchIntent, upsertIntent } from "@/src/runtime/intents";
 import { safetyOf, stopKey } from "@/src/runtime/safety";
 import { isLiveLike } from "@/src/runtime/trading-mode";
@@ -116,6 +121,20 @@ export class OrderManager {
         reason: `${ruleId} 잔액 ${bucket.balance.toLocaleString("ko-KR")}원으로는 ${net.toLocaleString("ko-KR")}원 주문을 낼 수 없습니다.`,
       };
     }
+    // Live PAPER/REAL: submit path must use fresh KIS ord_psbl_cash — never deposit alone.
+    if (isLiveLike()) {
+      const snap = readOrderableCashSnapshot(this.box.current, nowMs());
+      const dist = distributableOrderableCash(snap, this.box.current);
+      if (dist.amount == null) {
+        return { ok: false, reason: dist.blockReason ?? "주문가능금액 확인 불가" };
+      }
+      if (dist.amount < net) {
+        return {
+          ok: false,
+          reason: `주문가능금액 ${dist.amount.toLocaleString("ko-KR")}원으로는 ${net.toLocaleString("ko-KR")}원 주문을 낼 수 없습니다.`,
+        };
+      }
+    }
     if (ticker) {
       const hard = checkHardLimits(this.box.current, {
         side: "buy",
@@ -131,13 +150,8 @@ export class OrderManager {
         price,
       });
       if (product) return { ok: false, reason: product };
-      const working = this.box.current.orders.find(
-        (order) =>
-          !order.parentOrderId &&
-          (order.status === "pending" || order.status === "unknown") &&
-          order.ruleId === ruleId &&
-          order.code === ticker &&
-          order.side === "buy",
+      const working = this.box.current.orders.find((order) =>
+        isActiveWorkingOrder(order, { ruleId, ticker, side: "buy" }),
       );
       if (working) {
         return { ok: false, reason: `${ticker} 미체결 주문이 있어 대기합니다.` };
@@ -180,13 +194,8 @@ export class OrderManager {
       return { ok: false, reason: "매도 가능 수량이 부족합니다." };
     }
     if (!opts.liquidation) {
-      const working = this.box.current.orders.find(
-        (order) =>
-          !order.parentOrderId &&
-          (order.status === "pending" || order.status === "unknown") &&
-          order.ruleId === ruleId &&
-          order.code === ticker &&
-          order.side === "sell",
+      const working = this.box.current.orders.find((order) =>
+        isActiveWorkingOrder(order, { ruleId, ticker, side: "sell" }),
       );
       if (working) {
         return { ok: false, reason: `${ticker} 미체결 매도가 있어 대기합니다.` };

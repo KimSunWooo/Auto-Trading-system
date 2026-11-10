@@ -9,6 +9,7 @@ import { planBuyAmountKrw, strategyBudgetView } from "@/src/rules/allocation-rat
 import { makeSignalId } from "@/src/runtime/intents";
 import { seoulDay } from "@/src/risk/limits";
 import type { AppState } from "@/lib/types";
+import { MAX_SUPPORTED_DAILY_BARS } from "@/src/market-data/daily-history";
 
 export class RuleRunner {
   static async execute(
@@ -135,14 +136,20 @@ async function runMaCross(
 ): Promise<AccountBucket> {
   const quote = await broker.getQuote(rule.ticker);
   if (!quote) return { ...bucket, lastMessage: "시세 없음" };
+  const need = Math.max(rule.fastMa, rule.slowMa);
+  const have = quote.history?.length ?? 0;
+  if (need > MAX_SUPPORTED_DAILY_BARS) {
+    return {
+      ...bucket,
+      lastMessage: `이동평균 기간 ${need}봉은 지원 범위 ${MAX_SUPPORTED_DAILY_BARS}봉을 초과합니다 (현재 ${have}봉)`,
+    };
+  }
   const fast = sma(quote.history, rule.fastMa);
   const slow = sma(quote.history, rule.slowMa);
   if (fast == null || slow == null) {
-    const need = Math.max(rule.fastMa, rule.slowMa);
-    const have = quote.history?.length ?? 0;
     return {
       ...bucket,
-      lastMessage: `이동평균 워밍업 중 (필요 ${need}봉 / 현재 ${have}봉)`,
+      lastMessage: `이동평균 워밍업 중 (필요 ${need}봉 / 현재 ${have}봉, 지원 ${MAX_SUPPORTED_DAILY_BARS}봉)`,
     };
   }
   const regime = String(bucket.meta.regime ?? "flat");

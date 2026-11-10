@@ -172,7 +172,7 @@ test("Idle path persists maRel without ordering", async () => {
 test("MA warmup reports required vs available bar counts", async () => {
   const history = Array.from({ length: 7 }, () => 40_000);
   const { after, box } = await runOnce({ history, meta: { maRel: "below", regime: "flat" } });
-  assert.match(after.lastMessage ?? "", /이동평균 워밍업 중 \(필요 20봉 \/ 현재 7봉\)/);
+  assert.match(after.lastMessage ?? "", /이동평균 워밍업 중 \(필요 20봉 \/ 현재 7봉/);
   assert.equal(box.current.orders.length, 0);
 });
 
