@@ -10,10 +10,14 @@
     "compare": "tsx ts/compare/harness.ts",
     "ai:validate": "tsx ts/ai/validate-fixtures.ts",
     "smoke": "tsx ts/compare/harness.ts && tsx ts/ai/validate-fixtures.ts && tsx ts/ingest/cli.ts --source fixture --once",
-    "test": "tsx --test --test-concurrency=1 ts/**/*.test.ts"
+    "infra:up": "bash scripts/infra-up.sh",
+    "infra:down": "bash scripts/infra-down.sh",
+    "pipeline:real": "EXTENSIONS_REAL_INFRA=1 tsx ts/adapters/real-pipeline.cli.ts",
+    "test": "tsx --test --test-concurrency=1 ts/ingest/*.test.ts",
+    "test:real": "EXTENSIONS_REAL_INFRA=1 tsx --test --test-concurrency=1 ts/adapters/kafka-redis.integration.test.ts",
+    "test:core-regression": "cd .. && MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 extensions/ts/compare/core-regression.test.ts"
   },
-  "dependencies": {},
-  "optionalDependencies": {
+  "dependencies": {
     "ioredis": "^5.4.2",
     "kafkajs": "^2.2.4"
   },

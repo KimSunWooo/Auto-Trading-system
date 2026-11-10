@@ -92,7 +92,27 @@ Offline replay: export `Candle[]` and call `BacktestRunner.run({ candles, alloca
 |---------|------------------|--------------|
 | Kafka down | `publishErrors++`; queue may drop | Unaffected (separate process) |
 | Redis slow | UI cache lag only | Order quotes still from core hub |
+| Redis unavailable | Handler throws → **no** Kafka offset commit | Unaffected |
+| Crash after Redis / before commit | Same `eventId` redelivered; Redis SET dedupe → volume unchanged | Unaffected |
+| Queue saturation | `droppedTrades++`; minute marked `incomplete` | Unaffected |
 | Python CPU saturate | Research delayed | Core tick independent |
 | gRPC timeout | Job stays QUEUED/EXPIRED | No order impact |
 | TRADE drop | Mark minute `incomplete` | N/A |
-| PAPER ASP0 missing | Imbalance detector OFF | N/A |
+| PAPER ASP0 missing | Imbalance detector OFF (fixture vs live unverified) | N/A |
+
+## Real Kafka / Redis adapters (`EXTENSIONS_REAL_INFRA=1`)
+
+```mermaid
+flowchart LR
+  Fix[H0STCNT0 fixture] --> Prod[TS QuoteIngestProducer]
+  Prod -->|acks=-1 retries=3| KP[Kafka ticker-quotes]
+  KP --> Cons[Consumer group ext-ui-ohlcv-v1]
+  Cons -->|Lua atomic dedupe+OHLCV| RD[(Redis :16379)]
+  Cons -->|commit offset after Redis OK| KP
+```
+
+- Brokers: `127.0.0.1:19092` (Redpanda via `extensions/docker-compose.yml`)
+- Redis: `redis://127.0.0.1:16379`
+- Dedupe TTL **24h**; OHLCV retention **10m**
+- Latest price never rewinds on late `exchangeTsMs`
+- Minute open = earliest exchangeTs; close = latest exchangeTs
