@@ -56,6 +56,42 @@ MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 \
 | OHLCV window | Last **10 minutes**, one bar per minute start |
 | PAPER orderbook | Detector stays **disabled / unverified** (TRADE-only) |
 
+## Real local gRPC backtest (TypeScript → Python)
+
+Pinned tools: `extensions/python/requirements-grpc.txt`  
+`grpcio==1.68.1`, `grpcio-tools==1.68.1`, `protobuf==5.29.3`  
+TS client: `@grpc/grpc-js@1.12.6`, `@grpc/proto-loader@0.7.13`
+
+```bash
+# Stubs (idempotent)
+bash extensions/scripts/gen-proto.sh
+pip3 install -r extensions/python/requirements-grpc.txt
+
+# Server + separate worker (default 127.0.0.1:50051)
+EXT_GRPC_FRESH_STORE=1 bash extensions/scripts/grpc-up.sh
+npx tsx extensions/ts/grpc/cli.ts run --dataset synthetic-v0-short --key demo-1
+npx tsx extensions/ts/grpc/cli.ts get --job <jobId>
+bash extensions/scripts/grpc-down.sh
+
+# Integration + FakeBroker overlap
+npx tsx --test --test-concurrency=1 extensions/ts/grpc/grpc.integration.test.ts
+MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 \
+  extensions/ts/compare/grpc-overlap-regression.test.ts
+```
+
+| Rule | Behavior |
+|------|----------|
+| Dataset input | Catalog IDs only (`synthetic-v0`, `synthetic-v0-short`) — **no path args** |
+| Idempotency | Same key+input → same `jobId`; same key+different input → `ALREADY_EXISTS` |
+| Durability | File job store under `extensions/.bus/jobs` |
+| Compute | **Separate** `backtest_worker` process (lease + generation) |
+| Caps | Queue 32 (tests use 8), RPC deadline ~5s, MA≤500, bars≤5000 |
+| Lost submit response | Client retries same key → same `jobId` |
+| Worker death mid-run | Lease expires → requeue (or FAIL after max attempts); stale complete rejected |
+| Deferred | `UploadBars` streaming, Kafka result notify |
+
+Python metrics are **candidate search** only. ATS execution truth remains `BacktestRunner`.
+
 ## Layout
 
 | Path | Role |
@@ -63,9 +99,10 @@ MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 \
 | `ts/ingest` | Bounded queue + fixture producer → `ticker-quotes` |
 | `ts/redis` | UI-only latest quote + 10m OHLCV (memory/file; Redis-shaped) |
 | `ts/adapters` | Real Kafka (Redpanda) + Redis adapters + integration tests |
+| `ts/grpc` | TypeScript TradingAnalysis client + CLI + integration tests |
 | `ts/ai` | Agent fixture validation via core contract |
-| `ts/compare` | OFF/ON/fault harness + FakeBroker core regression |
-| `python/ats_research` | Risk consumer + MA optimizer + job store |
+| `ts/compare` | OFF/ON/fault harness + FakeBroker core / gRPC overlap regression |
+| `python/ats_research` | Risk consumer + MA optimizer + job store + gRPC server + worker |
 | `proto/trading_analysis.proto` | SubmitBacktest / GetBacktestJob / UploadBars |
 | `docker-compose.yml` | Local Redpanda + Redis for extensions only |
 | `docs/ARCHITECTURE.md` | Mermaid flows, caps, failure table |

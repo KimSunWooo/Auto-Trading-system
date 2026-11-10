@@ -100,6 +100,33 @@ Offline replay: export `Candle[]` and call `BacktestRunner.run({ candles, alloca
 | TRADE drop | Mark minute `incomplete` | N/A |
 | PAPER ASP0 missing | Imbalance detector OFF (fixture vs live unverified) | N/A |
 
+## TradingAnalysis gRPC (local)
+
+```mermaid
+flowchart LR
+  TS[TS CLI / client] -->|SubmitBacktest / GetBacktestJob| Svc[Python gRPC server]
+  Svc --> Store[(JobStore files)]
+  W[backtest_worker process] --> Store
+  W --> Opt[optimizer.walk_forward / simulate]
+  Store -.->|file notify JSONL| Notify[backtest-results.jsonl]
+```
+
+### Recovery
+
+| Failure | Rule |
+|---------|------|
+| Submit response lost | Retry same `idempotency_key` + same fingerprint → same `jobId` (no duplicate) |
+| Server restart while `QUEUED` | Jobs remain on disk; worker claims after restart |
+| Worker killed while `RUNNING` | Lease expiry → requeue (`attempt++`); after `max_attempts` → `FAILED` |
+| Stale worker completes late | `lease_generation` / terminal-state guard → `StaleLeaseError` (no overwrite) |
+| Queue full | `RESOURCE_EXHAUSTED` / `queue_cap_exceeded` |
+| Unknown `dataset_id` | `NOT_FOUND` (catalog only; no filesystem paths) |
+
+### Deferred (follow-up)
+
+- `UploadBars` streaming upload
+- Kafka result topic notify (`result_topic_offset`)
+
 ## Real Kafka / Redis adapters (`EXTENSIONS_REAL_INFRA=1`)
 
 ```mermaid
