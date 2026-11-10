@@ -21,7 +21,9 @@
     "grpc:down": "bash scripts/grpc-down.sh",
     "grpc:cli": "tsx ts/grpc/cli.ts",
     "test:grpc": "tsx --test --test-concurrency=1 ts/grpc/grpc.integration.test.ts",
-    "test:grpc-overlap": "cd .. && MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 extensions/ts/compare/grpc-overlap-regression.test.ts"
+    "test:grpc-overlap": "cd .. && MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 extensions/ts/compare/grpc-overlap-regression.test.ts",
+    "test:notify": "EXTENSIONS_REAL_INFRA=1 tsx --test --test-concurrency=1 ts/grpc/notify.integration.test.ts",
+    "publisher": "python3 -m ats_research.outbox_publisher"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.12.6",

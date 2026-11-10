@@ -31,6 +31,13 @@ python3 -m ats_research.backtest_worker --store "$STORE" --worker-id "$WORKER_ID
   >"$ROOT/.bus/run/backtest-worker.log" 2>&1 &
 echo $! >"$ROOT/.bus/run/backtest-worker.pid"
 
+BROKERS="${EXT_KAFKA_BROKERS:-127.0.0.1:19092}"
+if [ "${EXT_OUTBOX_PUBLISHER:-1}" = "1" ]; then
+  python3 -m ats_research.outbox_publisher --store "$STORE" --brokers "$BROKERS" \
+    >"$ROOT/.bus/run/outbox-publisher.log" 2>&1 &
+  echo $! >"$ROOT/.bus/run/outbox-publisher.pid"
+fi
+
 # Wait for port
 for i in $(seq 1 40); do
   if python3 - <<PY

@@ -88,7 +88,21 @@ MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 \
 | Caps | Queue 32 (tests use 8), RPC deadline ~5s, MA≤500, bars≤5000 |
 | Lost submit response | Client retries same key → same `jobId` |
 | Worker death mid-run | Lease expires → requeue (or FAIL after max attempts); stale complete rejected |
-| Deferred | `UploadBars` streaming, Kafka result notify |
+| Result notify | JobStore outbox → `outbox_publisher` → Kafka `backtest-results` → TS consumer → `GetBacktestJob` |
+| Deferred | `UploadBars` streaming |
+
+### Result notify (outbox → Kafka → TS)
+
+```bash
+bash extensions/scripts/infra-up.sh
+EXT_GRPC_FRESH_STORE=1 bash extensions/scripts/grpc-up.sh   # starts publisher too
+# or: PYTHONPATH=extensions/python python3 -m ats_research.outbox_publisher --store extensions/.bus/jobs
+
+EXTENSIONS_REAL_INFRA=1 npx tsx --test --test-concurrency=1 \
+  extensions/ts/grpc/notify.integration.test.ts
+```
+
+Terminal `SUCCEEDED`/`FAILED` writes an outbox row in the same JobStore transaction (stable `eventId`). Publisher ACKs Kafka then marks published. TS consumer dedupes by `eventId` and commits offsets only after observation write.
 
 Python metrics are **candidate search** only. ATS execution truth remains `BacktestRunner`.
 

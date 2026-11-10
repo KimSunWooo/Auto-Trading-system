@@ -122,10 +122,31 @@ flowchart LR
 | Queue full | `RESOURCE_EXHAUSTED` / `queue_cap_exceeded` |
 | Unknown `dataset_id` | `NOT_FOUND` (catalog only; no filesystem paths) |
 
+### Result notify (outbox)
+
+```mermaid
+flowchart LR
+  Complete[complete / lease-exhausted FAILED] --> Outbox[(outbox pending)]
+  Outbox --> Pub[outbox_publisher]
+  Pub -->|acks=all| Kafka[backtest-results]
+  Pub -->|mark after ACK| Outbox
+  Kafka --> Cons[TS result consumer]
+  Cons -->|GetBacktestJob| Svc
+  Cons --> Obs[(observation store by eventId)]
+```
+
+| Rule | Behavior |
+|------|----------|
+| Outbox write | Same lock as terminal job commit |
+| No outbox | Stale lease complete; retryable requeue |
+| `eventId` | Stable per `(jobId, status)` — republish identical |
+| Publisher | Kafka I/O outside JobStore txn; batch≤64; timeout/retry capped |
+| Metrics | `pending_count`, `oldest_pending_age_ms` |
+| Consumer | Apply observation then commit offset; gRPC fail → no commit |
+
 ### Deferred (follow-up)
 
 - `UploadBars` streaming upload
-- Kafka result topic notify (`result_topic_offset`)
 
 ## Real Kafka / Redis adapters (`EXTENSIONS_REAL_INFRA=1`)
 

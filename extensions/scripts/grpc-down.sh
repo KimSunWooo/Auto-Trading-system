@@ -17,9 +17,11 @@ kill_pidfile() {
   fi
 }
 
+kill_pidfile "$RUN/outbox-publisher.pid"
 kill_pidfile "$RUN/backtest-worker.pid"
 kill_pidfile "$RUN/grpc-server.pid"
 # Also sweep orphans bound to default port if leftover
+pkill -f 'ats_research.outbox_publisher' 2>/dev/null || true
 pkill -f 'ats_research.grpc_server' 2>/dev/null || true
 pkill -f 'ats_research.backtest_worker' 2>/dev/null || true
 echo "GRPC_DOWN"

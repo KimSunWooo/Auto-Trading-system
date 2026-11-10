@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 try:
+    from .result_events import build_result_event
+except ImportError:  # allow `python3 .../job_store.py` demo
+    from result_events import build_result_event  # type: ignore
+
+try:
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore
@@ -76,6 +81,8 @@ class JobStore:
         self.index_path = self.root / "idempotency.json"
         self.lock_path = self.root / ".store.lock"
         self.notify_path = self.root / "backtest-results.jsonl"
+        self.outbox_dir = self.root / "outbox"
+        self.outbox_dir.mkdir(exist_ok=True)
         if not self.index_path.exists():
             self.index_path.write_text("{}", encoding="utf-8")
         if not self.lock_path.exists():
@@ -207,8 +214,54 @@ class JobStore:
                 self._write_job(job)
             return job
 
+    def _write_outbox_unlocked(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        """Create pending outbox row for a newly terminal job (caller holds lock).
+
+        Retryable requeue and stale completes must NOT call this.
+        """
+        status = job["status"]
+        if status not in {"SUCCEEDED", "FAILED"}:
+            raise ValueError(f"outbox_requires_terminal:{status}")
+        completed_at = int(job.get("updated_at_unix_ms") or time.time() * 1000)
+        event = build_result_event(
+            job_id=job["job_id"],
+            status=status,
+            completed_at_unix_ms=completed_at,
+        )
+        # One outbox row per job completion (stable eventId).
+        outbox_id = event["eventId"].replace(":", "_")
+        path = self.outbox_dir / f"{outbox_id}.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        record = {
+            "outbox_id": outbox_id,
+            "event_id": event["eventId"],
+            "job_id": job["job_id"],
+            "schema_version": event["schemaVersion"],
+            "status": status,
+            "completed_at_unix_ms": completed_at,
+            "created_at_unix_ms": completed_at,
+            "event": event,
+            "published_at_unix_ms": None,
+            "publish_attempts": 0,
+            "last_error": None,
+            "kafka_topic": None,
+            "kafka_partition": None,
+            "kafka_offset": None,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        job["outbox_id"] = outbox_id
+        job["result_event_id"] = event["eventId"]
+        return record
+
     def reclaim_expired_leases(self) -> List[str]:
-        """Return RUNNING jobs whose lease expired to QUEUED (or FAILED if max attempts)."""
+        """Return RUNNING jobs whose lease expired to QUEUED (or FAILED if max attempts).
+
+        Requeue (retryable) does not create an outbox row.
+        Max-attempt FAILED does create an outbox in the same transaction.
+        """
         reclaimed: List[str] = []
         with self._lock():
             now = int(time.time() * 1000)
@@ -225,15 +278,37 @@ class JobStore:
                 if attempt >= self.max_attempts:
                     job["status"] = "FAILED"
                     job["error"] = "worker_lease_exhausted"
+                    job["lease_owner"] = None
+                    job["lease_until_unix_ms"] = 0
+                    job["updated_at_unix_ms"] = now
+                    self._write_outbox_unlocked(job)
+                    self._write_job(job)
+                    self._append_notify_unlocked(job)
                 else:
                     job["status"] = "QUEUED"
                     job["error"] = "worker_lease_expired_requeued"
-                job["lease_owner"] = None
-                job["lease_until_unix_ms"] = 0
-                job["updated_at_unix_ms"] = now
-                self._write_job(job)
+                    job["lease_owner"] = None
+                    job["lease_until_unix_ms"] = 0
+                    job["updated_at_unix_ms"] = now
+                    self._write_job(job)
                 reclaimed.append(job["job_id"])
         return reclaimed
+
+    def _append_notify_unlocked(self, job: Dict[str, Any]) -> None:
+        with self.notify_path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "job_id": job["job_id"],
+                        "status": job["status"],
+                        "event_id": job.get("result_event_id"),
+                        "outbox_id": job.get("outbox_id"),
+                        "metrics": job.get("metrics"),
+                        "note": "outbox_pending_kafka_publish",
+                    }
+                )
+                + "\n"
+            )
 
     def claim_next(self, worker_id: str) -> Optional[Dict[str, Any]]:
         """Atomically claim the oldest QUEUED job. Returns job + lease fields."""
@@ -286,7 +361,7 @@ class JobStore:
     ) -> Dict[str, Any]:
         with self._lock():
             job = self._read_job(job_id)
-            # Terminal states are immutable — stale workers must not overwrite.
+            # Terminal / stale leases: no outbox, no overwrite.
             if job.get("status") in {"SUCCEEDED", "FAILED", "EXPIRED"}:
                 raise StaleLeaseError(f"already_terminal:{job['status']}")
             if worker_id is not None or lease_generation is not None:
@@ -303,38 +378,102 @@ class JobStore:
             job["result"] = result
             job["updated_at_unix_ms"] = now
             job["lease_until_unix_ms"] = 0
+            # Same locked transaction: terminal job + outbox pending row.
+            self._write_outbox_unlocked(job)
             self._write_job(job)
-            with self.notify_path.open("a", encoding="utf-8") as fh:
-                fh.write(
-                    json.dumps(
-                        {
-                            "job_id": job_id,
-                            "status": job["status"],
-                            "metrics": metrics,
-                            "note": "local_file_notify; kafka_result_topic=deferred",
-                        }
-                    )
-                    + "\n"
-                )
+            self._append_notify_unlocked(job)
             return job
+
+    def list_pending_outbox(self) -> List[Dict[str, Any]]:
+        with self._lock():
+            rows: List[Dict[str, Any]] = []
+            for p in self.outbox_dir.glob("*.json"):
+                try:
+                    row = json.loads(p.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if row.get("published_at_unix_ms") is None:
+                    rows.append(row)
+            rows.sort(key=lambda r: int(r.get("created_at_unix_ms") or 0))
+            return rows
+
+    def outbox_stats(self) -> Dict[str, Any]:
+        pending = self.list_pending_outbox()
+        now = int(time.time() * 1000)
+        oldest_age = 0
+        if pending:
+            oldest_age = max(0, now - int(pending[0].get("created_at_unix_ms") or now))
+        return {
+            "pending_count": len(pending),
+            "oldest_pending_age_ms": oldest_age,
+            "oldest_event_id": pending[0]["event_id"] if pending else None,
+        }
+
+    def mark_outbox_published(
+        self,
+        outbox_id: str,
+        *,
+        kafka_topic: str,
+        kafka_partition: int,
+        kafka_offset: int,
+    ) -> Dict[str, Any]:
+        """Record broker ACK. Must run *after* Kafka network call (outside complete txn)."""
+        with self._lock():
+            path = self.outbox_dir / f"{outbox_id}.json"
+            if not path.exists():
+                raise KeyError(outbox_id)
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("published_at_unix_ms") is not None:
+                return row
+            now = int(time.time() * 1000)
+            row["published_at_unix_ms"] = now
+            row["kafka_topic"] = kafka_topic
+            row["kafka_partition"] = kafka_partition
+            row["kafka_offset"] = kafka_offset
+            row["last_error"] = None
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(row, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+            # Mirror offset onto job for GetBacktestJob.result_topic_offset
+            try:
+                job = self._read_job(row["job_id"])
+                job["result_topic_offset"] = f"{kafka_topic}:{kafka_partition}:{kafka_offset}"
+                job["updated_at_unix_ms"] = now
+                self._write_job(job)
+            except KeyError:
+                pass
+            return row
+
+    def record_outbox_publish_attempt(self, outbox_id: str, error: Optional[str] = None) -> None:
+        with self._lock():
+            path = self.outbox_dir / f"{outbox_id}.json"
+            if not path.exists():
+                raise KeyError(outbox_id)
+            row = json.loads(path.read_text(encoding="utf-8"))
+            row["publish_attempts"] = int(row.get("publish_attempts") or 0) + 1
+            if error:
+                row["last_error"] = error
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(row, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+
+    def get_outbox(self, outbox_id: str) -> Dict[str, Any]:
+        path = self.outbox_dir / f"{outbox_id}.json"
+        if not path.exists():
+            raise KeyError(outbox_id)
+        return json.loads(path.read_text(encoding="utf-8"))
 
 
 def demo() -> None:
     store = JobStore(Path("extensions/.bus/jobs"))
-    first = store.submit(
-        {
-            "idempotency_key": "demo-1",
-            "dataset_id": "synthetic-v0",
-            "candidate": {"candidate_id": "ma-5-20", "fast_ma": 5, "slow_ma": 20},
-        }
-    )
-    second = store.submit(
-        {
-            "idempotency_key": "demo-1",
-            "dataset_id": "synthetic-v0",
-            "candidate": {"candidate_id": "ma-5-20", "fast_ma": 5, "slow_ma": 20},
-        }
-    )
+    key = f"demo-{uuid.uuid4().hex[:8]}"
+    req = {
+        "idempotency_key": key,
+        "dataset_id": "synthetic-v0",
+        "candidate": {"candidate_id": "ma-5-20", "fast_ma": 5, "slow_ma": 20},
+    }
+    first = store.submit(req)
+    second = store.submit(req)
     claimed = store.claim_next("demo-worker")
     assert claimed is not None
     store.complete(
@@ -343,7 +482,17 @@ def demo() -> None:
         worker_id="demo-worker",
         lease_generation=claimed["lease_generation"],
     )
-    print(json.dumps({"submit": first, "dedupe": second, "get": store.get(first["job_id"])}, indent=2))
+    print(
+        json.dumps(
+            {
+                "submit": first,
+                "dedupe": second,
+                "get": store.get(first["job_id"]),
+                "outbox_pending": store.outbox_stats(),
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

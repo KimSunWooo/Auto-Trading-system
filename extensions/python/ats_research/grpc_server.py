@@ -2,7 +2,8 @@
 """TradingAnalysis gRPC server (SubmitBacktest / GetBacktestJob).
 
 Durable jobs land in JobStore. Computation runs in a *separate* worker process
-(`backtest_worker.py`). UploadBars and Kafka result notify are deferred.
+(`backtest_worker.py`). Completion writes an outbox row; a separate publisher
+process emits Kafka `backtest-results`. UploadBars remains deferred.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import signal
 import sys
 import time
@@ -70,8 +72,9 @@ def _dict_to_metrics(d: Dict[str, Any] | None) -> pb2.BacktestMetrics:
 
 
 class TradingAnalysisServicer(pb2_grpc.TradingAnalysisServicer):
-    def __init__(self, store: JobStore):
+    def __init__(self, store: JobStore, submit_delay_ms: int = 0):
         self.store = store
+        self.submit_delay_ms = max(0, int(submit_delay_ms))
 
     def SubmitBacktest(self, request, context):  # noqa: N802
         dataset_id = (request.dataset_id or "").strip()
@@ -112,6 +115,15 @@ class TradingAnalysisServicer(pb2_grpc.TradingAnalysisServicer):
         except ValueError as exc:
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
 
+        # Test hook: JobStore already committed; delay before first RPC response.
+        if self.submit_delay_ms > 0:
+            LOG.info(
+                "submit_delay_ms=%s job_id=%s (after JobStore commit)",
+                self.submit_delay_ms,
+                out["job_id"],
+            )
+            time.sleep(self.submit_delay_ms / 1000.0)
+
         LOG.info("submit job_id=%s deduped=%s", out["job_id"], out.get("deduped"))
         return pb2.SubmitBacktestResponse(job_id=out["job_id"], status=out["status"])
 
@@ -141,7 +153,7 @@ class TradingAnalysisServicer(pb2_grpc.TradingAnalysisServicer):
             error=job.get("error") or "",
             candidate=_dict_to_candidate(candidate),
             metrics=_dict_to_metrics(metrics),
-            result_topic_offset="",  # Kafka notify deferred
+            result_topic_offset=str(job.get("result_topic_offset") or ""),
             updated_at_unix_ms=int(job.get("updated_at_unix_ms") or 0),
         )
 
@@ -153,7 +165,7 @@ class TradingAnalysisServicer(pb2_grpc.TradingAnalysisServicer):
         )
 
 
-def serve(bind: str, store_root: Path, queue_cap: int) -> None:
+def serve(bind: str, store_root: Path, queue_cap: int, submit_delay_ms: int = 0) -> None:
     store = JobStore(store_root, queue_cap=queue_cap)
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=DEFAULT_MAX_WORKERS),
@@ -162,7 +174,10 @@ def serve(bind: str, store_root: Path, queue_cap: int) -> None:
             ("grpc.max_send_message_length", 4 * 1024 * 1024),
         ],
     )
-    pb2_grpc.add_TradingAnalysisServicer_to_server(TradingAnalysisServicer(store), server)
+    pb2_grpc.add_TradingAnalysisServicer_to_server(
+        TradingAnalysisServicer(store, submit_delay_ms=submit_delay_ms),
+        server,
+    )
     server.add_insecure_port(bind)
     server.start()
     LOG.info(
@@ -174,7 +189,8 @@ def serve(bind: str, store_root: Path, queue_cap: int) -> None:
                 "queue_cap": queue_cap,
                 "datasets": datasets.list_dataset_ids(),
                 "upload_bars": "deferred",
-                "kafka_result_notify": "deferred",
+                "kafka_result_notify": "outbox_publisher",
+                "submit_delay_ms": submit_delay_ms,
             }
         )
     )
@@ -201,8 +217,14 @@ def main(argv: list[str] | None = None) -> int:
         default=str(Path(__file__).resolve().parents[2] / ".bus" / "jobs"),
     )
     parser.add_argument("--queue-cap", type=int, default=DEFAULT_QUEUE_CAP)
+    parser.add_argument(
+        "--submit-delay-ms",
+        type=int,
+        default=int(os.environ.get("EXT_SUBMIT_DELAY_MS") or 0),
+        help="Test hook: sleep after JobStore commit before SubmitBacktest response",
+    )
     args = parser.parse_args(argv)
-    serve(args.bind, Path(args.store), args.queue_cap)
+    serve(args.bind, Path(args.store), args.queue_cap, submit_delay_ms=args.submit_delay_ms)
     return 0
 
 

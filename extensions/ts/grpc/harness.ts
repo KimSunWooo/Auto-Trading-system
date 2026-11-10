@@ -58,31 +58,63 @@ export function startServer(opts: {
   store: string;
   bind: string;
   queueCap?: number;
+  submitDelayMs?: number;
 }): ProcHandle {
   const runDir = path.join(EXT_ROOT, ".bus", "run");
   mkdirSync(runDir, { recursive: true });
   const logPath = path.join(runDir, `server-${process.pid}-${Date.now()}.log`);
   const out = openSync(logPath, "a");
-  const proc = spawn(
-    "python3",
-    [
-      "-m",
-      "ats_research.grpc_server",
-      "--bind",
-      opts.bind,
-      "--store",
-      opts.store,
-      "--queue-cap",
-      String(opts.queueCap ?? 32),
-    ],
-    {
-      cwd: REPO_ROOT,
-      env: pythonEnv(opts.store),
-      stdio: ["ignore", out, out],
-      detached: false,
-    },
-  );
+  const args = [
+    "-m",
+    "ats_research.grpc_server",
+    "--bind",
+    opts.bind,
+    "--store",
+    opts.store,
+    "--queue-cap",
+    String(opts.queueCap ?? 32),
+  ];
+  if (opts.submitDelayMs && opts.submitDelayMs > 0) {
+    args.push("--submit-delay-ms", String(opts.submitDelayMs));
+  }
+  const proc = spawn("python3", args, {
+    cwd: REPO_ROOT,
+    env: pythonEnv(opts.store),
+    stdio: ["ignore", out, out],
+    detached: false,
+  });
   return { proc, name: "grpc_server", logPath };
+}
+
+export function startPublisher(opts: {
+  store: string;
+  brokers?: string;
+  crashAfterAck?: boolean;
+  maxCycles?: number;
+  pollMs?: number;
+}): ProcHandle {
+  const runDir = path.join(EXT_ROOT, ".bus", "run");
+  mkdirSync(runDir, { recursive: true });
+  const logPath = path.join(runDir, `publisher-${Date.now()}.log`);
+  const out = openSync(logPath, "a");
+  const args = [
+    "-m",
+    "ats_research.outbox_publisher",
+    "--store",
+    opts.store,
+    "--brokers",
+    opts.brokers ?? "127.0.0.1:19092",
+    "--poll-ms",
+    String(opts.pollMs ?? 150),
+  ];
+  if (opts.maxCycles) args.push("--max-cycles", String(opts.maxCycles));
+  if (opts.crashAfterAck) args.push("--crash-after-ack");
+  const proc = spawn("python3", args, {
+    cwd: REPO_ROOT,
+    env: pythonEnv(opts.store),
+    stdio: ["ignore", out, out],
+  });
+  return { proc, name: "outbox_publisher", logPath };
 }
 
 export function startWorker(opts: {

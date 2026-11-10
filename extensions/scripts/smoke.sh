@@ -18,7 +18,7 @@ echo "== python optimizer =="
 python3 extensions/python/ats_research/optimizer.py
 
 echo "== job store demo =="
-python3 extensions/python/ats_research/job_store.py
+PYTHONPATH=extensions/python python3 -m ats_research.job_store
 
 echo "== AI fixture validate =="
 npx tsx extensions/ts/ai/validate-fixtures.ts
