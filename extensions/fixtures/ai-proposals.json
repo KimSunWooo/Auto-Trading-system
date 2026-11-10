@@ -1,0 +1,49 @@
+[
+  {
+    "proposalId": "fix-001",
+    "schemaVersion": "ai.trade-proposal.v1",
+    "dataMode": "FIXTURE",
+    "generatedAt": "2026-11-10T07:00:00.000Z",
+    "analysisAsOf": "2026-11-10T06:59:00.000Z",
+    "validUntil": "2026-11-10T08:00:00.000Z",
+    "modelVersion": "research-ma-v0",
+    "featureVersion": "feat-v0",
+    "policyVersion": "policy-observe-v1",
+    "market": "KR",
+    "ticker": "005930",
+    "action": "NO_TRADE",
+    "rationale": "Observation-only fixture — must stay orderEligible=false",
+    "isOrder": false
+  },
+  {
+    "proposalId": "fix-002",
+    "schemaVersion": "ai.trade-proposal.v1",
+    "dataMode": "FIXTURE",
+    "generatedAt": "2026-11-10T07:00:01.000Z",
+    "analysisAsOf": "2026-11-10T06:59:30.000Z",
+    "validUntil": "2026-11-10T08:00:00.000Z",
+    "modelVersion": "research-ma-v0",
+    "featureVersion": "feat-v0",
+    "policyVersion": "policy-observe-v1",
+    "market": "KR",
+    "ticker": "035720",
+    "action": "BUY",
+    "rationale": "Candidate suggestion only — ATS must keep orderEligible=false for FIXTURE",
+    "isOrder": false
+  },
+  {
+    "proposalId": "fix-bad-order-flag",
+    "schemaVersion": "ai.trade-proposal.v1",
+    "dataMode": "FIXTURE",
+    "generatedAt": "2026-11-10T07:00:02.000Z",
+    "analysisAsOf": "2026-11-10T06:59:45.000Z",
+    "validUntil": "2026-11-10T08:00:00.000Z",
+    "modelVersion": "research-ma-v0",
+    "featureVersion": "feat-v0",
+    "policyVersion": "policy-observe-v1",
+    "market": "KR",
+    "ticker": "005930",
+    "action": "BUY",
+    "isOrder": true
+  }
+]

@@ -1,0 +1,6 @@
+# Research-only dependencies. Do not install into the Next.js trading core.
+# pandas/TA-Lib are optional for the optimizer; stdlib smoke runs without them.
+pandas>=2.0.0
+numpy>=1.26.0
+# TA-Lib requires system libta-lib; leave commented for minimal smoke:
+# TA-Lib>=0.4.28

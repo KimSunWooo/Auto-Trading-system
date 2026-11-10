@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package ats.trading_analysis.v1;
+
+// Internal ATS research API. Research processes hold no order credentials
+// and must not write the trading ledger.
+
+message Bar {
+  int64 t_ms = 1;          // bar start (epoch ms)
+  string ticker = 2;
+  double open = 3;
+  double high = 4;
+  double low = 5;
+  double close = 6;
+  double volume = 7;
+  bool incomplete = 8;
+}
+
+message BacktestCandidate {
+  string candidate_id = 1;
+  string strategy_kind = 2;          // e.g. ma-cross
+  int32 fast_ma = 3;
+  int32 slow_ma = 4;
+  double buy_pct = 5;                // ratio units, e.g. 0.10 = 10%
+  double stop_loss_pct = 6;
+  string data_version = 7;
+}
+
+message BacktestMetrics {
+  double total_return_pct = 1;
+  double mdd_pct = 2;
+  int32 trades = 3;
+  double win_rate_pct = 4;
+}
+
+message SubmitBacktestRequest {
+  string idempotency_key = 1;        // required for submit dedupe
+  string dataset_id = 2;             // preferred: versioned dataset
+  BacktestCandidate candidate = 3;
+  int64 deadline_unix_ms = 4;        // server may reject if queue saturated
+  map<string, string> tags = 5;
+}
+
+message SubmitBacktestResponse {
+  string job_id = 1;
+  string status = 2;                 // QUEUED
+}
+
+message GetBacktestJobRequest {
+  string job_id = 1;
+}
+
+message GetBacktestJobResponse {
+  string job_id = 1;
+  string status = 2;                 // QUEUED|RUNNING|SUCCEEDED|FAILED|EXPIRED
+  string error = 3;
+  BacktestCandidate candidate = 4;
+  BacktestMetrics metrics = 5;
+  string result_topic_offset = 6;    // async notify pointer
+  int64 updated_at_unix_ms = 7;
+}
+
+message UploadBarsRequest {
+  string dataset_id = 1;
+  repeated Bar bars = 2;             // streaming chunks; keep small
+  bool eof = 3;
+}
+
+message UploadBarsResponse {
+  string dataset_id = 1;
+  int32 accepted_bars = 2;
+  int64 bytes_received = 3;
+}
+
+service TradingAnalysis {
+  // Prefer dataset_id. UploadBars is optional and size-limited.
+  rpc SubmitBacktest(SubmitBacktestRequest) returns (SubmitBacktestResponse);
+  rpc GetBacktestJob(GetBacktestJobRequest) returns (GetBacktestJobResponse);
+  rpc UploadBars(stream UploadBarsRequest) returns (UploadBarsResponse);
+}

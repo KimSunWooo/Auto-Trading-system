@@ -1,0 +1,24 @@
+{
+  "name": "@mirae/market-research-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Isolated quote ingest + research extensions. Default OFF. No trading-core deps.",
+  "type": "module",
+  "scripts": {
+    "ingest:fixture": "tsx ts/ingest/cli.ts --source fixture",
+    "aggregate": "tsx ts/redis/cli.ts",
+    "compare": "tsx ts/compare/harness.ts",
+    "ai:validate": "tsx ts/ai/validate-fixtures.ts",
+    "smoke": "tsx ts/compare/harness.ts && tsx ts/ai/validate-fixtures.ts && tsx ts/ingest/cli.ts --source fixture --once",
+    "test": "tsx --test --test-concurrency=1 ts/**/*.test.ts"
+  },
+  "dependencies": {},
+  "optionalDependencies": {
+    "ioredis": "^5.4.2",
+    "kafkajs": "^2.2.4"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
