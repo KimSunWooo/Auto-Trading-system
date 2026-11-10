@@ -22,6 +22,8 @@ from . import datasets
 from .job_store import JobStore, StaleLeaseError
 from .optimizer import simulate, walk_forward
 
+# Ensure uploaded datasets resolve from the same store root as JobStore.
+
 LOG = logging.getLogger("ext.backtest_worker")
 
 DEFAULT_POLL_MS = 250
@@ -202,7 +204,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     worker_id = args.worker_id or f"worker-{uuid.uuid4().hex[:8]}"
-    store = JobStore(Path(args.store), queue_cap=args.queue_cap, lease_ms=args.lease_ms)
+    store_root = Path(args.store)
+    # Do not wipe datasets/tmp — the gRPC server owns live upload sessions.
+    datasets.configure_catalog(store_root, purge_temps="none")
+    store = JobStore(store_root, queue_cap=args.queue_cap, lease_ms=args.lease_ms)
     max_jobs = args.max_jobs if args.max_jobs > 0 else None
     return loop(
         store,

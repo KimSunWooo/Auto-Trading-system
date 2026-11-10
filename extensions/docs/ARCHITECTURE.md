@@ -104,11 +104,12 @@ Offline replay: export `Candle[]` and call `BacktestRunner.run({ candles, alloca
 
 ```mermaid
 flowchart LR
-  TS[TS CLI / client] -->|SubmitBacktest / GetBacktestJob| Svc[Python gRPC server]
+  TS[TS CLI / client] -->|UploadBars / SubmitBacktest / GetBacktestJob| Svc[Python gRPC server]
   Svc --> Store[(JobStore files)]
+  Svc --> Cat[(dataset catalog\nbuiltin + upload-*)]
   W[backtest_worker process] --> Store
+  W --> Cat
   W --> Opt[optimizer.walk_forward / simulate]
-  Store -.->|file notify JSONL| Notify[backtest-results.jsonl]
 ```
 
 ### Recovery
@@ -121,16 +122,38 @@ flowchart LR
 | Stale worker completes late | `lease_generation` / terminal-state guard → `StaleLeaseError` (no overwrite) |
 | Queue full | `RESOURCE_EXHAUSTED` / `queue_cap_exceeded` |
 | Unknown `dataset_id` | `NOT_FOUND` (catalog only; no filesystem paths) |
+| Upload cancel / deadline / bad batch | Temp deleted immediately; never cataloged |
+| Upload crash before register | Orphan `datasets/tmp/` force-purged on gRPC server boot (`purge_temps=force`); workers use `none` |
+| Lost UploadBars response | Reupload same bars → same content-hash `datasetId` (`deduped`) |
+
+### UploadBars streaming
+
+```mermaid
+flowchart LR
+  CLI[TS CLI bounded send buffer] -->|chunks| Svc
+  Svc --> Tmp[datasets/tmp session]
+  Tmp -->|EOF + validate| Active[datasets/active + catalog.json]
+  Active --> Submit[SubmitBacktest same path as synthetic]
+```
+
+| Cap | Env | Default |
+|-----|-----|---------|
+| Bars / chunk | `EXT_UPLOAD_MAX_BARS_PER_CHUNK` | 500 |
+| Total bars / stream | `EXT_UPLOAD_MAX_TOTAL_BARS` | 50000 |
+| Total wire bytes | `EXT_UPLOAD_MAX_TOTAL_BYTES` | 8 MiB |
+| Concurrent uploads | `EXT_UPLOAD_MAX_CONCURRENT` | 2 |
+| Client in-flight writes | `EXT_UPLOAD_CLIENT_SEND_BUFFER` | 3 |
+| Orphan temp TTL (idle) | `EXT_UPLOAD_TEMP_TTL_MS` | 1h |
 
 ### Result notify (outbox)
 
 ```mermaid
 flowchart LR
   Complete[complete / lease-exhausted FAILED] --> Outbox[(outbox pending)]
-  Outbox --> Pub[outbox_publisher]
+  Outbox --> Pub[outbox_publisher kafka-python-ng]
   Pub -->|acks=all| Kafka[backtest-results]
   Pub -->|mark after ACK| Outbox
-  Kafka --> Cons[TS result consumer]
+  Kafka --> Cons[TS kafkajs result consumer]
   Cons -->|GetBacktestJob| Svc
   Cons --> Obs[(observation store by eventId)]
 ```
@@ -140,13 +163,9 @@ flowchart LR
 | Outbox write | Same lock as terminal job commit |
 | No outbox | Stale lease complete; retryable requeue |
 | `eventId` | Stable per `(jobId, status)` — republish identical |
-| Publisher | Kafka I/O outside JobStore txn; batch≤64; timeout/retry capped |
+| Publisher | Python `kafka-python-ng` (grpc-up.sh); TS consumers stay kafkajs |
 | Metrics | `pending_count`, `oldest_pending_age_ms` |
 | Consumer | Apply observation then commit offset; gRPC fail → no commit |
-
-### Deferred (follow-up)
-
-- `UploadBars` streaming upload
 
 ## Real Kafka / Redis adapters (`EXTENSIONS_REAL_INFRA=1`)
 

@@ -61,15 +61,27 @@ message GetBacktestJobResponse {
 }
 
 message UploadBarsRequest {
-  string dataset_id = 1;
+  string dataset_id = 1;             // client hint; server may content-address
   repeated Bar bars = 2;             // streaming chunks; keep small
   bool eof = 3;
+  // Additive fields (do not renumber 1-3).
+  string ticker = 4;                 // required for first chunk; single-symbol upload
+  string interval = 5;               // e.g. 1d / 1m — one interval per upload
+  int64 client_deadline_unix_ms = 6; // server aborts stream if exceeded
+  map<string, string> meta = 7;      // optional metadata (not paths)
 }
 
 message UploadBarsResponse {
   string dataset_id = 1;
   int32 accepted_bars = 2;
   int64 bytes_received = 3;
+  // Additive fields (do not renumber 1-3).
+  string data_version = 4;
+  string content_hash = 5;
+  int32 row_count = 6;
+  int64 start_t_ms = 7;
+  int64 end_t_ms = 8;
+  bool deduped = 9;                  // true when identical normalized content reused
 }
 
 service TradingAnalysis {

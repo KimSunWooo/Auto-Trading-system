@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import {
-  ALLOWED_DATASET_IDS,
   DEFAULT_RPC_DEADLINE_MS,
+  DEFAULT_UPLOAD_SEND_BUFFER,
   loadGrpcConfig,
-  type AllowedDatasetId,
 } from "./config.ts";
+import type { OhlcvBar } from "./ohlcv-file.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROTO = path.resolve(__dirname, "../../proto/trading_analysis.proto");
@@ -43,6 +43,25 @@ export type JobResult = {
   updatedAtUnixMs: number;
 };
 
+export type UploadResult = {
+  datasetId: string;
+  acceptedBars: number;
+  bytesReceived: number;
+  dataVersion: string;
+  contentHash: string;
+  rowCount: number;
+  startTMs: number;
+  endTMs: number;
+  deduped: boolean;
+};
+
+type ClientStreamingCall = {
+  write: (msg: Record<string, unknown>, cb?: (err?: Error | null) => void) => boolean;
+  end: () => void;
+  cancel: () => void;
+  on: (event: string, cb: (...args: unknown[]) => void) => void;
+};
+
 type GrpcClient = {
   SubmitBacktest: (
     req: Record<string, unknown>,
@@ -56,6 +75,11 @@ type GrpcClient = {
     opts: grpc.CallOptions,
     cb: (err: grpc.ServiceError | null, res: Record<string, unknown>) => void,
   ) => void;
+  UploadBars: (
+    md: grpc.Metadata,
+    opts: grpc.CallOptions,
+    cb: (err: grpc.ServiceError | null, res: Record<string, unknown>) => void,
+  ) => ClientStreamingCall;
   close: () => void;
 };
 
@@ -78,17 +102,23 @@ export class TradingAnalysisClient {
   readonly adapter = "grpc" as const;
   private readonly client: GrpcClient;
   private readonly deadlineMs: number;
+  private readonly sendBuffer: number;
 
-  constructor(addr?: string, opts?: { protoPath?: string; deadlineMs?: number }) {
+  constructor(
+    addr?: string,
+    opts?: { protoPath?: string; deadlineMs?: number; uploadSendBuffer?: number },
+  ) {
     const cfg = loadGrpcConfig();
     const target = addr ?? cfg.addr;
     const protoPath = opts?.protoPath ?? cfg.protoPath ?? DEFAULT_PROTO;
     const Ctor = loadPackage(protoPath);
     this.client = new Ctor(target, grpc.credentials.createInsecure(), {
       "grpc.max_receive_message_length": 4 * 1024 * 1024,
+      "grpc.max_send_message_length": 4 * 1024 * 1024,
       "grpc.keepalive_time_ms": 10_000,
     }) as unknown as GrpcClient;
     this.deadlineMs = opts?.deadlineMs ?? cfg.deadlineMs ?? DEFAULT_RPC_DEADLINE_MS;
+    this.sendBuffer = opts?.uploadSendBuffer ?? cfg.uploadSendBuffer ?? DEFAULT_UPLOAD_SEND_BUFFER;
   }
 
   close(): void {
@@ -107,17 +137,11 @@ export class TradingAnalysisClient {
     tags?: Record<string, string>;
     rpcDeadlineMs?: number;
   }): Promise<SubmitResult> {
-    if (!(ALLOWED_DATASET_IDS as readonly string[]).includes(input.datasetId)) {
-      return Promise.reject(
-        Object.assign(new Error(`unknown_dataset_id:${input.datasetId}`), {
-          code: grpc.status.NOT_FOUND,
-        }),
-      );
-    }
+    // Server validates catalog (builtin + uploaded). No client-side path allowlist.
     const c = input.candidate ?? {};
     const req = {
       idempotencyKey: input.idempotencyKey,
-      datasetId: input.datasetId as AllowedDatasetId,
+      datasetId: input.datasetId,
       candidate: {
         candidateId: c.candidateId ?? "",
         strategyKind: c.strategyKind ?? "ma-cross",
@@ -189,6 +213,134 @@ export class TradingAnalysisClient {
       }
       await new Promise((r) => setTimeout(r, pollMs));
     }
+  }
+
+  /**
+   * Stream UploadBars with a bounded send buffer (backpressure).
+   * When in-flight writes == sendBuffer, wait for drain before reading/sending more.
+   */
+  uploadBars(input: {
+    bars: OhlcvBar[];
+    ticker: string;
+    interval: string;
+    datasetIdHint?: string;
+    batchSize?: number;
+    clientDeadlineUnixMs?: number;
+    rpcDeadlineMs?: number;
+    sendBuffer?: number;
+    /** Test: abort after N chunks written (before eof). */
+    cancelAfterChunks?: number;
+  }): Promise<UploadResult> {
+    const batchSize = Math.max(1, input.batchSize ?? 50);
+    const sendBuffer = Math.max(1, input.sendBuffer ?? this.sendBuffer);
+    const chunks: OhlcvBar[][] = [];
+    for (let i = 0; i < input.bars.length; i += batchSize) {
+      chunks.push(input.bars.slice(i, i + batchSize));
+    }
+    if (!chunks.length) {
+      return Promise.reject(Object.assign(new Error("empty_upload"), { code: grpc.status.INVALID_ARGUMENT }));
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const call = this.client.UploadBars(
+        new grpc.Metadata(),
+        this.deadline(input.rpcDeadlineMs ?? Math.max(this.deadlineMs, 30_000)),
+        (err, res) => {
+          if (settled) return;
+          settled = true;
+          if (err) return reject(err);
+          resolve({
+            datasetId: String(res.datasetId),
+            acceptedBars: Number(res.acceptedBars ?? 0),
+            bytesReceived: Number(res.bytesReceived ?? 0),
+            dataVersion: String(res.dataVersion ?? ""),
+            contentHash: String(res.contentHash ?? ""),
+            rowCount: Number(res.rowCount ?? 0),
+            startTMs: Number(res.startTMs ?? 0),
+            endTMs: Number(res.endTMs ?? 0),
+            deduped: Boolean(res.deduped),
+          });
+        },
+      );
+
+      let inFlight = 0;
+      let idx = 0;
+      let writing = false;
+
+      const pump = () => {
+        if (settled || writing) return;
+        writing = true;
+        const step = () => {
+          while (idx < chunks.length && inFlight < sendBuffer) {
+            if (input.cancelAfterChunks != null && idx >= input.cancelAfterChunks) {
+              call.cancel();
+              if (!settled) {
+                settled = true;
+                reject(Object.assign(new Error("client_cancelled"), { code: grpc.status.CANCELLED }));
+              }
+              writing = false;
+              return;
+            }
+            const batch = chunks[idx]!;
+            const isLast = idx === chunks.length - 1;
+            idx += 1;
+            inFlight += 1;
+            const ok = call.write(
+              {
+                datasetId: input.datasetIdHint ?? "",
+                ticker: input.ticker,
+                interval: input.interval,
+                clientDeadlineUnixMs: input.clientDeadlineUnixMs ?? 0,
+                eof: isLast,
+                bars: batch.map((b) => ({
+                  tMs: b.tMs,
+                  ticker: b.ticker || input.ticker,
+                  open: b.open,
+                  high: b.high,
+                  low: b.low,
+                  close: b.close,
+                  volume: b.volume,
+                  incomplete: Boolean(b.incomplete),
+                })),
+              },
+              (writeErr) => {
+                inFlight = Math.max(0, inFlight - 1);
+                if (writeErr && !settled) {
+                  settled = true;
+                  reject(writeErr);
+                  return;
+                }
+                if (isLast) {
+                  call.end();
+                } else if (inFlight < sendBuffer) {
+                  step();
+                }
+              },
+            );
+            if (!ok) {
+              // Buffer full — wait for drain before continuing.
+              call.on("drain", () => {
+                inFlight = Math.max(0, inFlight); // drain does not decrement; callback does
+                step();
+              });
+              break;
+            }
+          }
+          writing = false;
+        };
+        step();
+      };
+
+      call.on("error", (err) => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      });
+
+      pump();
+    });
   }
 }
 

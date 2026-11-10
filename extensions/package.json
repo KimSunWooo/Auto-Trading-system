@@ -23,6 +23,7 @@
     "test:grpc": "tsx --test --test-concurrency=1 ts/grpc/grpc.integration.test.ts",
     "test:grpc-overlap": "cd .. && MIRAEMAESU_TEST=1 npx tsx --test --test-concurrency=1 extensions/ts/compare/grpc-overlap-regression.test.ts",
     "test:notify": "EXTENSIONS_REAL_INFRA=1 tsx --test --test-concurrency=1 ts/grpc/notify.integration.test.ts",
+    "test:upload": "EXTENSIONS_REAL_INFRA=1 tsx --test --test-concurrency=1 ts/grpc/upload.integration.test.ts",
     "publisher": "python3 -m ats_research.outbox_publisher"
   },
   "dependencies": {

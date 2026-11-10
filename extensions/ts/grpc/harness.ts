@@ -59,6 +59,8 @@ export function startServer(opts: {
   bind: string;
   queueCap?: number;
   submitDelayMs?: number;
+  uploadRecvDelayMs?: number;
+  env?: NodeJS.ProcessEnv;
 }): ProcHandle {
   const runDir = path.join(EXT_ROOT, ".bus", "run");
   mkdirSync(runDir, { recursive: true });
@@ -77,9 +79,12 @@ export function startServer(opts: {
   if (opts.submitDelayMs && opts.submitDelayMs > 0) {
     args.push("--submit-delay-ms", String(opts.submitDelayMs));
   }
+  if (opts.uploadRecvDelayMs && opts.uploadRecvDelayMs > 0) {
+    args.push("--upload-recv-delay-ms", String(opts.uploadRecvDelayMs));
+  }
   const proc = spawn("python3", args, {
     cwd: REPO_ROOT,
-    env: pythonEnv(opts.store),
+    env: { ...pythonEnv(opts.store), ...(opts.env ?? {}) },
     stdio: ["ignore", out, out],
     detached: false,
   });

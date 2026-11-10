@@ -2,12 +2,15 @@
 /**
  * TypeScript CLI → Python TradingAnalysis gRPC server.
  *
- *   npx tsx extensions/ts/grpc/cli.ts submit --dataset synthetic-v0 --key demo-1
+ *   npx tsx extensions/ts/grpc/cli.ts upload --file extensions/fixtures/ohlcv-005930-1d.jsonl --interval 1d
+ *   npx tsx extensions/ts/grpc/cli.ts submit --dataset <id> --key demo-1
  *   npx tsx extensions/ts/grpc/cli.ts get --job <jobId>
  *   npx tsx extensions/ts/grpc/cli.ts run --dataset synthetic-v0 --key demo-run
  */
+import path from "node:path";
 import { TradingAnalysisClient, isServiceError } from "./client.ts";
-import { ALLOWED_DATASET_IDS, loadGrpcConfig } from "./config.ts";
+import { BUILTIN_DATASET_IDS, loadGrpcConfig } from "./config.ts";
+import { readOhlcvJsonl } from "./ohlcv-file.ts";
 
 function arg(name: string, fallback = ""): string {
   const i = process.argv.indexOf(name);
@@ -25,12 +28,46 @@ async function main(): Promise<void> {
   const client = new TradingAnalysisClient(cfg.addr);
 
   try {
+    if (cmd === "upload") {
+      const file = arg("--file");
+      if (!file) throw new Error("--file required (local OHLCV JSONL)");
+      const interval = arg("--interval", "1d");
+      const batchSize = Number(arg("--batch", String(cfg.uploadBatch)));
+      const bars = [];
+      let ticker = arg("--ticker", "");
+      for await (const bar of readOhlcvJsonl(path.resolve(file))) {
+        if (!ticker) ticker = bar.ticker;
+        bars.push(bar);
+      }
+      if (!ticker) throw new Error("ticker missing in file / --ticker");
+      const uploaded = await client.uploadBars({
+        bars,
+        ticker,
+        interval,
+        batchSize,
+        sendBuffer: cfg.uploadSendBuffer,
+        rpcDeadlineMs: Number(arg("--deadline-ms", "60000")),
+      });
+      console.log(
+        JSON.stringify(
+          {
+            phase: "upload",
+            realGrpc: true,
+            file: path.resolve(file),
+            batchSize,
+            sendBuffer: cfg.uploadSendBuffer,
+            ...uploaded,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
     if (cmd === "submit") {
       const datasetId = arg("--dataset", "synthetic-v0");
       const key = arg("--key", `cli-${Date.now()}`);
-      if (!(ALLOWED_DATASET_IDS as readonly string[]).includes(datasetId)) {
-        throw new Error(`dataset_id not in catalog: ${datasetId}`);
-      }
       const res = await client.submit({
         idempotencyKey: key,
         datasetId,
@@ -89,14 +126,62 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (cmd === "upload-run") {
+      const file = arg("--file", "extensions/fixtures/ohlcv-005930-1d.jsonl");
+      const interval = arg("--interval", "1d");
+      const bars = [];
+      let ticker = "";
+      for await (const bar of readOhlcvJsonl(path.resolve(file))) {
+        if (!ticker) ticker = bar.ticker;
+        bars.push(bar);
+      }
+      const uploaded = await client.uploadBars({
+        bars,
+        ticker,
+        interval,
+        batchSize: Number(arg("--batch", "10")),
+        sendBuffer: cfg.uploadSendBuffer,
+      });
+      const submitted = await client.submit({
+        idempotencyKey: arg("--key", `upload-run-${Date.now()}`),
+        datasetId: uploaded.datasetId,
+        candidate: {
+          candidateId: "ma-5-20",
+          fastMa: 5,
+          slowMa: 20,
+          buyPct: 0.1,
+          stopLossPct: 0.05,
+          dataVersion: uploaded.dataVersion,
+        },
+      });
+      const job = await client.waitForTerminal(submitted.jobId, { timeoutMs: 60_000 });
+      console.log(
+        JSON.stringify(
+          {
+            phase: "upload-run",
+            realGrpc: true,
+            upload: uploaded,
+            submit: submitted,
+            job,
+            dataVersionMatch: job.candidate.dataVersion === uploaded.dataVersion,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
     if (cmd === "help" || has("--help")) {
       console.log(`Usage:
-  submit --dataset synthetic-v0 --key <idem>
+  upload --file <ohlcv.jsonl> --interval 1d [--batch 50]
+  upload-run --file <ohlcv.jsonl> --interval 1d
+  submit --dataset <id> --key <idem>
   get --job <jobId>
   run --dataset synthetic-v0 --key <idem>
 Addr: ${cfg.addr}
-Allowed datasets: ${ALLOWED_DATASET_IDS.join(", ")}
-UploadBars / Kafka result notify: deferred`);
+Builtin datasets: ${BUILTIN_DATASET_IDS.join(", ")} (+ upload-* after UploadBars)
+Publisher: Python outbox_publisher (kafka-python-ng); TS uses kafkajs for consumers`);
       return;
     }
 
