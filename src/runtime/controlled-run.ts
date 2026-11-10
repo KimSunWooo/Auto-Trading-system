@@ -411,6 +411,25 @@ export function domesticPaperControlledEnv(env: EnvMap = process.env): string | 
   return null;
 }
 
+/**
+ * Soak / VTS controlled-run order gates (mirror-only preTradeGate).
+ *
+ * Operational PAPER with PERSISTENCE_MODE=database must NOT inherit leftover
+ * `controlledRun` state from an old soak — otherwise every buy/sell is rejected
+ * with "PERSISTENCE_MODE must be mirror" / "RDS mirror is required".
+ *
+ * Harness (`RUN_KIS_VTS_ORDER_TESTS` / `PAPER_POLICY_MODE=test`) always applies.
+ * Mirror stacks keep soak gates while `controlledRun` is present.
+ */
+export function appliesControlledRunOrderGates(
+  state: Pick<AppState, "controlledRun">,
+  env: EnvMap = process.env,
+): boolean {
+  if (!state.controlledRun) return false;
+  if (isPaperTestHarness(env)) return true;
+  return persistenceMode(env) === "mirror";
+}
+
 export function preTradeGate(
   state: AppState,
   input: { side: "buy" | "sell"; ticker: string; qty: number },

@@ -19,7 +19,9 @@ services:
       TRADING_MODE: live_test
       KIS_MODE: paper
       ALLOW_LIVE_TRADING: "false"
-      PERSISTENCE_MODE: mirror
+      # Prefer .env.ec2; default database for operational PAPER (soak harness sets mirror explicitly).
+      # Do not silently force mirror over a user DATABASE ledger.
+      PERSISTENCE_MODE: ${PERSISTENCE_MODE:-database}
       PORT: "43147"
       HOSTNAME: 0.0.0.0
     volumes:

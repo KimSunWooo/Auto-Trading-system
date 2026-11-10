@@ -234,19 +234,29 @@ async function refreshLiveQuotes(
   }
 
   // MOCK / tests without hub: legacy broker.getQuote path.
-  let ok = true;
+  // Live: one lagging ticker must not fail the whole refresh — per-ticker gates apply.
+  let anyOk = false;
+  let anyFail = false;
   for (const code of codes) {
     try {
       const quote = await broker.getQuote(code);
-      if (!quote) ok = false;
-      else if (isLiveLike() && box.current.quotes[code]?.source !== "kis") ok = false;
+      if (!quote || (isLiveLike() && box.current.quotes[code]?.source !== "kis")) {
+        anyFail = true;
+      } else {
+        anyOk = true;
+      }
     } catch {
-      ok = false;
+      anyFail = true;
     }
   }
+  const ok = isLiveLike() ? anyOk || codes.length === 0 : !anyFail;
   box.current = noteQuoteResult(box.current, ok);
   if (!ok && isLiveLike()) {
-    box.current = markInquiryFailure(box.current, "data", "KIS 시세 조회에 실패해 신규 주문을 막았습니다.");
+    box.current = markInquiryFailure(
+      box.current,
+      "data",
+      "KIS 시세 조회에 실패해 신규 주문을 막았습니다.",
+    );
   }
   return ok;
 }

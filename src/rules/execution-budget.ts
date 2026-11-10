@@ -134,7 +134,8 @@ export function checkExecutionBudget(input: BudgetCheckInput): string | null {
 
   const lastBuyAt = bucket.lastRunAt ? new Date(bucket.lastRunAt).getTime() : 0;
   if (lastBuyAt > 0 && nowMs - lastBuyAt < limits.minBuyIntervalMs) {
-    return "매수 실행 주기 대기 중 (평가만 수행)";
+    const remainSec = Math.ceil((limits.minBuyIntervalMs - (nowMs - lastBuyAt)) / 1000);
+    return `매수 실행 주기 대기 중 (평가만 수행, 적용 ${limits.minBuyIntervalMs}ms / 남은 ${remainSec}s)`;
   }
 
   const estQty = Math.floor(amountKrw / price);

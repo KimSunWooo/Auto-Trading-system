@@ -5,6 +5,7 @@ import { seoulDay } from "@/src/risk/limits";
 import { tradingBlocked } from "@/src/risk/circuit";
 import { safetyOf } from "@/src/runtime/safety";
 import {
+  appliesControlledRunOrderGates,
   realizedFromOrders,
   unrealizedFromState,
 } from "@/src/runtime/controlled-run";
@@ -68,7 +69,8 @@ export function buildRuntimePublic(
       ? "warning"
       : "normal";
   const lastOrder = state.orders.find((row) => !row.parentOrderId);
-  const run = state.controlledRun;
+  // Ignore leftover soak controlledRun under PERSISTENCE_MODE=database.
+  const run = appliesControlledRunOrderGates(state) ? state.controlledRun : undefined;
   const today = seoulDay();
   // Include HISTORICAL_MATCHED KIS backfills in order/fill badges (not only Seoul today).
   const parentOrders = state.orders.filter((order) => !order.parentOrderId);

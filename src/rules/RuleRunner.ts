@@ -138,7 +138,12 @@ async function runMaCross(
   const fast = sma(quote.history, rule.fastMa);
   const slow = sma(quote.history, rule.slowMa);
   if (fast == null || slow == null) {
-    return { ...bucket, lastMessage: "이동평균 워밍업 중" };
+    const need = Math.max(rule.fastMa, rule.slowMa);
+    const have = quote.history?.length ?? 0;
+    return {
+      ...bucket,
+      lastMessage: `이동평균 워밍업 중 (필요 ${need}봉 / 현재 ${have}봉)`,
+    };
   }
   const regime = String(bucket.meta.regime ?? "flat");
   const prevRel = String(bucket.meta.maRel ?? "");

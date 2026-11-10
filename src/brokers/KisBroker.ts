@@ -21,7 +21,12 @@ import { isLiveLike, liveOrdersLocked, tradingMode } from "@/src/runtime/trading
 import { findOrderByIntent } from "@/src/runtime/intents";
 import { nowMs } from "@/src/clock";
 import { blockSafety } from "@/src/runtime/safety";
-import { workerLockAllowsTrading, preTradeGate } from "@/src/runtime/controlled-run";
+import {
+  appliesControlledRunOrderGates,
+  workerLockAllowsTrading,
+  preTradeGate,
+} from "@/src/runtime/controlled-run";
+import { mergeLiveIntoDailyCloses } from "@/src/market-data/daily-history";
 import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
 import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
@@ -100,8 +105,8 @@ export class KisBroker implements IBroker {
       const tick = tickSize(live.price);
       const history =
         daily.length > 0
-          ? [...daily.slice(-39), live.price]
-          : [...(prev?.history ?? []), live.price].slice(-40);
+          ? mergeLiveIntoDailyCloses(daily, live.price)
+          : mergeLiveIntoDailyCloses(prev?.history ?? [], live.price);
       const quote: BrokerQuote = {
         ticker,
         name: live.name || prev?.name || stock?.name || ticker,
@@ -117,14 +122,10 @@ export class KisBroker implements IBroker {
       };
       this.remember(quote, "rest");
       return quote;
-    } catch (err) {
-      if (isLiveLike()) {
-        const reason = err instanceof Error ? err.message : "KIS 시세 조회 실패";
-        this.box.current = blockSafety(this.box.current, "market_data_unavailable", reason, {
-          quoteOk: false,
-        });
-        return null;
-      }
+    } catch {
+      // Per-ticker REST failure must not flip account-wide quoteOk — order path
+      // rejects this ticker via null quote / freshness gates instead.
+      if (isLiveLike()) return null;
       return this.fromBook(ticker);
     }
   }
@@ -512,7 +513,7 @@ export class KisBroker implements IBroker {
     if (isLiveLike() && !workerLockAllowsTrading(this.safety) && !liquidatingSell) {
       return this.reject(ticker, side, "트레이딩 워커 락이 없어 주문하지 않습니다.");
     }
-    if (this.box.current.controlledRun) {
+    if (appliesControlledRunOrderGates(this.box.current, process.env)) {
       const soak = preTradeGate(this.box.current, { side, ticker, qty: 1 }, process.env, this.safety);
       if (!soak.ok) return this.reject(ticker, side, soak.blocked);
     }

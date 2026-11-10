@@ -169,6 +169,13 @@ test("Idle path persists maRel without ordering", async () => {
   assert.equal(after.meta.maRel, "above");
 });
 
+test("MA warmup reports required vs available bar counts", async () => {
+  const history = Array.from({ length: 7 }, () => 40_000);
+  const { after, box } = await runOnce({ history, meta: { maRel: "below", regime: "flat" } });
+  assert.match(after.lastMessage ?? "", /이동평균 워밍업 중 \(필요 20봉 \/ 현재 7봉\)/);
+  assert.equal(box.current.orders.length, 0);
+});
+
 test("Long Soak rule file semantics: enabled stays false in config helper", () => {
   const rule = soakRule({ enabled: false });
   assert.equal(rule.enabled, false);

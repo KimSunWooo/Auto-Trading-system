@@ -10,7 +10,13 @@ import type { StateBox } from "@/src/accounts/StateBox";
 import type { BrokerFill } from "@/src/brokers/IBroker";
 import { findStock } from "@/lib/universe";
 import type { Order, OrderSource } from "@/lib/types";
-import { applyAutoStop, preTradeGate, recordControlledEvent, workerLockAllowsTrading } from "@/src/runtime/controlled-run";
+import {
+  appliesControlledRunOrderGates,
+  applyAutoStop,
+  preTradeGate,
+  recordControlledEvent,
+  workerLockAllowsTrading,
+} from "@/src/runtime/controlled-run";
 import { openCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { RiskManager } from "@/src/risk/RiskManager";
 import { executionLocked } from "@/src/rules/disclaimer";
@@ -77,7 +83,7 @@ export class OrderManager {
     if (qty < 1) {
       return { ok: false, reason: "1주 미만이라 주문하지 않습니다." };
     }
-    if (this.box.current.controlledRun) {
+    if (appliesControlledRunOrderGates(this.box.current, process.env)) {
       const soak = preTradeGate(this.box.current, { side: "buy", ticker, qty }, process.env, this.safety);
       if (!soak.ok) return { ok: false, reason: soak.blocked };
     }
@@ -186,7 +192,7 @@ export class OrderManager {
         return { ok: false, reason: `${ticker} 미체결 매도가 있어 대기합니다.` };
       }
     }
-    if (this.box.current.controlledRun && !opts.liquidation) {
+    if (appliesControlledRunOrderGates(this.box.current, process.env) && !opts.liquidation) {
       const soak = preTradeGate(this.box.current, { side: "sell", ticker, qty }, process.env, this.safety);
       if (!soak.ok) return { ok: false, reason: soak.blocked };
     }

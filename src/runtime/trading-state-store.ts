@@ -13,9 +13,10 @@ import type { AppState, BrokerPublicStatus, PublicState } from "@/lib/types";
 import { JsonStateRepository } from "@/src/persistence/json-state-repository";
 import { hydratePersistedState, toPublic as bootstrapToPublic } from "@/lib/store";
 import { mirrorAfterJsonSave, resolveMirrorLedger } from "@/src/db/mirror";
-import { isDatabaseLedgerAuthority } from "@/src/db/config";
+import { isDatabaseLedgerAuthority, persistenceMode } from "@/src/db/config";
 import { DatabaseLedgerError, persistTradingLedger } from "@/src/db/persist";
 import { reconstituteAppStateFromLedger } from "@/src/db/reconstitute-state";
+import { isPaperTestHarness } from "@/src/risk/order-policy";
 import { isNodeTestProcess } from "@/src/runtime/test-process";
 import {
   getWorkerProgress,
@@ -162,6 +163,11 @@ export function createTradingStateStore(opts: {
   }
 
   function mergePersistedControlledRun(incoming: AppState): AppState {
+    // Database-mode ops: do not resurrect soak controlledRun into account state
+    // (would otherwise re-apply mirror-only order gates after every save).
+    if (persistenceMode(process.env) === "database" && !isPaperTestHarness(process.env)) {
+      return incoming;
+    }
     try {
       const prev = JSON.parse(readFileSync(absolute, "utf8")) as AppState;
       if (prev.controlledRun && !incoming.controlledRun) {

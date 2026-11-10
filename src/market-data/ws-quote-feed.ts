@@ -18,6 +18,7 @@ import {
   getQuoteHub,
 } from "@/src/market-data/kis-realtime-registry";
 import { kisCredentialSessionKey } from "@/src/market-data/kis-approval";
+import { mergeLiveIntoDailyCloses } from "@/src/market-data/daily-history";
 
 /** Process-local: tickers that already received one-time inquirePrice metadata seed. */
 const metadataSeeded = new Set<string>();
@@ -208,19 +209,9 @@ export async function refreshQuotesFromWebSocket(
 
     try {
       const daily = await client.inquireDailyCloses(code);
-      if (daily.length > 0) {
-        history = [...daily.slice(-39), snap.price];
-      } else if (history.length > 0) {
-        history = [...history.slice(-39), snap.price];
-      } else {
-        history = [snap.price];
-      }
+      history = mergeLiveIntoDailyCloses(daily.length > 0 ? daily : history, snap.price);
     } catch {
-      if (history.length > 0) {
-        history = [...history.slice(-39), snap.price];
-      } else {
-        history = [snap.price];
-      }
+      history = mergeLiveIntoDailyCloses(history, snap.price);
     }
 
     // prevClose must come from verified seed/prior snapshot — never WS current price.
@@ -296,8 +287,6 @@ export function brokerQuoteFromSnapshot(
     low: snap.low || snap.price,
     prevClose: prev?.prevClose && prev.prevClose > 0 ? prev.prevClose : 0,
     volume: snap.volume,
-    history: prev?.history?.length
-      ? [...prev.history.slice(-39), snap.price]
-      : [snap.price],
+    history: mergeLiveIntoDailyCloses(prev?.history ?? [], snap.price),
   };
 }
