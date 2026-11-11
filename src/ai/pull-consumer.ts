@@ -6,14 +6,18 @@ import {
   validateAiTradeProposalV1,
   type AiProposalValidation,
   type AiTradeProposalV1,
-} from "@/src/ai/trade-proposal-v1";
+} from "./trade-proposal-v1";
 
 export type AiPullConfig = {
   baseUrl: string;
   /** Bearer or shared secret header value — never log. */
   authToken?: string;
   timeoutMs?: number;
+  /** Maximum number of decisions to inspect per pull. */
   maxPages?: number;
+  includeNonOrderActions?: boolean;
+  /** A pinned analysis clock for local FIXTURE runs only. */
+  fixtureNowMs?: number;
 };
 
 export type AiDecisionEnvelope = {
@@ -47,19 +51,21 @@ async function fetchJson(
     const res = await fetch(url, {
       method: "GET",
       headers: authHeaders(cfg),
+      redirect: "error",
       signal: ctrl.signal,
     });
     if (!res.ok) {
       return {
         ok: false,
         status: res.status,
-        reason: res.status >= 500 ? "retryable_upstream" : "permanent_reject",
+        reason: res.status >= 500 || res.status === 429 ? "retryable_upstream" : "permanent_reject",
       };
     }
     return { ok: true, body: await res.json() };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "fetch failed";
-    return { ok: false, status: 0, reason: /abort/i.test(msg) ? "timeout" : "retryable_network" };
+    if (ctrl.signal.aborted) return { ok: false, status: 0, reason: "timeout" };
+    if (err instanceof SyntaxError) return { ok: false, status: 0, reason: "invalid_json" };
+    return { ok: false, status: 0, reason: "retryable_network" };
   } finally {
     clearTimeout(timer);
   }
@@ -69,7 +75,7 @@ async function fetchJson(
  * Pull decisions from AI producer. Validates each envelope; never places orders.
  */
 export async function pullAiTradeProposals(cfg: AiPullConfig): Promise<AiPullResult> {
-  const base = cfg.baseUrl.replace(/\/$/, "");
+  const base = cfg.baseUrl.trim().replace(/\/+$/, "");
   if (!base) {
     return {
       fetched: 0,
@@ -91,18 +97,24 @@ export async function pullAiTradeProposals(cfg: AiPullConfig): Promise<AiPullRes
     };
   }
 
-  const items = Array.isArray(list.body)
-    ? list.body
-    : Array.isArray((list.body as { items?: unknown[] })?.items)
-      ? ((list.body as { items: unknown[] }).items)
-      : [];
+  const items = Array.isArray(list.body) ? list.body : (list.body as { items?: unknown })?.items;
+  if (!Array.isArray(items)) {
+    return {
+      fetched: 0,
+      accepted: [],
+      rejected: [{ code: "INVALID_DECISIONS", reason: "GET /decisions did not return a decision list" }],
+      orderEligibleCount: 0,
+      autoOrderEnabled: false,
+    };
+  }
 
   const accepted: AiTradeProposalV1[] = [];
   const rejected: AiPullResult["rejected"] = [];
   const maxPages = cfg.maxPages ?? 20;
   let fetched = 0;
 
-  for (const item of items.slice(0, maxPages)) {
+  // The Agent journal lists its decisions from oldest to newest.
+  for (const item of items.slice(Math.max(0, items.length - maxPages))) {
     fetched += 1;
     const decisionId =
       item && typeof item === "object" && "decision_id" in item
@@ -115,19 +127,23 @@ export async function pullAiTradeProposals(cfg: AiPullConfig): Promise<AiPullRes
     if (decisionId) {
       const env = await fetchJson(`${base}/decisions/${encodeURIComponent(decisionId)}/envelope`, cfg);
       if (env.ok) {
-        const body = env.body as { proposal?: unknown; payload?: unknown };
-        proposalRaw = body.proposal ?? body.payload ?? env.body;
-      } else if (env.reason === "permanent_reject") {
+        const body = env.body as { proposal?: unknown; payload?: unknown } | null;
+        proposalRaw = body?.proposal ?? body?.payload ?? env.body;
+      } else {
         rejected.push({
           decisionId,
-          code: "ENVELOPE_REJECTED",
+          code: env.reason === "permanent_reject" ? "ENVELOPE_REJECTED" : env.reason.toUpperCase(),
           reason: `envelope ${env.status}`,
         });
         continue;
       }
     }
 
-    const validated: AiProposalValidation = validateAiTradeProposalV1(proposalRaw);
+    const mode = (proposalRaw as { dataMode?: unknown } | null)?.dataMode;
+    const validated: AiProposalValidation = validateAiTradeProposalV1(proposalRaw, {
+      includeNonOrderActions: cfg.includeNonOrderActions,
+      nowMs: mode === "FIXTURE" ? cfg.fixtureNowMs : undefined,
+    });
     if (!validated.ok) {
       rejected.push({ decisionId, code: validated.code, reason: validated.reason });
       continue;

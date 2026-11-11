@@ -20,6 +20,29 @@ npx tsx --test extensions/ts/ingest/producer.test.ts
 
 Or: `bash extensions/scripts/smoke.sh`
 
+## AI Agent HTTP observation (local)
+
+Start the [AI Agent](https://github.com/KimSunWooo/Auto_Trading_AI_Agent) from its own checkout with its Python dependencies installed. Generate one fixture decision and leave the Agent running, since its fixture journal lives in memory.
+
+```bash
+# AI Agent terminal
+NO_NETWORK=1 AI_DATA_MODE=FIXTURE PYTHONPATH=src python3 -m uvicorn \
+  ai_investment_agent.api.app:app --host 127.0.0.1 --port 43187
+
+# Another terminal, from the ATS repo root after npm ci
+curl -fsS http://127.0.0.1:43187/analysis/evaluate \
+  -H 'Content-Type: application/json' -d '{"ticker":"005930"}'
+
+AI_AGENT_BASE_URL=http://127.0.0.1:43187 npx tsx extensions/ts/ai/observe.cli.ts \
+  --fixture-now 2026-09-21T09:00:00Z
+```
+
+Repeat the pull against the same decision to see `stored: 0` and `duplicates: 1`. The one-shot CLI checks the 20 most recent decisions and writes observations under `extensions/.bus/ai-proposals/` by default, or to a directory supplied via `--out`. `HOLD` and `NO_TRADE` are stored as observations. `--fixture-now` applies only to `FIXTURE` envelopes. The CLI reports HTTP/contract failures and exits nonzero. It runs separately from the trading Worker and stores `orderEligible: false` and `autoOrderEnabled: false`.
+
+```bash
+MIRAEMAESU_TEST=1 npx tsx --test extensions/ts/ai/observe.test.ts
+```
+
 Live WS ingest is **refused** until shared AppKey hub subscription impact (limit 41) is measured (`--source live-ws` exits 2).
 
 ## Real local Kafka + Redis (explicit ON)
@@ -137,7 +160,7 @@ Python metrics are **candidate search** only. ATS execution truth remains `Backt
 | `ts/redis` | UI-only latest quote + 10m OHLCV (memory/file; Redis-shaped) |
 | `ts/adapters` | Real Kafka (Redpanda) + Redis adapters + integration tests |
 | `ts/grpc` | TypeScript TradingAnalysis client + CLI + integration tests |
-| `ts/ai` | Agent fixture validation via core contract |
+| `ts/ai` | Agent fixture validation and one-shot HTTP observation |
 | `ts/compare` | OFF/ON/fault harness + FakeBroker core / gRPC overlap regression |
 | `python/ats_research` | Risk consumer + MA optimizer + job store + gRPC server + worker |
 | `proto/trading_analysis.proto` | SubmitBacktest / GetBacktestJob / UploadBars |

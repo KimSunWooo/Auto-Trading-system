@@ -32,6 +32,10 @@ export type AiTradeProposalV1 = {
   market: string;
   ticker: string;
   action: AiProposalAction;
+  confidence?: number;
+  confidenceSource?: string;
+  thesis?: { headline?: string; summary?: string };
+  reasonCodes?: string[];
   rationale?: string;
   invalidation?: string;
   recommendedRatio?: string;
@@ -70,7 +74,7 @@ function asString(value: unknown): string | null {
  */
 export function validateAiTradeProposalV1(
   raw: unknown,
-  opts: { nowMs?: number; clockSkewMs?: number } = {},
+  opts: { nowMs?: number; clockSkewMs?: number; includeNonOrderActions?: boolean } = {},
 ): AiProposalValidation {
   if (!raw || typeof raw !== "object") {
     return { ok: false, code: "INVALID_PAYLOAD", reason: "proposal must be an object" };
@@ -138,7 +142,7 @@ export function validateAiTradeProposalV1(
     };
   }
 
-  if (NON_ORDER_ACTIONS.has(action)) {
+  if (NON_ORDER_ACTIONS.has(action) && !opts.includeNonOrderActions) {
     return {
       ok: false,
       code: "NON_ORDER_ACTION",
@@ -146,6 +150,8 @@ export function validateAiTradeProposalV1(
     };
   }
 
+  const thesis = body.thesis as Record<string, unknown> | null | undefined;
+  const confidence = body.confidence;
   const proposal: AiTradeProposalV1 = {
     proposalId,
     schemaVersion,
@@ -159,6 +165,14 @@ export function validateAiTradeProposalV1(
     market,
     ticker,
     action,
+    confidence: typeof confidence === "number" && confidence >= 0 && confidence <= 1 ? confidence : undefined,
+    confidenceSource: asString(body.confidenceSource) ?? undefined,
+    thesis: thesis && typeof thesis === "object"
+      ? { headline: asString(thesis.headline) ?? undefined, summary: asString(thesis.summary) ?? undefined }
+      : undefined,
+    reasonCodes: Array.isArray(body.reasonCodes)
+      ? body.reasonCodes.filter((code): code is string => typeof code === "string")
+      : undefined,
     rationale: asString(body.rationale) ?? undefined,
     invalidation: asString(body.invalidation) ?? undefined,
     recommendedRatio: asString(body.recommendedRatio) ?? undefined,
