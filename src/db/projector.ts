@@ -256,7 +256,8 @@ export async function projectAppState(
       (context.brokerAccountId ? [] : getRuleConfig().rules) ??
       [];
     const ruleKeys = new Set<string>([CASH_RULE_ID, ...state.allocations.map((row) => row.ruleId), ...rules.map((row) => row.id)]);
-    if (!tick) {
+    // Always upsert rule parents before allocations. Tick path used to skip this and
+    // hit fk_rule_allocations_rule on fresh accounts (cash row missing).
     for (const key of ruleKeys) {
       const cfg = rules.find((row) => row.id === key);
       // Never upsert a non-cash rule with null configJson — that wiped DB strategy params.
@@ -284,7 +285,6 @@ export async function projectAppState(
         enabled: cfg?.enabled ?? state.allocations.find((row) => row.ruleId === key)?.enabled ?? true,
         configJson: cfg ?? (key === CASH_RULE_ID ? { id: CASH_RULE_ID, kind: "CASH" } : null),
       });
-    }
     }
     for (const alloc of state.allocations) {
       await tx.upsertRuleAllocation({

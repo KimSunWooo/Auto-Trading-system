@@ -15,8 +15,10 @@ export const HARD_LIMITS = {
   maxDailyOrders: 30,
   maxPositionWeight: 0.5,
   minTickMs: 2_500,
-  quoteTimeoutMs: 8_000,
-  orderTimeoutMs: 10_000,
+  // VTS from this Cloud Agent path often exceeds 8–10s; keep PAPER inquiries/orders
+  // from false-failing as timeouts while preserving UNKNOWN semantics on true hangs.
+  quoteTimeoutMs: 30_000,
+  orderTimeoutMs: 30_000,
   cancelUnfilledAfterMs: 30_000,
   balanceSyncMs: 30_000,
   /** Rounding only. Not derived from the 0.015% local fee estimate. */

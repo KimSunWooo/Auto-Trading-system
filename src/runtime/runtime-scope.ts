@@ -32,8 +32,17 @@ export type RuntimeScope = {
   quoteHub: RealtimeQuoteHub | null;
 };
 
-const scopes = new Map<string, RuntimeScope>();
-const startupDoneByAccount = new Map<string, boolean>();
+// Next instrumentation (Worker) and route handlers can load separate module
+// instances — keep these maps on globalThis so Startup Sync "done" survives
+// across the same process (same pattern as worker-progress.ts).
+type ScopeGlobal = typeof globalThis & {
+  __miraeRuntimeScopes?: Map<string, RuntimeScope>;
+  __miraeStartupDoneByAccount?: Map<string, boolean>;
+};
+const scopeGlobal = globalThis as ScopeGlobal;
+const scopes = (scopeGlobal.__miraeRuntimeScopes ??= new Map<string, RuntimeScope>());
+const startupDoneByAccount = (scopeGlobal.__miraeStartupDoneByAccount ??=
+  new Map<string, boolean>());
 
 /** Legacy owner PAPER testing path — preserved for existing soak/overseas regression. */
 export function createBootstrapRuntimeScope(
