@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   BookOpenIcon,
   CalendarClockIcon,
@@ -293,6 +294,10 @@ export function TradingApp({
       </Sheet>
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 py-4">
+        <nav aria-label="리포트" className="mb-3 flex flex-wrap gap-2 text-sm font-medium">
+          <Link href="/reports/trades" className="rounded-md border px-3 py-2 hover:bg-accent">거래 리포트</Link>
+          <Link href="/reports/ai" className="rounded-md border px-3 py-2 hover:bg-accent">AI 추천 종목</Link>
+        </nav>
         {error ? (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
             <p>{error}</p>

@@ -39,6 +39,10 @@ AI_AGENT_BASE_URL=http://127.0.0.1:43187 npx tsx extensions/ts/ai/observe.cli.ts
 
 Repeat the pull against the same decision to see `stored: 0` and `duplicates: 1`. The one-shot CLI checks the 20 most recent decisions and writes observations under `extensions/.bus/ai-proposals/` by default, or to a directory supplied via `--out`. `HOLD` and `NO_TRADE` are stored as observations. `--fixture-now` applies only to `FIXTURE` envelopes. The CLI reports HTTP/contract failures and exits nonzero. It runs separately from the trading Worker and stores `orderEligible: false` and `autoOrderEnabled: false`.
 
+Signed-in ATS users can view saved proposals at `/reports/ai`. For a custom directory, set the same absolute `AI_OBSERVATION_DIR` for the CLI and ATS server. The active list shows only the latest unexpired `LIVE_OBSERVATION` BUY per symbol. Fixture/replay entries remain visible in recent observations. Expected returns are the Agent's decimal estimates, rendered as percentages. Older saved observations without `expectedReturn` display `—`; new observations retain the value when the Agent supplies it.
+
+`/reports/trades` reads the signed-in user's default PAPER account from the DB ledger. The selected KST period is based on close date, with separate KRW/USD totals. Win rate is profitable closed cycles divided by all matched closed cycles, including break-even cycles in the denominator.
+
 ```bash
 MIRAEMAESU_TEST=1 npx tsx --test extensions/ts/ai/observe.test.ts
 ```

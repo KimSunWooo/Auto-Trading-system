@@ -14,7 +14,8 @@ async function main(): Promise<void> {
   if (fixtureNowMs !== undefined && !Number.isFinite(fixtureNowMs)) {
     throw new Error("--fixture-now must be an ISO timestamp");
   }
-  const outputDir = values.out ?? fileURLToPath(new URL("../../.bus/ai-proposals/", import.meta.url));
+  const outputDir = values.out ?? (process.env.AI_OBSERVATION_DIR?.trim() ||
+    fileURLToPath(new URL("../../.bus/ai-proposals/", import.meta.url)));
   const result = await observeAiProposals({
     baseUrl: process.env.AI_AGENT_BASE_URL ?? "",
     authToken: process.env.AI_AGENT_AUTH_TOKEN,
