@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { link, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { pullAiTradeProposals, type AiPullConfig } from "../../../src/ai/pull-consumer.ts";
-import type { AiTradeProposalV1 } from "../../../src/ai/trade-proposal-v1.ts";
+import { pullAiTradeProposals, type AiPullConfig } from "../../../src/ai/pull-consumer";
+import type { AiTradeProposalV1 } from "../../../src/ai/trade-proposal-v1";
 
 async function saveObservation(root: string, proposal: AiTradeProposalV1): Promise<boolean> {
   const key = createHash("sha256").update(proposal.proposalId).digest("hex");

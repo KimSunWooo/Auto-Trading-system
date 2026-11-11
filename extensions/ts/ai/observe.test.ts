@@ -5,10 +5,10 @@ import { createServer, type RequestListener } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
-import { SEOUL_REGULAR_SESSION_MS } from "../../../lib/market-hours.ts";
-import { setNowMs } from "../../../src/clock.ts";
-import { FakeBroker, makeTestPaperState } from "../../../src/test-support/index.ts";
-import { observeAiProposals } from "./observe.ts";
+import { SEOUL_REGULAR_SESSION_MS } from "../../../lib/market-hours";
+import { setNowMs } from "../../../src/clock";
+import { FakeBroker, makeTestPaperState } from "../../../src/test-support/index";
+import { observeAiProposals } from "./observe";
 
 const fixtureNowMs = Date.parse("2026-09-21T09:00:00Z");
 

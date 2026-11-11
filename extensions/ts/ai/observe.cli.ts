@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { observeAiProposals } from "./observe.ts";
+import { observeAiProposals } from "./observe";
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
