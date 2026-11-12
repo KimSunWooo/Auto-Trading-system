@@ -2,12 +2,21 @@ import mysql from "mysql2/promise";
 import { drizzle, type MySql2Database } from "drizzle-orm/mysql2";
 import * as schema from "@/src/db/schema";
 import { loadDbConnection } from "@/src/db/config";
+import { loadLocalEnv } from "@/src/db/load-env";
 import type { EnvMap } from "@/src/runtime/trading-mode";
 
 export type AppDb = MySql2Database<typeof schema>;
 
 let pool: mysql.Pool | null = null;
 let db: AppDb | null = null;
+let envBootstrapped = false;
+
+function ensureProjectEnvLoaded(): void {
+  if (envBootstrapped) return;
+  envBootstrapped = true;
+  // .env.local overrides injected shell DATABASE_URL (e.g. 127.0.0.1:3307).
+  loadLocalEnv();
+}
 
 function clearMysqlLedgerSingleton(): void {
   // Avoid static cycle with mysql-ledger → getDb.
@@ -38,6 +47,7 @@ export async function closeDb(): Promise<void> {
 }
 
 export function createMysqlPool(env: EnvMap = process.env): mysql.Pool | null {
+  if (env === process.env) ensureProjectEnvLoaded();
   const cfg = loadDbConnection(env);
   if (!cfg) return null;
   return mysql.createPool({
@@ -59,11 +69,13 @@ export function createMysqlPool(env: EnvMap = process.env): mysql.Pool | null {
 
 /** Shared pool for explicit connection checkout (timeout/rollback). */
 export function getMysqlPool(env: EnvMap = process.env): mysql.Pool | null {
+  if (env === process.env) ensureProjectEnvLoaded();
   if (!pool) pool = createMysqlPool(env);
   return pool;
 }
 
 export function getDb(env: EnvMap = process.env): AppDb | null {
+  if (env === process.env) ensureProjectEnvLoaded();
   if (db) return db;
   if (!pool) pool = createMysqlPool(env);
   if (!pool) return null;

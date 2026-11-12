@@ -1,5 +1,8 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    // Force .env.local over injected shell DATABASE_URL (local docker must not win).
+    const { loadLocalEnv } = await import("./src/db/load-env");
+    loadLocalEnv();
     const { startEngineLoop } = await import("./lib/engine-loop");
     const { startAccountEngineLoop } = await import("./lib/account-engine-loop");
     const { startPaperRuntimeWorkers, PaperRuntimeOwnerError } = await import(

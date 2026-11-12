@@ -42,12 +42,12 @@ Worker tick → DB persist 정체 수정·readiness·주문가능금액 비율 �
 ### 로컬 실행
 
 ```bash
-cp .env.example .env.local   # KIS PAPER + DATABASE_URL 등 채움
+cp .env.example .env.local   # KIS PAPER + RDS DATABASE_URL 등 채움
 npm ci
 npm run dev                  # http://127.0.0.1:43147
 ```
 
-`PERSISTENCE_MODE=database` 권장. JSON은 캐시일 뿐 거래 장부 SoT가 아니다.
+`PERSISTENCE_MODE=database` 권장. **DB는 AWS RDS만 사용**합니다. 로컬 docker MySQL(`127.0.0.1:3307`)은 쓰지 않습니다. JSON은 캐시일 뿐 거래 장부 SoT가 아니다.
 
 ### 계정 복구 · 사용자별 KIS 계좌
 
@@ -252,15 +252,14 @@ PAPER physical ownership DB 통합(D1–D10)은 기본 `npm test`에서 **연결
 - `PERSISTENCE_MODE=database`: RDS is trading-ledger authority. Intent/order persist must succeed before KIS submit; JSON is optional cache. Restart recovery reconstitutes from DB when `state.json` is missing.
 
 ```bash
-# 읽기 전용 점검. 비밀번호를 출력하지 않습니다.
+# 읽기 전용 점검. 비밀번호를 출력하지 않습니다. (대상: AWS RDS)
 npm run db:check
-
-# 로컬 MySQL 8 (기존 앱 compose를 바꾸지 않습니다)
-docker compose -f docker-compose.db.yml up -d
 
 # Optional one-time JSON → DB import (idempotent; no synthetic fills)
 npm run db:import-legacy
 ```
+
+로컬 `docker-compose.db.yml` MySQL은 레거시/격리 테스트용입니다. 운영·개발 런타임 DB는 RDS입니다.
 
 DB 실패 시 브로커 주문을 재전송하지 않습니다. `database` 모드에서 제출 전 실패는 주문 0건, 제출 후 실패는 UNKNOWN입니다.
 
