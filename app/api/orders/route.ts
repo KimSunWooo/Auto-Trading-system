@@ -4,6 +4,7 @@ import type { Side } from "@/lib/types";
 import { manualIntentId } from "@/src/runtime/intents";
 import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
 import { isScopeStartupSyncDone } from "@/src/runtime/runtime-scope";
+import { ensureQuoteHubStarted } from "@/src/market-data/ws-quote-feed";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,16 @@ export async function POST(request: Request) {
 
     let rejected: string | undefined;
     let unknown = false;
+    // PAPER manual path: ensure the shared RuntimeScope hub is up before the
+    // WS-only price gate. Route/worker module splits previously left orders on
+    // a disconnected hub while ticks still looked fresh in state.
+    if (rt.scope.quoteHub) {
+      try {
+        await ensureQuoteHubStarted(rt.scope.quoteHub);
+      } catch {
+        /* getCurrentPrice still fail-closes on disconnected/stale */
+      }
+    }
     const state = await rt.store.mutateStore(async (current) => {
       const box = { current };
       const intentId = manualIntentId({ ruleId, ticker: code, side, qty });

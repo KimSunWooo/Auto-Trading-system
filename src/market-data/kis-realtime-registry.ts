@@ -18,7 +18,14 @@ type RegistryEntry = {
   appKeyFingerprint: string;
 };
 
-const registry = new Map<string, RegistryEntry>();
+// Next instrumentation (Worker) and route handlers can load separate module
+// instances — keep the AppKey hub registry on globalThis so PAPER orders and
+// ticks share one WebSocket (same pattern as runtime-scope.ts).
+type QuoteHubGlobal = typeof globalThis & {
+  __miraeQuoteHubRegistry?: Map<string, RegistryEntry>;
+};
+const registry = ((globalThis as QuoteHubGlobal).__miraeQuoteHubRegistry ??=
+  new Map<string, RegistryEntry>());
 
 export type AcquireQuoteHubOpts = {
   config: Pick<KisConfig, "environment" | "appKey" | "appSecret" | "host" | "websocketUrl">;

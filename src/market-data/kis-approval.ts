@@ -23,8 +23,16 @@ type ApprovalCacheEntry = {
 };
 
 const APPROVAL_TTL_MS = 20 * 60 * 60 * 1000; // 20h cache (official reAuth ~24h)
-const approvalCache = new Map<string, ApprovalCacheEntry>();
-const inflight = new Map<string, Promise<string>>();
+// Share approval cache across Next route/worker module instances.
+type ApprovalGlobal = typeof globalThis & {
+  __miraeKisWsApprovalCache?: Map<string, ApprovalCacheEntry>;
+  __miraeKisWsApprovalInflight?: Map<string, Promise<string>>;
+};
+const approvalGlobal = globalThis as ApprovalGlobal;
+const approvalCache = (approvalGlobal.__miraeKisWsApprovalCache ??=
+  new Map<string, ApprovalCacheEntry>());
+const inflight = (approvalGlobal.__miraeKisWsApprovalInflight ??=
+  new Map<string, Promise<string>>());
 
 export type ApprovalFetch = typeof fetch;
 
