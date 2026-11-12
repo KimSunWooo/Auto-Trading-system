@@ -6,7 +6,7 @@
 
 ## 적용 커밋
 
-`90f07c3cef17935d85f6dda50d0f731d80690d48` — Fix PAPER auto-trading start recon gates on approved RDS
+`a1cd789` — Fix PAPER auto-trading start recon gates on approved RDS
 
 ## 최초 실패 단계와 원인
 
