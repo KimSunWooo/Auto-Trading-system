@@ -1,5 +1,6 @@
 import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
 import {
+  buildLostStartRequestRecovery,
   enqueueAutoTradingStart,
   getAutoTradingStartJob,
   getActiveAutoTradingStartJobForAccount,
@@ -26,7 +27,8 @@ export async function POST(request: Request) {
     if (body.requestId) {
       const existing = getAutoTradingStartJob(body.requestId);
       if (!existing || existing.userId !== rt.user.id) {
-        return Response.json({ error: "시작 요청을 찾을 수 없습니다." }, { status: 404 });
+        const recovery = await buildLostStartRequestRecovery(body.requestId, rt.account.id);
+        return Response.json(recovery, { status: 404 });
       }
       return Response.json(toAutoTradingStartPublic(existing));
     }
@@ -49,6 +51,8 @@ export async function POST(request: Request) {
 
 /**
  * GET — poll start job by requestId, or active job for current account.
+ * Missing requestId after restart → 404 START_REQUEST_LOST with current RDS ON/OFF
+ * (never auto-retransmits start).
  */
 export async function GET(request: Request) {
   return withUserTradingRuntime(async (rt) => {
@@ -58,7 +62,8 @@ export async function GET(request: Request) {
     if (requestId) {
       const job = getAutoTradingStartJob(requestId);
       if (!job || job.userId !== rt.user.id) {
-        return Response.json({ error: "시작 요청을 찾을 수 없습니다." }, { status: 404 });
+        const recovery = await buildLostStartRequestRecovery(requestId, rt.account.id);
+        return Response.json(recovery, { status: 404 });
       }
       return Response.json(toAutoTradingStartPublic(job));
     }

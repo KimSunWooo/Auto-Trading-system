@@ -4,6 +4,7 @@
  * Cancel / OFF supersedes a late completion — never re-saves ON after cancel.
  */
 import type { AppState } from "@/lib/types";
+import { resolveMirrorLedger } from "@/src/db/mirror";
 import { verifyApprovedRdsLiveCached } from "@/src/db/rds-authority";
 import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
 import {
@@ -111,6 +112,85 @@ function pruneOldJobs(): void {
 export function getAutoTradingStartJob(requestId: string): AutoTradingStartJob | null {
   pruneOldJobs();
   return jobs().get(requestId) ?? null;
+}
+
+export function getAutoTradingStartGeneration(brokerAccountId: string): number {
+  return generations().get(brokerAccountId) ?? 0;
+}
+
+/**
+ * Read current PAPER autoTrading flag from RDS (worker authority).
+ * Does not start jobs or place orders.
+ */
+export async function readAccountAutoTradingFromRds(
+  brokerAccountId: string,
+): Promise<{
+  autoTrading: boolean | null;
+  source: "rds" | "unavailable";
+  error?: string;
+}> {
+  try {
+    const ledger = await resolveMirrorLedger();
+    if (!ledger) {
+      return { autoTrading: null, source: "unavailable", error: "RDS ledger unavailable" };
+    }
+    // LedgerSession API — MemoryLedger/MysqlLedger expose reads via transaction.
+    const row = await ledger.transaction((tx) => tx.getTradingAccountState(brokerAccountId));
+    if (!row) {
+      return { autoTrading: false, source: "rds" };
+    }
+    return { autoTrading: Boolean(row.autoTradingEnabled), source: "rds" };
+  } catch (err) {
+    return {
+      autoTrading: null,
+      source: "unavailable",
+      error: err instanceof Error ? err.message : "RDS read failed",
+    };
+  }
+}
+
+export type LostStartRequestRecovery = {
+  errorCode: "START_REQUEST_LOST";
+  requestId: string;
+  /** Prior in-memory job is gone (e.g. process restart) — completion unknown. */
+  previousRequestStatus: "unknown";
+  /** Current account flag from RDS — distinct from previous request outcome. */
+  accountAutoTrading: boolean | null;
+  accountAutoTradingSource: "rds" | "unavailable";
+  uiStatus: "현재 ON" | "현재 OFF" | "확인 불가";
+  message: string;
+  /** UI must not POST start again from this recovery path. */
+  autoRetransmit: false;
+  status: "lost";
+};
+
+export async function buildLostStartRequestRecovery(
+  requestId: string,
+  brokerAccountId: string,
+): Promise<LostStartRequestRecovery> {
+  const rds = await readAccountAutoTradingFromRds(brokerAccountId);
+  const uiStatus =
+    rds.source === "unavailable"
+      ? ("확인 불가" as const)
+      : rds.autoTrading
+        ? ("현재 ON" as const)
+        : ("현재 OFF" as const);
+  return {
+    errorCode: "START_REQUEST_LOST",
+    requestId,
+    previousRequestStatus: "unknown",
+    accountAutoTrading: rds.autoTrading,
+    accountAutoTradingSource: rds.source,
+    uiStatus,
+    message:
+      rds.source === "unavailable"
+        ? "시작 요청 상태가 유실되어 RDS에서 계좌 상태를 확인하지 못했습니다."
+        : `시작 요청 상태가 유실되었습니다. 이전 요청 완료 여부는 알 수 없고, 현재 계좌는 ${
+            rds.autoTrading ? "ON" : "OFF"
+          } 입니다.`,
+    autoRetransmit: false,
+    status: "lost",
+  };
 }
 
 export function getActiveAutoTradingStartJobForAccount(
@@ -245,7 +325,9 @@ export function enqueueAutoTradingStart(input: EnqueueStartInput): EnqueueStartR
   }
 
   const requestId = newStartRequestId();
-  const generation = generations().get(accountId) ?? 0;
+  // Bump generation so a cancelled prior job cannot force-OFF over this new ON.
+  const generation = (generations().get(accountId) ?? 0) + 1;
+  generations().set(accountId, generation);
   const job: AutoTradingStartJob = {
     requestId,
     userId,
@@ -446,22 +528,49 @@ async function runAutoTradingStartJob(
           }
           return state;
         },
-        { projectMode: "flags" },
+        {
+          projectMode: "flags",
+          // Checked again inside the RDS upsert so OFF mid-commit yields 0 ON writes.
+          isAllowed: () => !isCancelled(job),
+        },
       );
       return next;
     });
 
     if (isCancelled(job)) {
-      // User cancelled while we were writing — force OFF so late ON does not stick.
-      await rt.store.mutateStore(
-        (current) => ({
-          ...current,
-          settings: { ...current.settings, autoTrading: false },
-        }),
-        { projectMode: "flags" },
-      );
+      // ON may have landed just before cancel — force authoritative OFF for workers,
+      // but never clobber a newer start request that already owns this account.
+      const activeId = byAccount().get(job.brokerAccountId);
+      const stillOwnsCancelEpoch =
+        (generations().get(job.brokerAccountId) ?? 0) === job.generation &&
+        (!activeId || activeId === job.requestId);
+      if (stillOwnsCancelEpoch) {
+        try {
+          await rt.store.mutateStore(
+            (current) => ({
+              ...current,
+              settings: { ...current.settings, autoTrading: false },
+            }),
+            {
+              projectMode: "flags",
+              isAllowed: () =>
+                (generations().get(job.brokerAccountId) ?? 0) === job.generation &&
+                (!byAccount().get(job.brokerAccountId) ||
+                  byAccount().get(job.brokerAccountId) === job.requestId),
+            },
+          );
+        } catch (revertErr) {
+          const revertMsg =
+            revertErr instanceof Error ? revertErr.message : "force OFF failed";
+          if (!/OFF supersedes|persist cancelled|superseded/i.test(revertMsg)) {
+            job.error = revertMsg;
+          }
+        }
+      }
       job.status = "cancelled";
-      job.message = "시작이 취소되어 ON 저장을 되돌렸습니다.";
+      job.message = stillOwnsCancelEpoch
+        ? "시작이 취소되어 ON 저장을 되돌렸습니다."
+        : "시작이 취소되었습니다 — 이후 새 시작 요청이 계좌를 소유합니다.";
       job.autoTradingOnInRds = false;
       publishTimings(job, trace);
       return;
@@ -484,7 +593,17 @@ async function runAutoTradingStartJob(
       publishTimings(job, trace);
       return;
     }
-    fail(err instanceof Error ? err.message : "자동매매 시작에 실패했습니다.");
+    const msg = err instanceof Error ? err.message : "자동매매 시작에 실패했습니다.";
+    if (/OFF supersedes|persist cancelled|superseded/i.test(msg)) {
+      job.status = "cancelled";
+      job.stage = "done";
+      job.message = "시작이 취소되었습니다 — ON을 저장하지 않았습니다.";
+      job.autoTradingOnInRds = false;
+      job.error = msg;
+      publishTimings(job, trace);
+      return;
+    }
+    fail(msg);
   }
 }
 

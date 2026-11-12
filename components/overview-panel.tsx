@@ -137,20 +137,27 @@ export function OverviewPanel({
         toast.success("자동 실행을 멈췄습니다.");
       }
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 409 || err.status === 408)) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 409 || err.status === 408 || err.status === 404)
+      ) {
         // After timeout/loss, re-read server — may already be ON or still OFF.
+        // Lost requestId never auto-retransmits start; RDS ON/OFF (or 확인 불가) is authoritative.
         try {
           await refreshStateAfterStart();
         } catch {
           /* ignore */
         }
+        const lost = err.payload?.errorCode === "START_REQUEST_LOST";
         const rateLimited = err.payload?.blockers?.some((b) =>
           typeof b === "string" ? b.includes("RATE") : b.code === "KIS_RATE_LIMITED",
         );
         toast.error(
-          rateLimited
-            ? "KIS 조회 요청이 일시적으로 많습니다.\n잠시 후 다시 시도해주세요."
-            : formatPreflightBlockers(err),
+          lost
+            ? err.message
+            : rateLimited
+              ? "KIS 조회 요청이 일시적으로 많습니다.\n잠시 후 다시 시도해주세요."
+              : formatPreflightBlockers(err),
           { duration: 8_000 },
         );
       } else {
@@ -175,14 +182,20 @@ export function OverviewPanel({
       } catch {
         /* ignore */
       }
-      if (err instanceof ApiError && (err.status === 409 || err.status === 408)) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 409 || err.status === 408 || err.status === 404)
+      ) {
+        const lost = err.payload?.errorCode === "START_REQUEST_LOST";
         const rateLimited = err.payload?.blockers?.some((b) =>
           typeof b === "string" ? b.includes("RATE") : b.code === "KIS_RATE_LIMITED",
         );
         toast.error(
-          rateLimited
-            ? "KIS 조회 요청이 일시적으로 많습니다.\n잠시 후 다시 시도해주세요."
-            : formatPreflightBlockers(err),
+          lost
+            ? err.message
+            : rateLimited
+              ? "KIS 조회 요청이 일시적으로 많습니다.\n잠시 후 다시 시도해주세요."
+              : formatPreflightBlockers(err),
           { duration: 8_000 },
         );
         throw err;

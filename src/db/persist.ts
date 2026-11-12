@@ -102,6 +102,32 @@ export function assertDatabaseLedgerReadyForOrders(env: EnvMap = process.env): s
   return assertApprovedRdsConfigForOrders(env);
 }
 
+export type PersistExecutionFlagsOpts = {
+  /**
+   * When false inside the transaction (e.g. OFF cancelled a start job),
+   * the upsert must not commit — ON commits stay at 0.
+   */
+  isAllowed?: () => boolean;
+  /**
+   * Test-only gate: pause after generation check / before upsert so OFF can win.
+   * Production callers must omit this.
+   */
+  holdBeforeCommit?: () => Promise<void>;
+};
+
+type FlagsHoldGlobal = typeof globalThis & {
+  __miraeFlagsPersistHold?: (() => Promise<void>) | null;
+};
+
+/** Test helper — hold every flags persist just before upsert. */
+export function setFlagsPersistHoldForTest(hold: (() => Promise<void>) | null): void {
+  (globalThis as FlagsHoldGlobal).__miraeFlagsPersistHold = hold;
+}
+
+function flagsPersistHold(): (() => Promise<void>) | null {
+  return (globalThis as FlagsHoldGlobal).__miraeFlagsPersistHold ?? null;
+}
+
 /**
  * Fast path for Settings PATCH — upsert only trading_account_state execution flags.
  * Avoids full projectAppState which can stall behind a concurrent worker tick.
@@ -110,6 +136,7 @@ export async function persistUserExecutionSettingsFlags(
   state: AppState,
   brokerAccountId: string,
   env: EnvMap = process.env,
+  opts: PersistExecutionFlagsOpts = {},
 ): Promise<void> {
   if (!dbConfigured(env)) {
     throw new DatabaseLedgerError("DATABASE_URL required for settings persist");
@@ -124,6 +151,16 @@ export async function persistUserExecutionSettingsFlags(
     const generation = nextPersistGeneration(scope);
     await ledger.transaction(
       async (tx) => {
+        if (!persistGenerationIsCurrent(scope, generation)) {
+          throw new DatabaseLedgerError("Settings persist superseded before write");
+        }
+        const hold = opts.holdBeforeCommit ?? flagsPersistHold();
+        if (hold) await hold();
+        if (opts.isAllowed && !opts.isAllowed()) {
+          throw new DatabaseLedgerError(
+            "Settings persist cancelled — OFF supersedes in-flight ON",
+          );
+        }
         if (!persistGenerationIsCurrent(scope, generation)) {
           throw new DatabaseLedgerError("Settings persist superseded before write");
         }
@@ -144,7 +181,9 @@ export async function persistUserExecutionSettingsFlags(
       },
       {
         timeoutMs: LEDGER_TX_TIMEOUT_MS,
-        isCurrent: () => persistGenerationIsCurrent(scope, generation),
+        isCurrent: () =>
+          persistGenerationIsCurrent(scope, generation) &&
+          (opts.isAllowed ? opts.isAllowed() : true),
       },
     );
     if (!persistGenerationIsCurrent(scope, generation)) {

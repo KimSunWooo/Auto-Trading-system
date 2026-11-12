@@ -17,7 +17,15 @@ export type ApiErrorPayload = {
 
 export type AutoTradingStartPoll = {
   requestId: string;
-  status: "queued" | "running" | "reconciling" | "completed" | "failed" | "cancelled" | "idle";
+  status:
+    | "queued"
+    | "running"
+    | "reconciling"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "idle"
+    | "lost";
   uiStatus: string;
   stage?: string;
   message?: string;
@@ -32,6 +40,11 @@ export type AutoTradingStartPoll = {
   pollUrl?: string;
   reused?: boolean;
   asyncStart?: boolean;
+  errorCode?: string;
+  previousRequestStatus?: "unknown";
+  accountAutoTrading?: boolean | null;
+  accountAutoTradingSource?: "rds" | "unavailable";
+  autoRetransmit?: boolean;
 };
 
 export class ApiError extends Error {
@@ -100,8 +113,48 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /**
+ * Poll once; 404 START_REQUEST_LOST is returned as a recovery payload (not thrown),
+ * so callers can stop waiting without auto-retransmitting start.
+ */
+async function pollStartRequest(
+  requestId: string,
+  signal?: AbortSignal,
+): Promise<{ poll: AutoTradingStartPoll; lost: boolean }> {
+  const res = await fetch(
+    `/api/auto-trading/start?requestId=${encodeURIComponent(requestId)}`,
+    { signal, headers: { "Content-Type": "application/json" } },
+  );
+  const text = await res.text();
+  let body: AutoTradingStartPoll;
+  try {
+    body = JSON.parse(text || "{}") as AutoTradingStartPoll;
+  } catch {
+    throw new ApiError("서버가 JSON이 아닌 응답을 보냈습니다.", res.status || 500);
+  }
+  if (res.status === 404 && body.errorCode === "START_REQUEST_LOST") {
+    return { poll: { ...body, requestId: body.requestId || requestId, status: "lost" }, lost: true };
+  }
+  if (!res.ok) {
+    throw new ApiError(body.error || body.message || "시작 상태 조회에 실패했습니다.", res.status, body);
+  }
+  return { poll: body, lost: false };
+}
+
+function recoveryFromLostRequest(lost: AutoTradingStartPoll): AutoTradingStartPoll {
+  return {
+    ...lost,
+    status: "lost",
+    uiStatus: lost.uiStatus || "확인 불가",
+    autoTradingOnInRds:
+      lost.accountAutoTradingSource === "rds" ? Boolean(lost.accountAutoTrading) : null,
+    autoRetransmit: false,
+  };
+}
+
+/**
  * Enqueue async PAPER auto-trading start and poll until terminal status.
  * onProgress receives uiStatus strings like "장부 대사 중".
+ * Lost requestId after restart → stop waiting, show current RDS ON/OFF, never re-POST.
  */
 export async function startAutoTradingAsync(opts: {
   disclaimerAccepted?: boolean;
@@ -136,22 +189,62 @@ export async function startAutoTradingAsync(opts: {
       throw new ApiError("시작 요청이 취소되었습니다.", 499);
     }
     if (Date.now() - started > timeoutMs) {
-      // Soft timeout: re-check server once more, then surface failure without assuming ON.
-      const last = await api<AutoTradingStartPoll>(
-        `/api/auto-trading/start?requestId=${encodeURIComponent(poll.requestId)}`,
-      );
-      opts.onProgress?.(last);
-      if (last.status === "completed" && last.autoTradingOnInRds) return last;
+      const last = await pollStartRequest(poll.requestId, opts.signal);
+      opts.onProgress?.(last.lost ? recoveryFromLostRequest(last.poll) : last.poll);
+      if (last.lost) {
+        const recovered = recoveryFromLostRequest(last.poll);
+        if (recovered.accountAutoTradingSource === "unavailable") {
+          throw new ApiError(recovered.message || "확인 불가", 404, recovered);
+        }
+        // Response loss after possible ON — report current account state, do not re-POST.
+        if (recovered.accountAutoTrading === true) {
+          return {
+            ...recovered,
+            status: "completed",
+            uiStatus: "시작 완료",
+            autoTradingOnInRds: true,
+            message:
+              "시작 요청 상태는 유실됐지만 현재 계좌는 RDS에서 ON 입니다. (이전 요청 완료 여부는 알 수 없음)",
+          };
+        }
+        throw new ApiError(
+          recovered.message || "시작 요청이 유실되었고 현재 계좌는 OFF 입니다.",
+          404,
+          recovered,
+        );
+      }
+      if (last.poll.status === "completed" && last.poll.autoTradingOnInRds) return last.poll;
       throw new ApiError(
-        last.message || "시작 응답이 지연되어 서버 상태를 다시 확인해 주세요.",
+        last.poll.message || "시작 응답이 지연되어 서버 상태를 다시 확인해 주세요.",
         408,
-        last,
+        last.poll,
       );
     }
     await new Promise((r) => setTimeout(r, pollMs));
-    poll = await api<AutoTradingStartPoll>(
-      `/api/auto-trading/start?requestId=${encodeURIComponent(poll.requestId)}`,
-    );
+    const next = await pollStartRequest(poll.requestId, opts.signal);
+    if (next.lost) {
+      const recovered = recoveryFromLostRequest(next.poll);
+      opts.onProgress?.(recovered);
+      if (recovered.accountAutoTradingSource === "unavailable") {
+        throw new ApiError(recovered.message || "확인 불가", 404, recovered);
+      }
+      if (recovered.accountAutoTrading === true) {
+        return {
+          ...recovered,
+          status: "completed",
+          uiStatus: "시작 완료",
+          autoTradingOnInRds: true,
+          message:
+            "시작 요청 상태는 유실됐지만 현재 계좌는 RDS에서 ON 입니다. (이전 요청 완료 여부는 알 수 없음)",
+        };
+      }
+      throw new ApiError(
+        recovered.message || "시작 요청이 유실되었고 현재 계좌는 OFF 입니다.",
+        404,
+        recovered,
+      );
+    }
+    poll = next.poll;
     opts.onProgress?.(poll);
   }
 

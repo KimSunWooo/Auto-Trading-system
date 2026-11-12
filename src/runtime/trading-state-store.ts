@@ -48,6 +48,8 @@ export type TradingStateStore = {
     mutateOpts?: {
       durable?: boolean;
       projectMode?: "tick" | "full" | "flags";
+      /** Flags path only — OFF cancel gate checked inside RDS upsert. */
+      isAllowed?: () => boolean;
     },
   ): Promise<AppState>;
   persistStateNow(state: AppState): Promise<void>;
@@ -392,7 +394,9 @@ export function createTradingStateStore(opts: {
           // a concurrent tick project would supersede the flags generation and
           // surface "Settings persist superseded". The next worker tick projects
           // the book while trading_account_state already carries the flag.
-          await persistUserExecutionSettingsFlags(next, brokerAccountId);
+          await persistUserExecutionSettingsFlags(next, brokerAccountId, process.env, {
+            isAllowed: mutateOpts.isAllowed,
+          });
         }
         return next;
       }
