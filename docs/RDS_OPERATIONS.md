@@ -62,10 +62,9 @@ Existing application Docker files are not rewritten. `docker-compose.db.yml` is 
 
 ## Fresh DB migration
 
-1. Start local MySQL 8 from `docker-compose.db.yml`
-2. Confirm `SHOW TABLES` matches the 37 tables + `v_buy_history`
-3. Point `DATABASE_URL` at local, `PERSISTENCE_MODE=json` until tests pass
-4. Then `PERSISTENCE_MODE=mirror` against **local** only
+Runtime DB is **AWS RDS only**. Do not point the app at local docker MySQL (`127.0.0.1:3307`).
+`npm run dev` / `start` / `db:check` load `.env.local` over injected shell env so a leftover local `DATABASE_URL` cannot win.
+`docker-compose.db.yml` remains for rare isolated schema experiments only.
 
 `npm run db:generate` writes SQL under `drizzle/` for review. `npm run db:migrate` refuses to apply automatically.
 
