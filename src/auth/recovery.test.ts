@@ -48,11 +48,13 @@ test("find-id and reset return uniform message; rate limit still uniform", async
     requestFingerprint: "fp-a",
   });
   assert.equal(a.message, RECOVERY_ACCEPTED_MESSAGE);
+  assert.ok(a.delivery === "smtp" || a.delivery === "local_file");
   const b = await requestPasswordReset({
     email: "nobody-not-registered@example.invalid",
     requestFingerprint: "fp-a",
   });
   assert.equal(b.message, RECOVERY_ACCEPTED_MESSAGE);
+  assert.equal(b.delivery, a.delivery);
   // No registered user → no mail.
   assert.equal(drainMailOutboxForTest().length, 0);
 });

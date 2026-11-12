@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Panel = "login" | "register" | "find-id" | "reset";
 
@@ -13,6 +13,16 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [smtpConfigured, setSmtpConfigured] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    void fetch("/api/auth/mail-status")
+      .then((r) => r.json())
+      .then((body: { smtpConfigured?: boolean }) => {
+        setSmtpConfigured(Boolean(body.smtpConfigured));
+      })
+      .catch(() => setSmtpConfigured(null));
+  }, []);
 
   async function submitAuth(e: React.FormEvent) {
     e.preventDefault();
@@ -56,7 +66,15 @@ export default function LoginPage() {
         setError(body.error ?? "요청 실패");
         return;
       }
-      setInfo(body.message ?? "요청이 접수되었습니다. 등록된 이메일이면 안내 메일을 보냅니다.");
+      const base =
+        body.message ?? "요청이 접수되었습니다. 등록된 이메일이면 안내 메일을 보냅니다.";
+      if (body.delivery === "local_file" || smtpConfigured === false) {
+        setInfo(
+          `${base} (현재 서버에 SMTP가 설정되지 않아 실제 수신함으로 메일이 발송되지 않습니다. 관리자가 SMTP_HOST·MAIL_FROM 등을 설정해야 합니다.)`,
+        );
+      } else {
+        setInfo(base);
+      }
     } finally {
       setBusy(false);
     }
@@ -85,6 +103,14 @@ export default function LoginPage() {
               ? "가입 시 사용한 이메일을 입력하면, 등록된 경우 로그인 아이디(이메일) 안내를 보냅니다."
               : "등록 이메일로 만료되는 일회용 재설정 링크를 보냅니다."}
           </p>
+          {smtpConfigured === false ? (
+            <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+              SMTP 미설정: 지금은 실제 이메일로 발송되지 않습니다. 운영 환경에{" "}
+              <code className="text-xs">SMTP_HOST</code>, <code className="text-xs">MAIL_FROM</code>,
+              (필요 시) <code className="text-xs">SMTP_USER</code>/<code className="text-xs">SMTP_PASS</code>
+              를 넣고 서버를 재시작하세요.
+            </p>
+          ) : null}
           <input
             className="rounded border border-border bg-background px-3 py-2"
             placeholder="등록 이메일"

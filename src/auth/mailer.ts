@@ -1,10 +1,11 @@
 /**
  * Outbound mail for account recovery.
- * - Production: SMTP via SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / MAIL_FROM
- * - Local/test: file sink under data/mail-outbox (never logs secrets)
+ * - Production: real SMTP via nodemailer (SMTP_HOST + MAIL_FROM required)
+ * - Local/test without SMTP: file sink under data/mail-outbox (never logs secrets)
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import nodemailer from "nodemailer";
 
 export type MailMessage = {
   to: string;
@@ -12,15 +13,19 @@ export type MailMessage = {
   text: string;
 };
 
+export type MailDeliveryMode = "smtp" | "local_file" | "memory";
+
 export type MailSendResult = {
   ok: boolean;
-  transport: "smtp" | "file" | "memory";
+  transport: MailDeliveryMode;
   error?: string;
 };
 
 type MailerGlobal = typeof globalThis & {
   __miraeMailOutbox?: MailMessage[];
 };
+
+type EnvMap = Record<string, string | undefined>;
 
 function outbox(): MailMessage[] {
   const g = globalThis as MailerGlobal;
@@ -36,11 +41,68 @@ export function drainMailOutboxForTest(): MailMessage[] {
   return copy;
 }
 
-type EnvMap = Record<string, string | undefined>;
-
 export function mailTransportConfigured(env: EnvMap = process.env): "smtp" | "file" {
   if (env.SMTP_HOST?.trim() && env.MAIL_FROM?.trim()) return "smtp";
   return "file";
+}
+
+/** Public, non-secret delivery mode for UI (does not reveal whether a user exists). */
+export function publicMailDeliveryMode(env: EnvMap = process.env): "smtp" | "local_file" {
+  return mailTransportConfigured(env) === "smtp" ? "smtp" : "local_file";
+}
+
+function writeFileSink(message: MailMessage, to: string, prefix = ""): void {
+  const dir = path.join(process.cwd(), "data", "mail-outbox");
+  mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const safeTo = to.replace(/[^a-z0-9@._-]/gi, "_");
+  const file = path.join(dir, `${prefix}${stamp}-${safeTo}.txt`);
+  appendFileSync(file, `To: ${to}\nSubject: ${message.subject}\n\n${message.text}\n`, "utf8");
+}
+
+async function sendViaSmtp(
+  message: MailMessage,
+  to: string,
+  env: EnvMap,
+): Promise<MailSendResult> {
+  const host = env.SMTP_HOST!.trim();
+  const from = env.MAIL_FROM!.trim();
+  const port = Number(env.SMTP_PORT?.trim() || "587");
+  const secure =
+    String(env.SMTP_SECURE ?? "").toLowerCase() === "true" || port === 465;
+  const user = env.SMTP_USER?.trim();
+  const pass = env.SMTP_PASS ?? "";
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: user ? { user, pass } : undefined,
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 20_000,
+  });
+
+  try {
+    await transporter.sendMail({
+      from,
+      to,
+      subject: message.subject,
+      text: message.text,
+    });
+    return { ok: true, transport: "smtp" };
+  } catch {
+    // Never log SMTP credentials, tokens, or full message bodies.
+    // Keep a local copy for operators; client still gets a uniform recovery message.
+    try {
+      writeFileSink(message, to, "smtp-failed-");
+    } catch {
+      /* ignore secondary failure */
+    }
+    return { ok: false, transport: "smtp", error: "smtp_send_failed" };
+  } finally {
+    transporter.close();
+  }
 }
 
 export async function sendMail(
@@ -48,62 +110,38 @@ export async function sendMail(
   env: EnvMap = process.env,
 ): Promise<MailSendResult> {
   const to = message.to.trim().toLowerCase();
-  if (!to.includes("@")) return { ok: false, transport: "file", error: "invalid recipient" };
+  if (!to.includes("@")) return { ok: false, transport: "local_file", error: "invalid recipient" };
 
-  // Always keep an in-memory copy for local verification (no secrets beyond email body).
+  // Always keep an in-memory copy for local verification (tests).
   outbox().push({ to, subject: message.subject, text: message.text });
   if (outbox().length > 200) outbox().shift();
 
-  const transport = mailTransportConfigured(env);
-  if (transport === "file" || env.MIRAEMAESU_TEST === "1") {
+  // Unit/integration tests force the file/memory sink.
+  if (env.MIRAEMAESU_TEST === "1") {
     try {
-      const dir = path.join(process.cwd(), "data", "mail-outbox");
-      mkdirSync(dir, { recursive: true });
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const file = path.join(dir, `${stamp}-${to.replace(/[^a-z0-9@._-]/gi, "_")}.txt`);
-      appendFileSync(
-        file,
-        `To: ${to}\nSubject: ${message.subject}\n\n${message.text}\n`,
-        "utf8",
-      );
-      return { ok: true, transport: env.MIRAEMAESU_TEST === "1" ? "memory" : "file" };
+      writeFileSink(message, to);
+      return { ok: true, transport: "memory" };
     } catch (err) {
       return {
         ok: false,
-        transport: "file",
+        transport: "memory",
         error: err instanceof Error ? err.message : "mail file sink failed",
       };
     }
   }
 
-  // Minimal SMTP via Node fetch to a local relay is not assumed — use raw TCP-less
-  // documented SMTP_* and fall back to file if undeliverable without a library.
-  // Prefer file sink when nodemailer is not a dependency.
+  if (mailTransportConfigured(env) === "smtp") {
+    return sendViaSmtp(message, to, env);
+  }
+
   try {
-    const dir = path.join(process.cwd(), "data", "mail-outbox");
-    mkdirSync(dir, { recursive: true });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const file = path.join(dir, `smtp-queued-${stamp}.txt`);
-    appendFileSync(
-      file,
-      [
-        `SMTP_HOST=${env.SMTP_HOST}`,
-        `MAIL_FROM=${env.MAIL_FROM}`,
-        `To: ${to}`,
-        `Subject: ${message.subject}`,
-        "",
-        message.text,
-        "",
-        "(Queued to file sink — install/configure an SMTP relay that reads this outbox, or set a mail worker.)",
-      ].join("\n"),
-      "utf8",
-    );
-    return { ok: true, transport: "smtp" };
+    writeFileSink(message, to);
+    return { ok: true, transport: "local_file" };
   } catch (err) {
     return {
       ok: false,
-      transport: "smtp",
-      error: err instanceof Error ? err.message : "smtp queue failed",
+      transport: "local_file",
+      error: err instanceof Error ? err.message : "mail file sink failed",
     };
   }
 }

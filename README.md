@@ -53,7 +53,8 @@ npm run dev                  # http://127.0.0.1:43147
 
 - 로그인 화면에서 **아이디 찾기** / **비밀번호 재설정**을 지원합니다. 등록 여부와 관계없이 동일한 접수 메시지를 반환하며, 이메일·IP 기준 요청 제한이 있습니다.
 - 비밀번호 재설정 토큰은 DB에 **SHA-256 해시만** 저장합니다. 성공 시 토큰을 소진하고 해당 사용자의 로그인 세션을 모두 무효화합니다.
-- 이메일 미설정 시 `data/mail-outbox/` 파일 싱크로 흐름을 검증합니다. 실제 발송에는 다음이 필요합니다:
+- **SMTP가 없으면 실제 수신함으로 메일이 가지 않습니다.** 로컬/미설정 시 `data/mail-outbox/` 파일 싱크로만 저장됩니다. 로그인 화면 아이디 찾기·재설정 패널에 SMTP 미설정 안내가 표시됩니다.
+- 실제 발송에는 `.env.local`(또는 배포 시크릿)에 아래가 필요합니다. 설정 후 **서버 재시작**이 필요합니다.
 
 ```
 APP_ORIGIN=https://your-host.example
@@ -62,7 +63,10 @@ SMTP_HOST=smtp.your-provider
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
+# 465 포트면 SMTP_SECURE=true
 ```
+
+예: Gmail/Google Workspace는 앱 비밀번호 + `SMTP_HOST=smtp.gmail.com` / `SMTP_PORT=587`. `@localhost` 같은 테스트 주소는 실제 SMTP로도 수신할 수 없습니다 — 가입 이메일이 실제 수신 가능한 주소여야 합니다.
 
 - 회원가입은 웹 계정만 만들고, **마이페이지**에서 사용자가 PAPER / REAL 계좌번호와 해당 환경 KIS API 키·시크릿을 등록·수정합니다. 로그인 직후 등록 화면으로 자동 이동하지 않습니다.
 - 일반 사용자의 주문·검증은 로그인 사용자 ID에 연결된 DB 자격증명을 씁니다. 요청이 전역 `KIS_PAPER_*` / `KIS_REAL_*` 로 대체되지 않습니다. `BROKER_CREDENTIAL_MASTER_KEY`는 서버 운영 전용입니다.

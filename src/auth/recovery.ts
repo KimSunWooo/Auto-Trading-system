@@ -8,7 +8,13 @@ import { getDb } from "@/src/db/client";
 import * as schema from "@/src/db/schema";
 import { ensureAuthSchema } from "@/src/auth/ensure-schema";
 import { hashPassword } from "@/src/auth/password";
-import { publicAppOrigin, sendMail } from "@/src/auth/mailer";
+import { publicAppOrigin, publicMailDeliveryMode, sendMail } from "@/src/auth/mailer";
+
+export type RecoveryRequestResult = {
+  message: string;
+  /** Server mail transport — never reveals whether the address is registered. */
+  delivery: "smtp" | "local_file";
+};
 
 const RESET_TTL_SEC = 60 * 30; // 30 minutes
 const RATE_WINDOW_MS = 60 * 60 * 1000;
@@ -66,13 +72,20 @@ export function resetRecoveryRateForTest(): void {
   rateMap().clear();
 }
 
+function recoveryAccepted(): RecoveryRequestResult {
+  return {
+    message: RECOVERY_ACCEPTED_MESSAGE,
+    delivery: publicMailDeliveryMode(),
+  };
+}
+
 export async function requestFindLoginId(input: {
   email: string;
   requestFingerprint?: string;
-}): Promise<{ message: string }> {
+}): Promise<RecoveryRequestResult> {
   const email = input.email.trim().toLowerCase();
   const rateKey = `find:${email}:${input.requestFingerprint ?? ""}`;
-  if (!allowRate(rateKey)) return { message: RECOVERY_ACCEPTED_MESSAGE };
+  if (!allowRate(rateKey)) return recoveryAccepted();
 
   if (email.includes("@")) {
     try {
@@ -104,16 +117,16 @@ export async function requestFindLoginId(input: {
       /* swallow — uniform response */
     }
   }
-  return { message: RECOVERY_ACCEPTED_MESSAGE };
+  return recoveryAccepted();
 }
 
 export async function requestPasswordReset(input: {
   email: string;
   requestFingerprint?: string;
-}): Promise<{ message: string }> {
+}): Promise<RecoveryRequestResult> {
   const email = input.email.trim().toLowerCase();
   const rateKey = `reset:${email}:${input.requestFingerprint ?? ""}`;
-  if (!allowRate(rateKey)) return { message: RECOVERY_ACCEPTED_MESSAGE };
+  if (!allowRate(rateKey)) return recoveryAccepted();
 
   if (email.includes("@")) {
     try {
@@ -153,7 +166,7 @@ export async function requestPasswordReset(input: {
       /* swallow */
     }
   }
-  return { message: RECOVERY_ACCEPTED_MESSAGE };
+  return recoveryAccepted();
 }
 
 export async function completePasswordReset(input: {
