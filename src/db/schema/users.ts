@@ -26,6 +26,10 @@ export const users = mysqlTable(
     status: varchar("status", { length: 20 }).notNull().default("ACTIVE"),
     /** scrypt password hash (salt:hex|hash:hex). Never store plaintext. */
     passwordHash: varchar("password_hash", { length: 512 }),
+    /** Preferred ACTIVE KIS PAPER broker_accounts.id for this user (nullable). */
+    paperBrokerAccountId: char("paper_broker_account_id", { length: 36 }),
+    /** Preferred ACTIVE KIS REAL broker_accounts.id for this user (nullable). */
+    realBrokerAccountId: char("real_broker_account_id", { length: 36 }),
     lastLoginAt: datetime("last_login_at", { fsp: 6, mode: "string" }),
     createdAt: datetime("created_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`),
     updatedAt: datetime("updated_at", { fsp: 6, mode: "string" }).notNull().default(sql`CURRENT_TIMESTAMP(6)`).$onUpdate(() => sql`CURRENT_TIMESTAMP(6)`),
@@ -34,6 +38,8 @@ export const users = mysqlTable(
   (table) => [
     index("ix_users_status").on(table.status),
     uniqueIndex("uq_users_email").on(table.email),
+    index("ix_users_paper_broker_account").on(table.paperBrokerAccountId),
+    index("ix_users_real_broker_account").on(table.realBrokerAccountId),
   ],
 );
 

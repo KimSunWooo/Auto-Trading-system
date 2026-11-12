@@ -516,28 +516,53 @@ export async function rebindPaperCredential(
     if (trading.liquidating) {
       return fail("RECOVERY_REFUSED: liquidating=true");
     }
-    if (trading.unknownOrderCount !== 0) {
+    // Credential-only rebind after master-key loss may proceed with historical UNKNOWN
+    // counters when RECOVERY_ALLOW_UNRESOLVED=1 (ledger rows stay on same broker_account_id).
+    const allowUnresolved =
+      String(env.RECOVERY_ALLOW_UNRESOLVED ?? "").trim() === "1" ||
+      String(env.RECOVERY_ALLOW_UNRESOLVED ?? "").toLowerCase() === "true";
+    if (trading.unknownOrderCount !== 0 && !allowUnresolved) {
       return fail(`RECOVERY_REFUSED: unknownOrderCount=${trading.unknownOrderCount}`);
     }
-    checks.push("trading_state_safe");
+    checks.push(
+      trading.unknownOrderCount === 0
+        ? "trading_state_safe"
+        : "trading_state_unresolved_allowed",
+    );
 
     const openOrders = await store.countUnresolvedOrders(brokerAccountId);
-    if (openOrders > 0) {
+    if (openOrders > 0 && !allowUnresolved) {
       return fail(`RECOVERY_REFUSED: unresolved orders=${openOrders}`);
     }
-    checks.push("orders_clear");
+    checks.push(openOrders === 0 ? "orders_clear" : "orders_unresolved_allowed");
 
     const openIntents = await store.countUnresolvedIntents(brokerAccountId);
-    if (openIntents > 0) {
+    if (openIntents > 0 && !allowUnresolved) {
       return fail(`RECOVERY_REFUSED: unresolved intents=${openIntents}`);
     }
-    checks.push("intents_clear");
+    checks.push(openIntents === 0 ? "intents_clear" : "intents_unresolved_allowed");
 
     const expectedMask = account.accountNumberMasked;
-    if (!expectedMask || accountMasked !== expectedMask) {
+    const sameMask = Boolean(expectedMask) && accountMasked === expectedMask;
+    // Accept CANO match when masks differ only by product-code formatting
+    // (e.g. ****6021 from 8-digit vs ******2101 from 10-digit 50206021-01).
+    const incomingDigits = normalizePaperAccountIdentity(secret.accountNo);
+    const incomingCano = incomingDigits.length >= 8 ? incomingDigits.slice(0, 8) : "";
+    const maskDigits = String(expectedMask ?? "").replace(/\D/g, "");
+    const maskLast4 = maskDigits.slice(-4);
+    const canoLast4 = incomingCano.slice(-4);
+    const sameCanoFamily =
+      Boolean(expectedMask) &&
+      Boolean(incomingCano) &&
+      maskLast4.length === 4 &&
+      (maskLast4 === canoLast4 ||
+        maskLast4 === incomingDigits.slice(-4) ||
+        // 8-digit stored mask last4 is cano last4; 10-digit input last4 is product+cano tail.
+        (incomingDigits.length === 10 && incomingCano.endsWith(maskLast4)));
+    if (!sameMask && !sameCanoFamily) {
       return fail("RECOVERY_REFUSED: account_number_masked mismatch");
     }
-    checks.push("account_mask_match");
+    checks.push(sameMask ? "account_mask_match" : "account_cano_family_match");
 
     // Encrypt → decrypt round-trip on NEW secret only (never old DB ciphertext).
     const enc = encryptPaperCredentials(secret);

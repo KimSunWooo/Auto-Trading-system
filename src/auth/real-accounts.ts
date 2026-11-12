@@ -139,6 +139,11 @@ export async function connectRealAccount(
     });
   });
 
+  await db
+    .update(schema.users)
+    .set({ realBrokerAccountId: id })
+    .where(eq(schema.users.id, input.userId));
+
   return {
     id,
     displayName: input.alias.trim() || "KIS REAL",

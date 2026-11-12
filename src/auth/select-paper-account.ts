@@ -1,11 +1,13 @@
 /**
  * Strict PAPER account selection for logged-in users.
+ * Prefers users.paper_broker_account_id when set and valid.
  * Never pick an arbitrary ACTIVE row when defaults are ambiguous.
  */
 import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "@/src/db/client";
 import * as schema from "@/src/db/schema";
 import { AuthError } from "@/src/auth/guards";
+import { ensureAuthSchema } from "@/src/auth/ensure-schema";
 
 export class PaperAccountSelectionError extends Error {
   readonly code:
@@ -33,15 +35,24 @@ export type SelectedPaperAccount = typeof schema.brokerAccounts.$inferSelect;
  * Resolve the unique ACTIVE PAPER account for a user.
  *
  * Rules:
- * - default ACTIVE PAPER exactly 1 → use it
+ * - users.paper_broker_account_id points at owned ACTIVE PAPER → use it
+ * - else default ACTIVE PAPER exactly 1 → use it
  * - default 0 + ACTIVE exactly 1 → use it (compat)
  * - default 0 + ACTIVE 2+ → ACCOUNT_SELECTION_REQUIRED
  * - default 2+ → MULTIPLE_DEFAULT_ACCOUNTS
  * - ACTIVE PAPER without fingerprint → ACCOUNT_FINGERPRINT_MISSING
  */
 export async function selectOwnedPaperAccount(userId: string): Promise<SelectedPaperAccount> {
+  await ensureAuthSchema();
   const db = getDb();
   if (!db) throw new AuthError(503, "Database unavailable");
+
+  const users = await db
+    .select()
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  const preferredId = users[0]?.paperBrokerAccountId ?? null;
 
   const active = await db
     .select()
@@ -60,6 +71,19 @@ export async function selectOwnedPaperAccount(userId: string): Promise<SelectedP
       "ACCOUNT_NOT_CONNECTED",
       "PAPER broker account is not connected",
     );
+  }
+
+  if (preferredId) {
+    const preferred = active.find((row) => row.id === preferredId);
+    if (preferred) {
+      if (!preferred.physicalAccountFingerprint) {
+        throw new PaperAccountSelectionError(
+          "ACCOUNT_FINGERPRINT_MISSING",
+          "ACTIVE PAPER account is missing physicalAccountFingerprint",
+        );
+      }
+      return preferred;
+    }
   }
 
   const defaults = active.filter((row) => row.isDefault);
@@ -98,8 +122,9 @@ export async function findDefaultPaperAccount(userId: string): Promise<SelectedP
   }
 }
 
-/** Self-heal: when exactly one ACTIVE PAPER exists and isDefault=false, mark it default. */
+/** Self-heal: when exactly one ACTIVE PAPER exists and isDefault=false, mark it default + preference. */
 export async function maybeSelfHealSinglePaperDefault(userId: string): Promise<void> {
+  await ensureAuthSchema();
   const db = getDb();
   if (!db) return;
   const active = await db
@@ -115,9 +140,14 @@ export async function maybeSelfHealSinglePaperDefault(userId: string): Promise<v
     );
   if (active.length !== 1) return;
   const row = active[0]!;
-  if (row.isDefault) return;
+  if (!row.isDefault) {
+    await db
+      .update(schema.brokerAccounts)
+      .set({ isDefault: true, updatedAt: sql`CURRENT_TIMESTAMP(6)` })
+      .where(eq(schema.brokerAccounts.id, row.id));
+  }
   await db
-    .update(schema.brokerAccounts)
-    .set({ isDefault: true, updatedAt: sql`CURRENT_TIMESTAMP(6)` })
-    .where(eq(schema.brokerAccounts.id, row.id));
+    .update(schema.users)
+    .set({ paperBrokerAccountId: row.id })
+    .where(and(eq(schema.users.id, userId), sql`paper_broker_account_id IS NULL`));
 }

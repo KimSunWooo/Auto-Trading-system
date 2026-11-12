@@ -42,9 +42,91 @@ export async function ensureAuthSchema(): Promise<void> {
 
     await ensurePaperPhysicalFingerprintColumn(conn);
     await ensurePasswordResetTokensTable(conn);
+    await ensureUserDefaultBrokerAccountColumns(conn);
   } finally {
     await conn.end();
   }
+}
+
+/**
+ * Additive: users.paper_broker_account_id / real_broker_account_id.
+ * Backfill only when exactly one unambiguous ACTIVE account exists per env.
+ */
+async function ensureUserDefaultBrokerAccountColumns(conn: mysql.Connection): Promise<void> {
+  for (const col of ["paper_broker_account_id", "real_broker_account_id"] as const) {
+    const [cols] = await conn.query<mysql.RowDataPacket[]>(
+      `SHOW COLUMNS FROM users LIKE '${col}'`,
+    );
+    if (!cols.length) {
+      await conn.query(`ALTER TABLE users ADD COLUMN ${col} CHAR(36) NULL`);
+    }
+  }
+  const [paperIdx] = await conn.query<mysql.RowDataPacket[]>(
+    "SHOW INDEX FROM users WHERE Key_name = 'ix_users_paper_broker_account'",
+  );
+  if (!paperIdx.length) {
+    await conn.query(
+      "ALTER TABLE users ADD KEY ix_users_paper_broker_account (paper_broker_account_id)",
+    );
+  }
+  const [realIdx] = await conn.query<mysql.RowDataPacket[]>(
+    "SHOW INDEX FROM users WHERE Key_name = 'ix_users_real_broker_account'",
+  );
+  if (!realIdx.length) {
+    await conn.query(
+      "ALTER TABLE users ADD KEY ix_users_real_broker_account (real_broker_account_id)",
+    );
+  }
+
+  // Backfill PAPER preference: exactly one ACTIVE kis PAPER (prefer is_default=1).
+  await conn.query(`
+    UPDATE users u
+    INNER JOIN (
+      SELECT user_id, MIN(id) AS pick_id
+      FROM broker_accounts
+      WHERE UPPER(environment) = 'PAPER'
+        AND UPPER(broker) IN ('KIS', 'kis')
+        AND UPPER(status) = 'ACTIVE'
+        AND is_default = 1
+      GROUP BY user_id
+      HAVING COUNT(*) = 1
+    ) d ON d.user_id COLLATE utf8mb4_unicode_ci = u.id
+    SET u.paper_broker_account_id = d.pick_id
+    WHERE u.paper_broker_account_id IS NULL
+      AND u.deleted_at IS NULL
+  `);
+  await conn.query(`
+    UPDATE users u
+    INNER JOIN (
+      SELECT user_id, MIN(id) AS pick_id
+      FROM broker_accounts
+      WHERE UPPER(environment) = 'PAPER'
+        AND UPPER(broker) IN ('KIS', 'kis')
+        AND UPPER(status) = 'ACTIVE'
+      GROUP BY user_id
+      HAVING COUNT(*) = 1
+    ) d ON d.user_id COLLATE utf8mb4_unicode_ci = u.id
+    SET u.paper_broker_account_id = d.pick_id
+    WHERE u.paper_broker_account_id IS NULL
+      AND u.deleted_at IS NULL
+  `);
+
+  // Backfill REAL preference: exactly one ACTIVE kis REAL.
+  await conn.query(`
+    UPDATE users u
+    INNER JOIN (
+      SELECT user_id, MIN(id) AS pick_id
+      FROM broker_accounts
+      WHERE UPPER(environment) = 'REAL'
+        AND UPPER(broker) IN ('KIS', 'kis')
+        AND UPPER(status) = 'ACTIVE'
+      GROUP BY user_id
+      HAVING COUNT(*) = 1
+    ) d ON d.user_id COLLATE utf8mb4_unicode_ci = u.id
+    SET u.real_broker_account_id = d.pick_id
+    WHERE u.real_broker_account_id IS NULL
+      AND u.deleted_at IS NULL
+  `);
 }
 
 async function ensurePasswordResetTokensTable(conn: mysql.Connection): Promise<void> {

@@ -13,6 +13,21 @@ type AccountRow = {
   status: string;
 };
 
+type BindingView = {
+  environment: "PAPER" | "REAL";
+  brokerAccountId: string | null;
+  accountNumberMasked: string | null;
+  status: string | null;
+  displayName: string | null;
+  appKeyRegistered: boolean;
+  appSecretRegistered: boolean;
+  keyVersion: string | null;
+  credentialsDecryptOk: boolean | null;
+  kisConnected: boolean | null;
+  needsSelection: boolean;
+  candidateCount: number;
+};
+
 type MeResponse = {
   user: {
     id: string;
@@ -21,6 +36,10 @@ type MeResponse = {
     role: string;
   } | null;
   accounts?: AccountRow[];
+  bindings?: {
+    paper: BindingView;
+    real: BindingView;
+  };
 };
 
 type EnvForm = {
@@ -72,8 +91,37 @@ export default function MyPage() {
   const realAccounts = (me?.accounts ?? []).filter(
     (a) => String(a.environment).toUpperCase() === "REAL",
   );
-  const defaultPaper = paperAccounts.find((a) => a.status === "ACTIVE") ?? paperAccounts[0];
-  const defaultReal = realAccounts.find((a) => a.status === "ACTIVE") ?? realAccounts[0];
+  const preferredPaperId = me?.bindings?.paper.brokerAccountId ?? null;
+  const preferredRealId = me?.bindings?.real.brokerAccountId ?? null;
+  const defaultPaper =
+    paperAccounts.find((a) => a.id === preferredPaperId) ??
+    paperAccounts.find((a) => a.status === "ACTIVE") ??
+    paperAccounts[0];
+  const defaultReal =
+    realAccounts.find((a) => a.id === preferredRealId) ??
+    realAccounts.find((a) => a.status === "ACTIVE") ??
+    realAccounts[0];
+
+  async function selectPreferred(environment: "PAPER" | "REAL", brokerAccountId: string) {
+    setBusy(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/accounts/defaults", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ environment, brokerAccountId }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "선택 실패");
+      setMessage(body.note ?? "기본 계좌가 저장되었습니다.");
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "선택 실패");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function connectEnv(
     e: React.FormEvent,
@@ -232,6 +280,53 @@ export default function MyPage() {
       </p>
 
       <section className="space-y-3">
+        <h2 className="text-lg font-medium">계좌 조회 상태</h2>
+        <p className="text-sm text-muted-foreground">
+          저장 여부(암호문 존재)와 실제 KIS 연결 성공은 구분됩니다. 키 원문은 표시하지 않습니다.
+        </p>
+        <BindingCard title="PAPER" binding={me.bindings?.paper ?? null} />
+        <BindingCard title="REAL (주문 LOCKED)" binding={me.bindings?.real ?? null} />
+        {me.bindings?.paper.needsSelection || (paperAccounts.filter((a) => a.status === "ACTIVE").length > 1) ? (
+          <div className="space-y-2">
+            <p className="text-sm text-amber-200">PAPER 기본 계좌를 선택하세요.</p>
+            {paperAccounts
+              .filter((a) => a.status === "ACTIVE")
+              .map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={busy}
+                  className="block w-full rounded border border-border px-3 py-2 text-left text-sm hover:bg-muted/40"
+                  onClick={() => void selectPreferred("PAPER", a.id)}
+                >
+                  {a.displayName} · {a.accountNumberMasked ?? "****"}
+                  {preferredPaperId === a.id ? " (선택됨)" : ""}
+                </button>
+              ))}
+          </div>
+        ) : null}
+        {me.bindings?.real.needsSelection || (realAccounts.filter((a) => a.status === "ACTIVE").length > 1) ? (
+          <div className="space-y-2">
+            <p className="text-sm text-amber-200">REAL 기본 계좌를 선택하세요.</p>
+            {realAccounts
+              .filter((a) => a.status === "ACTIVE")
+              .map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  disabled={busy}
+                  className="block w-full rounded border border-border px-3 py-2 text-left text-sm hover:bg-muted/40"
+                  onClick={() => void selectPreferred("REAL", a.id)}
+                >
+                  {a.displayName} · {a.accountNumberMasked ?? "****"}
+                  {preferredRealId === a.id ? " (선택됨)" : ""}
+                </button>
+              ))}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="space-y-3">
         <h2 className="text-lg font-medium">프로필</h2>
         <form className="flex flex-col gap-3" onSubmit={(e) => void saveDisplayName(e)}>
           <input
@@ -328,6 +423,38 @@ export default function MyPage() {
         </Link>
       </p>
     </main>
+  );
+}
+
+function BindingCard({ title, binding }: { title: string; binding: BindingView | null }) {
+  if (!binding) {
+    return (
+      <div className="rounded border border-border p-3 text-sm text-muted-foreground">
+        {title}: 불러오는 중…
+      </div>
+    );
+  }
+  return (
+    <div className="rounded border border-border p-3 text-sm">
+      <div className="font-medium">{title}</div>
+      <div>계좌: {binding.accountNumberMasked ?? "—"}</div>
+      <div>상태: {binding.status ?? "—"}</div>
+      <div>APP KEY 저장: {binding.appKeyRegistered ? "registered" : "missing"}</div>
+      <div>APP SECRET 저장: {binding.appSecretRegistered ? "registered" : "missing"}</div>
+      <div>key_version: {binding.keyVersion ?? "—"}</div>
+      <div>
+        복호화:{" "}
+        {binding.credentialsDecryptOk == null
+          ? "—"
+          : binding.credentialsDecryptOk
+            ? "ok"
+            : "failed"}
+      </div>
+      <div>
+        KIS 연결:{" "}
+        {binding.kisConnected == null ? "미확인" : binding.kisConnected ? "ok" : "failed"}
+      </div>
+    </div>
   );
 }
 

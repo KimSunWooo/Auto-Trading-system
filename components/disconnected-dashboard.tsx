@@ -60,6 +60,8 @@ export function DisconnectedDashboard({
   issue: AccountConnectionIssue;
 }) {
   const [menu, setMenu] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [retryNote, setRetryNote] = useState<string | null>(null);
   const copy = ISSUE_COPY[issue.code] ?? ISSUE_COPY.RUNTIME_RESOLUTION_FAILED;
 
   async function logout() {
@@ -75,6 +77,31 @@ export function DisconnectedDashboard({
 
   function goMypage() {
     window.location.href = "/mypage";
+  }
+
+  async function retryConnection() {
+    setBusy(true);
+    setRetryNote(null);
+    try {
+      const res = await fetch("/api/accounts/connection", { method: "POST" });
+      const body = await res.json();
+      if (!res.ok) {
+        setRetryNote(body.error ?? "재시도 실패 (로그인 세션은 유지됩니다)");
+        return;
+      }
+      if (body.connection?.ok) {
+        window.location.reload();
+        return;
+      }
+      const code = body.connection?.issue?.code ?? issue.code;
+      setRetryNote(
+        `연결 상태: ${code}. 로그인 세션은 유지됩니다. 자격증명은 마이페이지에서만 수정하세요.`,
+      );
+    } catch (err) {
+      setRetryNote(err instanceof Error ? err.message : "재시도 실패");
+    } finally {
+      setBusy(false);
+    }
   }
 
   const userBlock = (
@@ -173,11 +200,21 @@ export function DisconnectedDashboard({
             <p className="text-xs text-muted-foreground">상세: {issue.message}</p>
           ) : null}
           <div className="flex flex-wrap gap-2 pt-2">
-            <Button onClick={goMypage}>계좌 설정으로 이동</Button>
-            <Button variant="outline" onClick={() => window.location.reload()}>
-              다시 확인
+            <Button onClick={() => void retryConnection()} disabled={busy}>
+              {busy ? "연결 확인 중…" : "연결 재시도"}
+            </Button>
+            <Button variant="outline" onClick={goMypage}>
+              마이페이지에서 자격증명 수정
+            </Button>
+            <Button variant="ghost" onClick={() => window.location.reload()}>
+              새로고침
             </Button>
           </div>
+          {retryNote ? <p className="text-sm text-amber-200">{retryNote}</p> : null}
+          <p className="text-xs text-muted-foreground">
+            로그인 세션은 유지됩니다. 이 화면에서 주문·자동매매를 시작하지 않습니다. REAL 주문은
+            LOCKED입니다.
+          </p>
         </section>
 
         <section className="grid max-w-xl gap-3 text-sm text-muted-foreground">

@@ -178,6 +178,12 @@ export async function connectPaperAccount(
     throw sanitizePaperPhysicalOwnershipError(err);
   }
 
+  // Prefer this PAPER account for the user (keeps dashboard selection stable).
+  await db
+    .update(schema.users)
+    .set({ paperBrokerAccountId: id })
+    .where(eq(schema.users.id, input.userId));
+
   return {
     id,
     displayName: input.alias.trim() || "KIS PAPER",
@@ -222,12 +228,43 @@ export async function rotatePaperCredentials(
     throw new Error("REAL accounts are LOCKED on the PAPER credential path");
   }
 
-  const existingSecret = await loadPaperSecretForAccount(input.brokerAccountId);
   const nextNo = input.accountNo.trim();
-  const prevNo = existingSecret?.accountNo?.trim() ?? "";
+  let prevNo = "";
+  let existingDecryptFailed = false;
+  try {
+    const existingSecret = await loadPaperSecretForAccount(input.brokerAccountId);
+    prevNo = existingSecret?.accountNo?.trim() ?? "";
+  } catch (err) {
+    // Master-key mismatch / corrupt ciphertext: allow in-place re-register on THIS row only.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      /Unsupported state|unable to authenticate|auth tag|bad decrypt|Invalid credential|BROKER_CREDENTIAL_MASTER_KEY/i.test(
+        msg,
+      )
+    ) {
+      existingDecryptFailed = true;
+    } else {
+      throw err;
+    }
+  }
 
-  // Same account number (or first-time credentials on this row) → rotate in place.
-  if (!prevNo || normalizeAccountNo(prevNo) === normalizeAccountNo(nextNo)) {
+  const masked = account.accountNumberMasked;
+  const nextDigits = normalizeAccountNo(nextNo);
+  const nextCano = nextDigits.length >= 8 ? nextDigits.slice(0, 8) : "";
+  const maskLast4 = String(masked ?? "").replace(/\D/g, "").slice(-4);
+  const sameFamilyAsMasked =
+    Boolean(masked) &&
+    Boolean(nextCano) &&
+    maskLast4.length === 4 &&
+    (nextCano.endsWith(maskLast4) || nextDigits.slice(-4) === maskLast4);
+
+  // Same account number, first-time secret, or decrypt-failed recovery on matching mask family
+  // → rotate in place (preserves broker_accounts.id + ledger history).
+  if (
+    !prevNo ||
+    normalizeAccountNo(prevNo) === normalizeAccountNo(nextNo) ||
+    (existingDecryptFailed && sameFamilyAsMasked)
+  ) {
     await rotateCredentialsInPlace(
       {
         userId: input.userId,
@@ -244,10 +281,16 @@ export async function rotatePaperCredentials(
     invalidateRuntimeScope(input.brokerAccountId);
     markScopeStartupSyncDone(input.brokerAccountId, false);
     await disableAutoTradingForAccount(input.brokerAccountId);
+    await db
+      .update(schema.users)
+      .set({ paperBrokerAccountId: input.brokerAccountId })
+      .where(eq(schema.users.id, input.userId));
     return {
       mode: "rotate",
       brokerAccountId: input.brokerAccountId,
-      note: "Same account number — credentials rotated. autoTrading OFF. Fresh Startup Sync required.",
+      note: existingDecryptFailed
+        ? "Credentials re-registered on existing PAPER account after decrypt failure. brokerAccountId preserved. autoTrading OFF."
+        : "Same account number — credentials rotated. autoTrading OFF. Fresh Startup Sync required.",
     };
   }
 
@@ -297,6 +340,11 @@ export async function rotatePaperCredentials(
   );
   invalidateRuntimeScope(input.brokerAccountId);
   markScopeStartupSyncDone(input.brokerAccountId, false);
+
+  await db
+    .update(schema.users)
+    .set({ paperBrokerAccountId: created.id })
+    .where(eq(schema.users.id, input.userId));
 
   return {
     mode: "switch",
