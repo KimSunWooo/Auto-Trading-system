@@ -85,3 +85,23 @@ export const authSessions = mysqlTable(
     uniqueIndex("uq_auth_session_token_hash").on(table.sessionTokenHash),
   ],
 );
+
+/** Password-reset tokens — store SHA-256(hash) only, never the raw token. */
+export const authPasswordResetTokens = mysqlTable(
+  "auth_password_reset_tokens",
+  {
+    id: char("id", { length: 36 }).primaryKey().notNull(),
+    userId: char("user_id", { length: 36 }).notNull(),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: datetime("expires_at", { fsp: 6, mode: "string" }).notNull(),
+    consumedAt: datetime("consumed_at", { fsp: 6, mode: "string" }),
+    requestFingerprint: varchar("request_fingerprint", { length: 64 }),
+    createdAt: datetime("created_at", { fsp: 6, mode: "string" })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP(6)`),
+  },
+  (table) => [
+    index("ix_auth_pw_reset_user").on(table.userId, table.createdAt),
+    uniqueIndex("uq_auth_pw_reset_token_hash").on(table.tokenHash),
+  ],
+);

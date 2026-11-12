@@ -41,9 +41,27 @@ export async function ensureAuthSchema(): Promise<void> {
     `);
 
     await ensurePaperPhysicalFingerprintColumn(conn);
+    await ensurePasswordResetTokensTable(conn);
   } finally {
     await conn.end();
   }
+}
+
+async function ensurePasswordResetTokensTable(conn: mysql.Connection): Promise<void> {
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS auth_password_reset_tokens (
+      id CHAR(36) NOT NULL,
+      user_id CHAR(36) NOT NULL,
+      token_hash VARCHAR(64) NOT NULL,
+      expires_at DATETIME(6) NOT NULL,
+      consumed_at DATETIME(6) NULL,
+      request_fingerprint VARCHAR(64) NULL,
+      created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_auth_pw_reset_token_hash (token_hash),
+      KEY ix_auth_pw_reset_user (user_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
 }
 
 async function ensurePaperPhysicalFingerprintColumn(conn: mysql.Connection): Promise<void> {

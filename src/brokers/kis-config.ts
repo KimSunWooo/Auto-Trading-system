@@ -262,6 +262,22 @@ export function kisConfigFromPaperCredentials(creds: {
   });
 }
 
+/**
+ * Build a REAL KisConfig from decrypted user credentials.
+ * Read-only path: liveEnabled stays false (no KIS_LIVE_CONFIRM / ALLOW_LIVE_TRADING).
+ * Never used for orders or auto-trading.
+ */
+export function kisConfigFromRealCredentials(creds: {
+  appKey: string;
+  appSecret: string;
+  accountNo: string;
+}): KisConfig {
+  return buildConfig("real", creds, {
+    KIS_MODE: "real",
+    ALLOW_LIVE_TRADING: "false",
+  });
+}
+
 /** Dashboard / client inspect. Does not throw. Never copies the other environment's secrets. */
 export function loadKisConfig(env: EnvMap = process.env): KisConfig {
   let environment: KisEnvironment;

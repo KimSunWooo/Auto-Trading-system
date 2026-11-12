@@ -218,6 +218,9 @@ export async function rotatePaperCredentials(
   if (!account || account.userId !== input.userId) {
     throw new Error("Broker account not owned by current user");
   }
+  if (String(account.environment).toUpperCase() === "REAL") {
+    throw new Error("REAL accounts are LOCKED on the PAPER credential path");
+  }
 
   const existingSecret = await loadPaperSecretForAccount(input.brokerAccountId);
   const nextNo = input.accountNo.trim();

@@ -49,6 +49,25 @@ npm run dev                  # http://127.0.0.1:43147
 
 `PERSISTENCE_MODE=database` 권장. JSON은 캐시일 뿐 거래 장부 SoT가 아니다.
 
+### 계정 복구 · 사용자별 KIS 계좌
+
+- 로그인 화면에서 **아이디 찾기** / **비밀번호 재설정**을 지원합니다. 등록 여부와 관계없이 동일한 접수 메시지를 반환하며, 이메일·IP 기준 요청 제한이 있습니다.
+- 비밀번호 재설정 토큰은 DB에 **SHA-256 해시만** 저장합니다. 성공 시 토큰을 소진하고 해당 사용자의 로그인 세션을 모두 무효화합니다.
+- 이메일 미설정 시 `data/mail-outbox/` 파일 싱크로 흐름을 검증합니다. 실제 발송에는 다음이 필요합니다:
+
+```
+APP_ORIGIN=https://your-host.example
+MAIL_FROM=noreply@your-domain
+SMTP_HOST=smtp.your-provider
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
+```
+
+- 회원가입은 웹 계정만 만들고, **마이페이지**에서 사용자가 PAPER / REAL 계좌번호와 해당 환경 KIS API 키·시크릿을 등록·수정합니다. 로그인 직후 등록 화면으로 자동 이동하지 않습니다.
+- 일반 사용자의 주문·검증은 로그인 사용자 ID에 연결된 DB 자격증명을 씁니다. 요청이 전역 `KIS_PAPER_*` / `KIS_REAL_*` 로 대체되지 않습니다. `BROKER_CREDENTIAL_MASTER_KEY`는 서버 운영 전용입니다.
+- PAPER: 기존 주문 검사 적용. REAL: 등록·읽기 전용 연결 확인만. REAL 주문·자동매매는 LOCKED. `/api/accounts/paper` 의 REAL 차단 유지.
+
 유지 중인 안전장치:
 
 - `npm test`는 실제 KIS 주문을 내지 않습니다.

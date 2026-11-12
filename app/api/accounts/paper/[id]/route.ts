@@ -9,7 +9,13 @@ export async function PUT(
 ) {
   try {
     const { id } = await ctx.params;
-    const { user } = await requireOwnedBrokerAccount(id);
+    const { user, account } = await requireOwnedBrokerAccount(id);
+    if (String(account.environment).toUpperCase() === "REAL") {
+      return Response.json(
+        { error: "REAL accounts are LOCKED on the PAPER API — use /api/accounts/real" },
+        { status: 403 },
+      );
+    }
     const body = (await req.json()) as {
       accountNo?: string;
       appKey?: string;

@@ -43,6 +43,27 @@ export function paperPhysicalAccountFingerprint(accountNo: string): string {
     .digest("hex");
 }
 
+/** Domain-separated HMAC key for REAL physical-account fingerprints. */
+export function realPhysicalAccountFingerprintKey(): Buffer {
+  return createHmac("sha256", masterKeyMaterial())
+    .update("mirae:hmac-key:real-physical-account-fingerprint:v1")
+    .digest();
+}
+
+/**
+ * Deterministic keyed fingerprint of a normalized KIS REAL account identity.
+ * Domain-separated from PAPER so the same CANO can exist in both environments.
+ */
+export function realPhysicalAccountFingerprint(accountNo: string): string {
+  const normalized = normalizePaperAccountIdentity(accountNo);
+  if (!normalized) {
+    throw new Error("account number required for physical account fingerprint");
+  }
+  return createHmac("sha256", realPhysicalAccountFingerprintKey())
+    .update(`KIS:REAL:PHYSICAL_ACCOUNT:${normalized}`)
+    .digest("hex");
+}
+
 export function encryptPaperCredentials(secret: PaperCredentialSecret): {
   ciphertext: string;
   iv: string;

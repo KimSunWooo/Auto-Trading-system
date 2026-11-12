@@ -60,6 +60,7 @@ scripts/tmp/
 
 # Per-account runtime state (lock/state — not source)
 data/accounts/
+data/mail-outbox/
 
 # Local probe downloads / scratch (never commit)
 .tmp/
