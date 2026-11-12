@@ -213,8 +213,10 @@ export async function verifyPaperAccountForUser(input: {
   } else if (secret) {
     runtimeClientVerified = verifyScopeMatchesSecret(scope, secret.accountNo);
     if (!runtimeClientVerified) {
+      // Read-only verify must not dispose the live worker hub/scope — that
+      // briefly blanketed PAPER orders after every /verify while WS restarted.
+      // Report the mismatch; operator rebind / credential rotate invalidates.
       blockers.push("RUNTIME_SCOPE_ACCOUNT_MISMATCH");
-      invalidateRuntimeScope(account.id);
     }
   }
 
@@ -259,9 +261,16 @@ export async function verifyPaperAccountForUser(input: {
   } else if (!input.skipLiveQuery && secret && blockers.length === 0) {
     try {
       // Prefer account-scoped client (shared OAuth/scheduler) over a fresh KisClient.
+      // Duck-type mode — avoid cross-bundle `instanceof KisClient` false negatives.
+      const scopedClient = scope?.kisClient as
+        | { mode?: string; cano?: string; productCode?: string; inquireBalance?: Function }
+        | null
+        | undefined;
       const scoped =
-        scope?.kisClient instanceof KisClient && scope.kisClient.mode === "paper"
-          ? scope.kisClient
+        scopedClient &&
+        scopedClient.mode === "paper" &&
+        typeof scopedClient.inquireBalance === "function"
+          ? (scope!.kisClient as KisClient)
           : null;
       const client = scoped ?? new KisClient(kisConfigFromPaperCredentials(secret));
       if (client.mode !== "paper") {
@@ -448,11 +457,18 @@ export async function verifyPaperAccountForUser(input: {
 
 function verifyScopeMatchesSecret(scope: RuntimeScope, accountNo: string): boolean {
   if (scope.environment !== "PAPER") return false;
-  if (!(scope.kisClient instanceof KisClient)) return false;
-  if (scope.kisClient.mode !== "paper") return false;
+  // Duck-type KisClient — Next route/worker bundles can load separate class
+  // identities so `instanceof KisClient` falsely fails and blanketed READY.
+  const client = scope.kisClient as {
+    mode?: string;
+    cano?: string;
+    productCode?: string;
+  };
+  if (!client || client.mode !== "paper") return false;
+  if (typeof client.cano !== "string" || typeof client.productCode !== "string") return false;
   const parsed = parseAccountNo(accountNo);
   if (!parsed) return false;
-  return scope.kisClient.cano === parsed.cano && scope.kisClient.productCode === parsed.productCode;
+  return client.cano === parsed.cano && client.productCode === parsed.productCode;
 }
 
 /** Exact qty compare helper for post-startup-sync recheck. */

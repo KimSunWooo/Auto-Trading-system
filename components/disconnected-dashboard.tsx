@@ -43,7 +43,7 @@ const ISSUE_COPY: Record<
   CREDENTIAL_DECRYPT_FAILED: {
     title: "자격증명 복호화에 실패했습니다",
     detail:
-      "마스터키 불일치 또는 손상된 암호문일 수 있습니다. 정상 연결로 표시하지 않으며, 운영자 재바인딩이 필요할 수 있습니다.",
+      "저장된 PAPER 자격증명을 읽을 수 없습니다. 사용자는 마스터키를 입력하지 않습니다. 마이페이지에서 KIS APP KEY·SECRET을 다시 등록하거나, 운영자 재바인딩이 필요할 수 있습니다.",
   },
   RUNTIME_RESOLUTION_FAILED: {
     title: "런타임 준비에 실패했습니다",

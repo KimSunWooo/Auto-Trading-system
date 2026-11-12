@@ -181,6 +181,9 @@ export default function MyPage() {
         <div>
           <p className="text-sm text-muted-foreground">미리매수</p>
           <h1 className="text-3xl font-semibold tracking-tight">마이페이지</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            KIS PAPER 계좌·APP KEY·SECRET 등록은 이 화면에서만 합니다. 마스터키 입력란은 없습니다.
+          </p>
         </div>
         <button type="button" className="text-sm underline" onClick={() => void logout()}>
           로그아웃
