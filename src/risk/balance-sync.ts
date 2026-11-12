@@ -1,11 +1,13 @@
 import type { StateBox } from "@/src/accounts/StateBox";
 import type { KisAccountBalance, KisApi, KisPsblOrder } from "@/src/brokers/kis-client";
+import { nowIso } from "@/src/clock";
 import { openCircuit } from "@/src/risk/circuit";
 import { HARD_LIMITS } from "@/src/risk/limits";
 import { cashFromAllocations } from "@/src/accounts/defaults";
 import type { AppState, KisBalanceSnapshot, Position } from "@/lib/types";
 import { CASH_RULE_ID } from "@/src/rules/params";
 import { markInquiryFailure } from "@/src/runtime/recovery";
+import { safetyOf } from "@/src/runtime/safety";
 import type { EnvMap } from "@/src/runtime/trading-mode";
 import {
   isBrokerSnapshotStale,
@@ -222,12 +224,14 @@ export async function refreshBrokerBalanceSnapshot(
   }
 
   const diff = diffLocalVsKis(box.current, remote, HARD_LIMITS.balanceCashToleranceKrw, env);
+  // PAPER: positionMatched is the authority; full matched already equals that.
+  const matched = usesPaperBrokerBalanceSemantics(env) ? diff.positionMatched : diff.matched;
   const snapshot = snapshotFromBrokerBalance(
     remote,
     {
       cashDelta: diff.cashDelta,
-      matched: diff.matched,
-      message: diff.matched
+      matched,
+      message: matched
         ? "KIS 잔고와 로컬 포지션이 일치합니다."
         : diff.reasons.join(" · "),
     },
@@ -235,10 +239,19 @@ export async function refreshBrokerBalanceSnapshot(
     psbl,
   );
 
+  const prevSafety = safetyOf(box.current);
   box.current = {
     ...box.current,
     lastBalanceSyncAt: now,
     kisBalance: snapshot,
+    // Keep safety.reconciliation in lockstep — stale matched=true must not outlive a fresh mismatch.
+    safety: {
+      ...prevSafety,
+      reconciliation: matched ? "synced" : "mismatch",
+      brokerConnected: true,
+      lastError: matched ? undefined : snapshot.message,
+      lastErrorAt: matched ? prevSafety.lastErrorAt : nowIso(),
+    },
   };
   return { ok: true };
 }

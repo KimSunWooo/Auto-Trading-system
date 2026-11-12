@@ -392,7 +392,12 @@ export function isRecoverableInquiryHalt(state: AppState): boolean {
   }
   if (kind === "recon" || kind === "data") return true;
   if (kind === "hard" || kind === "balance") {
-    return /timeout|aborted|조회|잔고|시세|체결|거래건수|초당/i.test(circuit.reason ?? circuit.lastError ?? "");
+    const reason = circuit.reason ?? circuit.lastError ?? "";
+    // Stale AppKey/credential halts clear after a successful KIS auth/Startup Sync.
+    // Preserve kill / daily-loss / unknown ownership above.
+    return /timeout|aborted|조회|잔고|시세|체결|거래건수|초당|AppKey|앱키|credential|decrypt|인증|토큰|EGW00133/i.test(
+      reason,
+    );
   }
   return false;
 }

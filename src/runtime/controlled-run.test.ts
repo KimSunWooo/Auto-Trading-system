@@ -137,6 +137,17 @@ test("KIS rate-limit hard circuit is recoverable after a later healthy read", ()
   assert.equal(isRecoverableInquiryHalt(state), true);
 });
 
+test("stale invalid AppKey hard circuit is recoverable after credential rebind", () => {
+  const state = createPaperState();
+  state.circuit = {
+    halted: true,
+    kind: "hard",
+    reason: "유효하지 않은 AppKey입니다.",
+    unknownCount: 1,
+  };
+  assert.equal(isRecoverableInquiryHalt(state), true);
+});
+
 test("timeout hard circuit is recoverable when no UNKNOWN order remains", () => {
   const state = createPaperState();
   state.circuit = {

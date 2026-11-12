@@ -11,6 +11,7 @@ import {
 } from "@/src/db/config";
 import { resolveMirrorLedger } from "@/src/db/mirror";
 import { projectAppState, type MirrorContext } from "@/src/db/projector";
+import { assertApprovedRdsConfigForOrders } from "@/src/db/rds-authority";
 import { recordMirrorDegraded, recordMirrorSuccess } from "@/src/db/status";
 import type { EnvMap } from "@/src/runtime/trading-mode";
 import {
@@ -88,15 +89,17 @@ export async function persistTradingLedger(
 }
 
 /**
- * Config readiness only — never process-global lastError / optional mirror degrade.
- * Per-account/intent authority is the successful persistTradingLedger call before KIS POST.
+ * Config + approved RDS host readiness.
+ * Process-global lastError from another account must not block a healthy account
+ * (see kis-broker-db-gate tests). Live disconnect mid-ops is enforced by
+ * persistTradingLedger throwing DatabaseLedgerError before KIS POST.
  */
 export function assertDatabaseLedgerReadyForOrders(env: EnvMap = process.env): string | null {
   if (!isDatabaseLedgerAuthority(env)) return null;
   if (!dbConfigured(env)) {
     return "PERSISTENCE_MODE=database but DATABASE_URL is not configured — 신규 주문 차단";
   }
-  return null;
+  return assertApprovedRdsConfigForOrders(env);
 }
 
 /**

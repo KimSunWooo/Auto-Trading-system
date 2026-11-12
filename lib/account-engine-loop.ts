@@ -263,8 +263,18 @@ async function tickOneAccount(
 
 async function runAccountTicks(): Promise<void> {
   if (g.__accountEngineShuttingDown || isNodeTestProcess()) return;
+  const { verifyApprovedRdsLive } = await import("@/src/db/rds-authority");
+  const rds = await verifyApprovedRdsLive();
+  if (!rds.ok) {
+    console.error(
+      `[account-worker] RDS authority not ready (${rds.code}) — skip ticks / no new orders: ${rds.message}`,
+    );
+    return;
+  }
   const accounts = await listActivePaperAccounts();
   for (const account of accounts) {
+    // REAL accounts are never ticked for auto-trading.
+    if (String(account.environment).toUpperCase() === "REAL") continue;
     try {
       await tickOneAccount(account);
     } catch (err) {
@@ -292,6 +302,15 @@ export function startAccountEngineLoop(): {
   if (isNodeTestProcess()) {
     return { started: false, allowed: true, reason: "test-process" };
   }
+  // Config gate before starting the interval — live ping runs on each tick cycle.
+  void import("@/src/db/rds-authority").then(({ evaluateApprovedRdsConfig }) => {
+    const cfg = evaluateApprovedRdsConfig();
+    if (!cfg.ok) {
+      console.error(
+        `[account-worker] refuse trading ticks until approved RDS is configured: ${cfg.message}`,
+      );
+    }
+  });
   g.__accountEngineShuttingDown = false;
   markProcessBootStartupVerified(false);
   void runAccountTicks().catch((err: unknown) => {

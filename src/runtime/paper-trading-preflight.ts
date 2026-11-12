@@ -28,16 +28,23 @@ import {
 import {
   isScopeStartupSyncDone,
   getRuntimeScope,
+  markScopeStartupSyncDone,
 } from "@/src/runtime/runtime-scope";
 import { awaitAccountStartupSync } from "@/lib/account-engine-loop";
 import { workerLockHealthy } from "@/src/runtime/worker-lock";
 import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
-import { tradingBlocked } from "@/src/risk/circuit";
+import { resetCircuit, tradingBlocked } from "@/src/risk/circuit";
 import { hasUnknownOrder } from "@/src/risk/order-policy";
 import { allowLiveTrading, tradingMode, type EnvMap } from "@/src/runtime/trading-mode";
 import { getMarketClock } from "@/lib/market-hours";
 import type { TradingSafetyContext } from "@/src/runtime/trading-safety";
 import { formatInstrumentLabel, resolveInstrumentMetadata } from "@/src/instruments/metadata";
+import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
+import {
+  evaluateApprovedRdsConfig,
+  verifyApprovedRdsLive,
+  type RdsAuthorityDenyCode,
+} from "@/src/db/rds-authority";
 
 export type PreflightCheckValue =
   | "READY"
@@ -57,12 +64,25 @@ export type PreflightBlocker = {
   retryable: boolean;
 };
 
+/**
+ * First failure stage for operator diagnosis (ordered).
+ * Past matched=true must never hide a newer failure in a later stage.
+ */
+export type PreflightFailureStage =
+  | "RDS_UNVERIFIED"
+  | "KIS_QUERY_FAILED"
+  | "RECON_INCOMPLETE"
+  | "RECON_MISMATCH"
+  | "UNRESOLVED_ORDERS"
+  | null;
+
 export type PaperTradingPreflight = {
   paperModeConfirmed: boolean;
   realTradingDisabled: boolean;
   credentialReady: boolean;
   kisAuthReady: boolean;
   accountResolved: boolean;
+  rdsAuthorityReady: boolean;
   startupSyncReady: boolean;
   reconciliationHealthy: boolean;
   workerLockReady: boolean;
@@ -71,10 +91,14 @@ export type PaperTradingPreflight = {
   idempotencyReady: boolean;
   unknownOrdersClear: boolean;
   readyForPaperAutoTrading: boolean;
+  /** Ordered first failure stage — null when ready. */
+  firstFailureStage: PreflightFailureStage;
+  firstFailureReason?: string;
   /** Failure codes only — never HEALTHY/READY/PASS. */
   blockers: string[];
   blockerDetails: PreflightBlocker[];
   checks: {
+    rdsAuthority: PreflightCheckValue;
     paperMode: PreflightCheckValue;
     credential: PreflightCheckValue;
     kisAuth: PreflightCheckValue;
@@ -96,6 +120,8 @@ export type PaperTradingPreflight = {
     kisMode?: string;
     startupSyncStatus?: string;
     reconciliation?: string;
+    kisMatched?: boolean;
+    kisFreshness?: string;
     unknownCount?: number;
     openOrdersLocal?: number;
     positionsLocal?: number;
@@ -104,6 +130,8 @@ export type PaperTradingPreflight = {
     orderableCash?: number | null;
     workerLockPath?: string;
     marketOpen?: boolean;
+    rdsHostApproved?: boolean;
+    rdsPersistenceMode?: string;
     quoteSample?: { ticker: string; name?: string; fresh: boolean; source?: string };
     /** Soft diagnostic — never blocks PATCH ON by itself. */
     marketDataNote?: string;
@@ -187,6 +215,11 @@ export function evaluatePaperTradingPreflight(input: {
   kisAuthStatus?: PreflightCheckValue;
   credentialOk?: boolean;
   fingerprintOk?: boolean;
+  /** Live/config RDS authority — false blocks start. */
+  rdsAuthorityOk?: boolean;
+  rdsAuthorityStatus?: PreflightCheckValue;
+  rdsAuthorityMessage?: string;
+  rdsAuthorityCode?: RdsAuthorityDenyCode | string;
   retryAfterMs?: number;
 }): PaperTradingPreflight {
   const env = input.env ?? process.env;
@@ -194,6 +227,7 @@ export function evaluatePaperTradingPreflight(input: {
   const blockerDetails: PreflightBlocker[] = [];
   const details: PaperTradingPreflight["details"] = {};
   const checks: PaperTradingPreflight["checks"] = {
+    rdsAuthority: "NOT_CHECKED",
     paperMode: "NOT_CHECKED",
     credential: "NOT_CHECKED",
     kisAuth: "NOT_CHECKED",
@@ -205,6 +239,36 @@ export function evaluatePaperTradingPreflight(input: {
     workerLock: "NOT_CHECKED",
     unknownOrders: "NOT_CHECKED",
   };
+
+  // 0. Approved RDS authority — first gate; never substitute local/JSON/mirror.
+  const rdsCfg = evaluateApprovedRdsConfig(env);
+  details.rdsPersistenceMode = String(env.PERSISTENCE_MODE ?? "(unset)");
+  details.rdsHostApproved = rdsCfg.ok;
+  const rdsStatus =
+    input.rdsAuthorityStatus ??
+    (input.rdsAuthorityOk === true
+      ? "READY"
+      : input.rdsAuthorityOk === false
+        ? "NOT_READY"
+        : rdsCfg.ok
+          ? "NOT_CHECKED"
+          : "NOT_READY");
+  checks.rdsAuthority = rdsStatus;
+  const rdsAuthorityReady = rdsStatus === "READY";
+  if (!rdsAuthorityReady) {
+    pushBlocker(
+      blockers,
+      blockerDetails,
+      input.rdsAuthorityCode
+        ? `RDS_${input.rdsAuthorityCode}`
+        : rdsCfg.ok
+          ? "RDS_UNVERIFIED"
+          : `RDS_${rdsCfg.code}`,
+      input.rdsAuthorityMessage ??
+        (!rdsCfg.ok ? rdsCfg.message : "승인된 RDS 연결을 확인하지 못했습니다."),
+      false,
+    );
+  }
 
   // 1. PAPER Runtime
   const realBlockers = realAbortTriggers(env);
@@ -308,17 +372,51 @@ export function evaluatePaperTradingPreflight(input: {
     }
   }
 
-  const recon =
-    state?.safety?.reconciliation ?? (state?.kisBalance?.matched ? "synced" : "unavailable");
-  details.reconciliation = String(recon);
-  const reconciliationHealthy = recon === "synced" || state?.kisBalance?.matched === true;
+  // Reconciliation: safety.reconciliation is authoritative.
+  // Stale kisBalance.matched=true must NEVER override a fresh mismatch/unavailable/pending.
+  const safetyRecon = state?.safety?.reconciliation;
+  const matched = state?.kisBalance?.matched === true;
+  const freshness = state?.kisBalance?.freshness;
+  details.kisMatched = state?.kisBalance?.matched;
+  details.kisFreshness = freshness;
+  let reconLabel: string;
+  let reconciliationHealthy: boolean;
+  if (safetyRecon === "mismatch") {
+    reconLabel = "mismatch";
+    reconciliationHealthy = false;
+  } else if (safetyRecon === "unavailable" || safetyRecon === "pending") {
+    reconLabel = safetyRecon;
+    reconciliationHealthy = false;
+  } else if (safetyRecon === "synced") {
+    // Require latest matched agree — do not trust synced alone after a failed refresh.
+    reconLabel = matched ? "synced" : "mismatch";
+    reconciliationHealthy = matched;
+  } else if (matched && freshness === "fresh") {
+    reconLabel = "synced";
+    reconciliationHealthy = true;
+  } else if (matched) {
+    // matched without freshness/safety — incomplete, not a pass.
+    reconLabel = "unavailable";
+    reconciliationHealthy = false;
+  } else {
+    reconLabel = matched === false ? "mismatch" : "unavailable";
+    reconciliationHealthy = false;
+  }
+  details.reconciliation = reconLabel;
   checks.reconciliation = reconciliationHealthy ? "PASS" : "NOT_READY";
   if (!reconciliationHealthy) {
+    const mismatch =
+      reconLabel === "mismatch" ||
+      state?.kisBalance?.matched === false ||
+      safetyRecon === "mismatch";
     pushBlocker(
       blockers,
       blockerDetails,
-      "RECONCILIATION_NOT_HEALTHY",
-      "로컬 원장과 KIS 잔고 정합이 확인되지 않았습니다.",
+      mismatch ? "RECONCILIATION_MISMATCH" : "RECONCILIATION_INCOMPLETE",
+      mismatch
+        ? state?.kisBalance?.message ||
+          "로컬 원장과 KIS 잔고·보유가 일치하지 않습니다."
+        : "장부 대사가 아직 완료되지 않았습니다.",
       false,
     );
   }
@@ -393,10 +491,23 @@ export function evaluatePaperTradingPreflight(input: {
     }
   }
 
-  // 9. Risk — only after boot/startup evaluated; avoid stacking when earlier gates failed
-  if (credentialReady && kisAuthReady && accountResolved && paperModeConfirmed) {
-    const riskBlocked = state
-      ? tradingBlocked(state, {
+  // 9. Risk — only after boot/startup evaluated; avoid stacking when earlier gates failed.
+  // Start gate: recoverable AppKey/credential hard halt must not block ON when KIS auth is READY
+  // (service clears it before evaluate; pure evaluate also ignores that stale halt).
+  if (
+    credentialReady &&
+    kisAuthReady &&
+    accountResolved &&
+    paperModeConfirmed &&
+    rdsAuthorityReady
+  ) {
+    let riskState = state;
+    if (riskState && isRecoverableInquiryHalt(riskState) && kisAuthReady) {
+      const cleared = resetCircuit(riskState);
+      if (!cleared.error) riskState = cleared.state;
+    }
+    const riskBlocked = riskState
+      ? tradingBlocked(riskState, {
           startupSyncVerified: input.bootStartupVerified === true,
         } satisfies TradingSafetyContext)
       : "state missing";
@@ -405,13 +516,32 @@ export function evaluatePaperTradingPreflight(input: {
     if (!riskReady) {
       const msg = String(riskBlocked);
       const rateLimited = isKisRateLimitMessage(msg);
-      pushBlocker(
-        blockers,
-        blockerDetails,
-        rateLimited ? "KIS_RATE_LIMITED" : "RISK_BLOCKED",
-        rateLimited ? "KIS 조회 요청 제한에 도달했습니다." : msg,
-        rateLimited,
-      );
+      // Map recon/unknown messages to dedicated codes — avoid opaque RISK_BLOCKED for start.
+      if (/잔고|대조|장부|mismatch|정합/i.test(msg) && !rateLimited) {
+        pushBlocker(
+          blockers,
+          blockerDetails,
+          "RECONCILIATION_MISMATCH",
+          msg,
+          false,
+        );
+      } else if (/미확인|UNKNOWN/i.test(msg) && !rateLimited) {
+        pushBlocker(
+          blockers,
+          blockerDetails,
+          "UNKNOWN_ORDERS_PRESENT",
+          msg,
+          false,
+        );
+      } else {
+        pushBlocker(
+          blockers,
+          blockerDetails,
+          rateLimited ? "KIS_RATE_LIMITED" : "RISK_BLOCKED",
+          rateLimited ? "KIS 조회 요청 제한에 도달했습니다." : msg,
+          rateLimited,
+        );
+      }
     }
   } else {
     checks.risk = "SKIPPED";
@@ -453,15 +583,13 @@ export function evaluatePaperTradingPreflight(input: {
     );
   }
 
-  const riskReady = checks.risk === "PASS" || checks.risk === "SKIPPED"
-    ? checks.risk === "PASS"
-    : false;
   // When risk was SKIPPED due to earlier failure, ready must be false (already blocked).
   const riskGateOk = checks.risk === "PASS";
 
   const uniqueBlockers = [...new Set(blockers)].filter((b) => !isSuccessStatus(b));
   // marketDataReady is diagnostic for ON save — session/order gates enforce quotes later.
   const readyForPaperAutoTrading =
+    rdsAuthorityReady &&
     paperModeConfirmed &&
     realTradingDisabled &&
     credentialReady &&
@@ -475,12 +603,20 @@ export function evaluatePaperTradingPreflight(input: {
     unknownOrdersClear &&
     uniqueBlockers.length === 0;
 
+  const { stage: firstFailureStage, reason: firstFailureReason } = classifyFirstFailureStage({
+    blockers: uniqueBlockers,
+    blockerDetails,
+    checks,
+    reconciliationLabel: details.reconciliation,
+  });
+
   return {
     paperModeConfirmed,
     realTradingDisabled,
     credentialReady,
     kisAuthReady,
     accountResolved,
+    rdsAuthorityReady,
     startupSyncReady,
     reconciliationHealthy,
     workerLockReady,
@@ -489,12 +625,87 @@ export function evaluatePaperTradingPreflight(input: {
     idempotencyReady,
     unknownOrdersClear,
     readyForPaperAutoTrading,
+    firstFailureStage: readyForPaperAutoTrading ? null : firstFailureStage,
+    firstFailureReason: readyForPaperAutoTrading ? undefined : firstFailureReason,
     blockers: uniqueBlockers,
     blockerDetails,
     checks,
     retryAfterMs: input.retryAfterMs,
     details,
   };
+}
+
+function classifyFirstFailureStage(input: {
+  blockers: string[];
+  blockerDetails: PreflightBlocker[];
+  checks: PaperTradingPreflight["checks"];
+  reconciliationLabel?: string;
+}): { stage: PreflightFailureStage; reason?: string } {
+  const detailOf = (code: string) =>
+    input.blockerDetails.find((b) => b.code === code || b.code.startsWith(code))?.message;
+
+  if (
+    input.checks.rdsAuthority !== "READY" ||
+    input.blockers.some((b) => b.startsWith("RDS_"))
+  ) {
+    const code = input.blockers.find((b) => b.startsWith("RDS_")) ?? "RDS_UNVERIFIED";
+    return { stage: "RDS_UNVERIFIED", reason: detailOf(code) ?? code };
+  }
+
+  if (
+    input.checks.credential !== "READY" ||
+    input.checks.kisAuth !== "READY" ||
+    input.blockers.some((b) =>
+      /CREDENTIAL|KIS_AUTH|KIS_RATE|FINGERPRINT|ACCOUNT_NOT/.test(b),
+    )
+  ) {
+    const code =
+      input.blockers.find((b) =>
+        /CREDENTIAL|KIS_AUTH|KIS_RATE|FINGERPRINT|ACCOUNT_NOT/.test(b),
+      ) ?? "KIS_QUERY_FAILED";
+    return { stage: "KIS_QUERY_FAILED", reason: detailOf(code) ?? code };
+  }
+
+  if (input.blockers.includes("UNKNOWN_ORDERS_PRESENT")) {
+    return {
+      stage: "UNRESOLVED_ORDERS",
+      reason: detailOf("UNKNOWN_ORDERS_PRESENT") ?? "미해결 주문",
+    };
+  }
+
+  if (
+    input.blockers.includes("RECONCILIATION_MISMATCH") ||
+    input.reconciliationLabel === "mismatch"
+  ) {
+    return {
+      stage: "RECON_MISMATCH",
+      reason: detailOf("RECONCILIATION_MISMATCH") ?? "장부 불일치",
+    };
+  }
+
+  if (
+    input.checks.startupSync !== "HEALTHY" ||
+    input.checks.reconciliation !== "PASS" ||
+    input.blockers.some((b) =>
+      /STARTUP_SYNC|RECONCILIATION_INCOMPLETE|RECONCILIATION_NOT/.test(b),
+    )
+  ) {
+    const code =
+      input.blockers.find((b) =>
+        /STARTUP_SYNC|RECONCILIATION_INCOMPLETE|RECONCILIATION_NOT/.test(b),
+      ) ?? "RECON_INCOMPLETE";
+    return { stage: "RECON_INCOMPLETE", reason: detailOf(code) ?? code };
+  }
+
+  if (input.blockers.length) {
+    // Remaining (worker lock / risk / idempotency) — treat incomplete recon path conservatively.
+    return {
+      stage: "RECON_INCOMPLETE",
+      reason: detailOf(input.blockers[0]!) ?? input.blockers[0],
+    };
+  }
+
+  return { stage: null };
 }
 
 type MutateStore = (
@@ -628,6 +839,27 @@ async function executePaperTradingPreflightService(input: {
   const env = input.env ?? process.env;
   let retryAfterMs: number | undefined;
 
+  // 0. Live approved RDS — block auto-trading ON before any KIS/account work.
+  const rdsLive = await verifyApprovedRdsLive(env);
+  if (!rdsLive.ok) {
+    const base = evaluatePaperTradingPreflight({
+      userId: input.userId,
+      state: input.state,
+      env,
+      credentialOk: false,
+      kisAuthOk: false,
+      bootStartupVerified: false,
+      rdsAuthorityOk: false,
+      rdsAuthorityStatus: "FAILED",
+      rdsAuthorityCode: rdsLive.code,
+      rdsAuthorityMessage: rdsLive.message,
+    });
+    return {
+      ...base,
+      readyForPaperAutoTrading: false,
+    };
+  }
+
   const real = realAbortTriggers(env);
   if (real.length) {
     const base = evaluatePaperTradingPreflight({
@@ -637,6 +869,8 @@ async function executePaperTradingPreflightService(input: {
       credentialOk: false,
       kisAuthOk: false,
       bootStartupVerified: false,
+      rdsAuthorityOk: true,
+      rdsAuthorityStatus: "READY",
     });
     return {
       ...base,
@@ -737,6 +971,7 @@ async function executePaperTradingPreflightService(input: {
 
   // 5. Startup Sync — reuse worker in-flight promise; never invent boot from
   // persisted HEALTHY alone or a single balance probe.
+  // Force re-run when latest reconciliation is unhealthy even if past HEALTHY/matched.
   if (
     input.refreshIfNeeded &&
     credentialOk &&
@@ -745,12 +980,23 @@ async function executePaperTradingPreflightService(input: {
     input.mutateStore &&
     usesPaperStartupSync(env)
   ) {
+    const safetyRecon = state?.safety?.reconciliation;
+    const reconUnhealthy =
+      safetyRecon === "mismatch" ||
+      safetyRecon === "unavailable" ||
+      safetyRecon === "pending" ||
+      state?.kisBalance?.matched === false ||
+      state?.kisBalance?.freshness === "unknown" ||
+      (state?.kisBalance?.matched === true && safetyRecon === "mismatch");
     const needsSync =
       !boot ||
       !state?.startupSync ||
-      state.startupSync.status !== "HEALTHY";
+      state.startupSync.status !== "HEALTHY" ||
+      reconUnhealthy;
     if (needsSync) {
       try {
+        // Invalidate process boot so awaitAccountStartupSync actually re-runs.
+        markScopeStartupSyncDone(account.id, false);
         boot = await awaitAccountStartupSync(
           account.id,
           { mutateStore: input.mutateStore },
@@ -762,6 +1008,20 @@ async function executePaperTradingPreflightService(input: {
           state = await input.mutateStore(async (current) => current);
         }
         boot = isScopeStartupSyncDone(account.id);
+
+        // Clear stale AppKey/credential hard halt after successful auth + sync path.
+        if (
+          state &&
+          kisAuthStatus === "READY" &&
+          isRecoverableInquiryHalt(state) &&
+          input.mutateStore
+        ) {
+          state = await input.mutateStore((current) => {
+            if (!isRecoverableInquiryHalt(current)) return current;
+            const reset = resetCircuit(current);
+            return reset.error ? current : reset.state;
+          });
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isKisRateLimitMessage(msg) || err instanceof KisRateLimitError) {
@@ -770,6 +1030,18 @@ async function executePaperTradingPreflightService(input: {
             err instanceof KisRateLimitError ? err.retryAfterMs : retryAfterMs ?? 1_500;
         }
       }
+    } else if (
+      state &&
+      kisAuthStatus === "READY" &&
+      isRecoverableInquiryHalt(state) &&
+      input.mutateStore
+    ) {
+      // HEALTHY recon path still clears stale credential halt so ON is not blocked.
+      state = await input.mutateStore((current) => {
+        if (!isRecoverableInquiryHalt(current)) return current;
+        const reset = resetCircuit(current);
+        return reset.error ? current : reset.state;
+      });
     }
 
     // Quote sample is diagnostic only (off-hours may fail) — never required for ON.
@@ -796,6 +1068,8 @@ async function executePaperTradingPreflightService(input: {
     fingerprintOk,
     kisAuthOk: kisAuthStatus === "READY",
     kisAuthStatus,
+    rdsAuthorityOk: true,
+    rdsAuthorityStatus: "READY",
     retryAfterMs,
   });
 
@@ -864,6 +1138,8 @@ export function preflightDomainErrorPayload(preflight: PaperTradingPreflight) {
     errorCode: "PAPER_PREFLIGHT_BLOCKED",
     message: "PAPER 자동매매 시작 조건을 충족하지 못했습니다.",
     error: assertReadyToEnablePaperAutoTrading(preflight) ?? "not ready",
+    firstFailureStage: preflight.firstFailureStage,
+    firstFailureReason: preflight.firstFailureReason,
     blockers: preflight.blockerDetails.length
       ? preflight.blockerDetails
       : preflight.blockers.map((code) => ({

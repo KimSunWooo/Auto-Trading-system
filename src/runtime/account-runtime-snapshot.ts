@@ -62,7 +62,9 @@ export function buildAccountRuntimeSnapshot(input: {
     ? rawStatus
     : "IDLE";
   const safety = safetyOf(state);
-  const reconciled = safety.reconciliation === "synced" || state.kisBalance?.matched === true;
+  // Stale matched=true must not override a fresh mismatch.
+  const reconciled =
+    safety.reconciliation === "synced" && state.kisBalance?.matched === true;
 
   const kis = state.kisBalance;
   const cash = kis && Number.isFinite(kis.cash) ? kis.cash : null;

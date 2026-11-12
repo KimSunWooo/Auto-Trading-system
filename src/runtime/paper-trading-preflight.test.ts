@@ -37,10 +37,23 @@ const PAPER_ENV = {
   KIS_MODE: "paper",
   TRADING_MODE: "live_test",
   ALLOW_LIVE_TRADING: "false",
+  PERSISTENCE_MODE: "database",
+  DATABASE_URL: "mysql://test:test@database-1.example.rds.amazonaws.com:3306/auto_trading",
   KIS_PAPER_ACCOUNT_NO: "50123456-01",
   KIS_PAPER_APP_KEY: "paper-key",
   KIS_PAPER_APP_SECRET: "paper-secret",
 };
+
+/** Unit evaluate helper — RDS live probe is owned by the service path. */
+function evalPreflight(
+  input: Parameters<typeof evaluatePaperTradingPreflight>[0],
+) {
+  return evaluatePaperTradingPreflight({
+    rdsAuthorityOk: true,
+    rdsAuthorityStatus: "READY",
+    ...input,
+  });
+}
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -99,7 +112,7 @@ function withLock(run: (lockPath: string) => void) {
 }
 
 test("REAL env aborts paperModeConfirmed", () => {
-  const pre = evaluatePaperTradingPreflight({
+  const pre = evalPreflight({
     userId: "u1",
     state: healthyState(),
     brokerAccountId: "acct-1",
@@ -117,7 +130,7 @@ test("REAL env aborts paperModeConfirmed", () => {
 test("startup sync IDLE blocks ready without leaking HEALTHY", () => {
   const state = healthyState();
   state.startupSync = { ...emptyStartupSync(), status: "IDLE" };
-  const pre = evaluatePaperTradingPreflight({
+  const pre = evalPreflight({
     userId: "u1",
     state,
     brokerAccountId: "acct-1",
@@ -135,7 +148,7 @@ test("startup sync IDLE blocks ready without leaking HEALTHY", () => {
 });
 
 test("HEALTHY status with boot not verified does NOT put STARTUP_SYNC_HEALTHY in blockers", () => {
-  const pre = evaluatePaperTradingPreflight({
+  const pre = evalPreflight({
     userId: "u1",
     state: healthyState(),
     brokerAccountId: "acct-1",
@@ -153,7 +166,7 @@ test("HEALTHY status with boot not verified does NOT put STARTUP_SYNC_HEALTHY in
 
 test("Credential OK → CREDENTIAL_NOT_READY absent; Auth OK → KIS_AUTH_NOT_READY absent", () => {
   withLock((lockPath) => {
-    const pre = evaluatePaperTradingPreflight({
+    const pre = evalPreflight({
       userId: "u1",
       state: healthyState(),
       brokerAccountId: "acct-1",
@@ -190,7 +203,7 @@ test("UNKNOWN order blocks ready", () => {
     activeClass: "UNKNOWN_ACTIVE",
   });
   withLock((lockPath) => {
-    const pre = evaluatePaperTradingPreflight({
+    const pre = evalPreflight({
       userId: "u1",
       state,
       brokerAccountId: "acct-1",
@@ -210,7 +223,7 @@ test("worker lock missing blocks ready", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "preflight-lock-"));
   dirs.push(dir);
   const lockPath = path.join(dir, "trading-worker.lock");
-  const pre = evaluatePaperTradingPreflight({
+  const pre = evalPreflight({
     userId: "u1",
     state: healthyState(),
     brokerAccountId: "acct-1",
@@ -227,7 +240,7 @@ test("worker lock missing blocks ready", () => {
 
 test("all gates pass → readyForPaperAutoTrading", () => {
   withLock((lockPath) => {
-    const pre = evaluatePaperTradingPreflight({
+    const pre = evalPreflight({
       userId: "u1",
       state: healthyState(),
       brokerAccountId: "acct-1",
@@ -252,7 +265,7 @@ test("stale/mock quote is diagnostic — does not block ON save", () => {
     q.freshAt = Date.now();
   }
   withLock((lockPath) => {
-    const pre = evaluatePaperTradingPreflight({
+    const pre = evalPreflight({
       userId: "u1",
       state,
       brokerAccountId: "acct-1",
@@ -271,7 +284,7 @@ test("stale/mock quote is diagnostic — does not block ON save", () => {
 });
 
 test("risk skipped when credential not ready — no confusing RISK_BLOCKED from startup", () => {
-  const pre = evaluatePaperTradingPreflight({
+  const pre = evalPreflight({
     userId: "u1",
     state: healthyState(),
     brokerAccountId: "acct-1",
@@ -287,7 +300,7 @@ test("risk skipped when credential not ready — no confusing RISK_BLOCKED from 
 });
 
 test("domain error payload structures PAPER_PREFLIGHT_BLOCKED", () => {
-  const pre = evaluatePaperTradingPreflight({
+  const pre = evalPreflight({
     userId: "u1",
     state: healthyState(),
     brokerAccountId: "acct-1",
@@ -324,4 +337,82 @@ test("isKisRateLimitMessage and KisRateLimitError", () => {
   assert.equal(err.code, "KIS_RATE_LIMITED");
   assert.equal(err.retryable, true);
   assert.equal(err.retryAfterMs, 2000);
+});
+
+test("stale matched=true does not override safety.reconciliation=mismatch", () => {
+  const state = healthyState();
+  state.kisBalance = {
+    ...state.kisBalance!,
+    matched: true,
+    freshness: "fresh",
+    message: "stale pass",
+  };
+  state.safety = {
+    ...state.safety!,
+    reconciliation: "mismatch",
+    lastError: "005930 수량 로컬 3주 / KIS 2주",
+  };
+  withLock((lockPath) => {
+    const pre = evalPreflight({
+      userId: "u1",
+      state,
+      brokerAccountId: "acct-1",
+      workerLockPath: lockPath,
+      bootStartupVerified: true,
+      credentialOk: true,
+      fingerprintOk: true,
+      kisAuthOk: true,
+      env: PAPER_ENV,
+    });
+    assert.equal(pre.reconciliationHealthy, false);
+    assert.equal(pre.readyForPaperAutoTrading, false);
+    assert.equal(pre.firstFailureStage, "RECON_MISMATCH");
+    assert.ok(pre.blockers.includes("RECONCILIATION_MISMATCH"));
+  });
+});
+
+test("RDS unverified is the first failure stage", () => {
+  const pre = evaluatePaperTradingPreflight({
+    userId: "u1",
+    state: healthyState(),
+    brokerAccountId: "acct-1",
+    bootStartupVerified: true,
+    credentialOk: true,
+    fingerprintOk: true,
+    kisAuthOk: true,
+    rdsAuthorityOk: false,
+    rdsAuthorityStatus: "FAILED",
+    rdsAuthorityCode: "PING_FAILED",
+    rdsAuthorityMessage: "승인된 RDS에 연결하지 못했습니다 (ping)",
+    env: PAPER_ENV,
+  });
+  assert.equal(pre.rdsAuthorityReady, false);
+  assert.equal(pre.firstFailureStage, "RDS_UNVERIFIED");
+  assert.equal(pre.readyForPaperAutoTrading, false);
+});
+
+test("stale AppKey hard circuit does not block start when KIS auth is READY", () => {
+  const state = healthyState();
+  state.circuit = {
+    halted: true,
+    kind: "hard",
+    reason: "유효하지 않은 AppKey입니다.",
+    unknownCount: 1,
+  };
+  withLock((lockPath) => {
+    const pre = evalPreflight({
+      userId: "u1",
+      state,
+      brokerAccountId: "acct-1",
+      workerLockPath: lockPath,
+      bootStartupVerified: true,
+      credentialOk: true,
+      fingerprintOk: true,
+      kisAuthOk: true,
+      env: PAPER_ENV,
+    });
+    assert.equal(pre.checks.risk, "PASS");
+    assert.equal(pre.readyForPaperAutoTrading, true);
+    assert.equal(pre.firstFailureStage, null);
+  });
 });

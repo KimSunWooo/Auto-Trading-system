@@ -3,6 +3,7 @@ import { resetCircuit } from "@/src/risk/circuit";
 import { DISCLAIMER_TEXT } from "@/src/rules/params";
 import type { AppState } from "@/lib/types";
 import { withUserTradingRuntime } from "@/src/runtime/with-user-trading-runtime";
+import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
 import {
   assertReadyToEnablePaperAutoTrading,
   preflightDomainErrorPayload,
@@ -75,7 +76,11 @@ export async function PATCH(request: Request) {
             risk: body.risk === undefined ? current.settings.risk : mergeProductRisk(body.risk),
           },
         };
-        if (body.autoTrading === true && next.circuit.halted && next.circuit.kind === "kill") {
+        if (
+          body.autoTrading === true &&
+          next.circuit.halted &&
+          (next.circuit.kind === "kill" || isRecoverableInquiryHalt(next))
+        ) {
           const reset = resetCircuit(next);
           if (!reset.error) next = reset.state;
         }
