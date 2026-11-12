@@ -142,14 +142,34 @@ const REQUIRED_SCHEMA_TABLES = [
   "executions",
 ] as const;
 
+type RdsLiveCacheSlot = {
+  at: number;
+  key: string;
+  result: RdsAuthorityLiveResult;
+};
+
+type RdsGlobal = typeof globalThis & {
+  __miraeRdsLiveCache?: RdsLiveCacheSlot | null;
+};
+
+const RDS_LIVE_TTL_MS = 30_000;
+
+function cacheKey(env: EnvMap, cfg: DbConnectionConfig): string {
+  return `${persistenceMode(env)}|${cfg.host}|${cfg.port}|${cfg.database}`;
+}
+
 /**
  * Live ping + schema SELECT. Records mirror success/failure for /api/runtime/database.
  * Never falls back to local MySQL or JSON.
  */
 export async function verifyApprovedRdsLive(
   env: EnvMap = process.env,
-  opts: { allowTestNonRds?: boolean } = {},
+  opts: { allowTestNonRds?: boolean; budgetMs?: number } = {},
 ): Promise<RdsAuthorityLiveResult> {
+  const budgetMs = opts.budgetMs ?? 8_000;
+  const started = Date.now();
+  const timedOut = () => Date.now() - started > budgetMs;
+
   const cfgCheck = evaluateApprovedRdsConfig(env, opts);
   if (!cfgCheck.ok) {
     return {
@@ -175,6 +195,16 @@ export async function verifyApprovedRdsLive(
   // Ensure pool exists before ping.
   getDb(env);
   getMysqlPool(env);
+
+  if (timedOut()) {
+    return {
+      ok: false,
+      code: "PING_FAILED",
+      message: "RDS 확인 대기 한도를 초과했습니다",
+      ping: false,
+      schemaOk: false,
+    };
+  }
 
   const ping = await pingDb(env);
   if (!ping) {
@@ -203,6 +233,15 @@ export async function verifyApprovedRdsLive(
 
   try {
     for (const table of REQUIRED_SCHEMA_TABLES) {
+      if (timedOut()) {
+        return {
+          ok: false,
+          code: "SCHEMA_QUERY_FAILED",
+          message: "RDS 스키마 확인 대기 한도를 초과했습니다",
+          ping: true,
+          schemaOk: false,
+        };
+      }
       // eslint-disable-next-line no-await-in-loop
       await pool.query(`SELECT 1 FROM \`${table}\` LIMIT 1`);
     }
@@ -227,6 +266,38 @@ export async function verifyApprovedRdsLive(
     ping: true,
     schemaOk: true,
   };
+}
+
+/**
+ * Reuse a recent successful live verify for the same DSN (default 30s).
+ * Failures are never cached as success; callers still get a live check when TTL expires.
+ */
+export async function verifyApprovedRdsLiveCached(
+  env: EnvMap = process.env,
+  opts: { allowTestNonRds?: boolean; budgetMs?: number; ttlMs?: number } = {},
+): Promise<RdsAuthorityLiveResult> {
+  const ttl = opts.ttlMs ?? RDS_LIVE_TTL_MS;
+  const cfg = loadDbConnection(env);
+  const g = globalThis as RdsGlobal;
+  if (cfg && g.__miraeRdsLiveCache) {
+    const hit = g.__miraeRdsLiveCache;
+    if (
+      hit.result.ok &&
+      hit.key === cacheKey(env, cfg) &&
+      Date.now() - hit.at < ttl
+    ) {
+      return hit.result;
+    }
+  }
+  const result = await verifyApprovedRdsLive(env, opts);
+  if (cfg && result.ok) {
+    g.__miraeRdsLiveCache = { at: Date.now(), key: cacheKey(env, cfg), result };
+  }
+  return result;
+}
+
+export function clearRdsLiveCacheForTest(): void {
+  (globalThis as RdsGlobal).__miraeRdsLiveCache = null;
 }
 
 /**

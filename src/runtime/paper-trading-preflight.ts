@@ -42,9 +42,10 @@ import { formatInstrumentLabel, resolveInstrumentMetadata } from "@/src/instrume
 import { isRecoverableInquiryHalt } from "@/src/runtime/controlled-run";
 import {
   evaluateApprovedRdsConfig,
-  verifyApprovedRdsLive,
+  verifyApprovedRdsLiveCached,
   type RdsAuthorityDenyCode,
 } from "@/src/db/rds-authority";
+import type { StartTimingTrace } from "@/src/runtime/start-timing";
 
 export type PreflightCheckValue =
   | "READY"
@@ -718,14 +719,21 @@ export function clearPreflightInflightForTest() {
   preflightInflight.clear();
 }
 
-async function probeKisAuth(client: KisApi): Promise<{
+async function probeKisAuth(
+  client: KisApi,
+  opts: { soft?: boolean } = {},
+): Promise<{
   status: PreflightCheckValue;
   retryAfterMs?: number;
   error?: string;
+  skippedBalance?: boolean;
 }> {
   try {
+    if (opts.soft && client instanceof KisClient && client.hasCachedAccessToken()) {
+      // Soft path for ON start: cached token is enough. Startup Sync will inquire balance.
+      return { status: "READY", skippedBalance: true };
+    }
     if (client instanceof KisClient && client.hasCachedAccessToken()) {
-      // Cached token is enough for READY; optional lightweight verify via balance if needed by caller.
       await client.inquireBalance();
       return { status: "READY" };
     }
@@ -811,6 +819,11 @@ export async function runPaperTradingPreflightService(input: {
   /** Re-run Startup Sync / quote refresh in this process when needed. */
   refreshIfNeeded?: boolean;
   probeKisAuth?: boolean;
+  /** When false (ON start path), skip inquirePrice sample — order gates still require fresh quotes. */
+  includeQuoteSample?: boolean;
+  /** Prefer cached KIS token without an extra inquireBalance when Startup Sync will run. */
+  softKisAuth?: boolean;
+  timingTrace?: StartTimingTrace;
   env?: EnvMap;
 }): Promise<PaperTradingPreflight & { account?: { id: string; masked: string } }> {
   const flightKey = `${input.userId}:${input.brokerAccountId ?? "default"}`;
@@ -834,13 +847,21 @@ async function executePaperTradingPreflightService(input: {
   getState?: () => Promise<AppState>;
   refreshIfNeeded?: boolean;
   probeKisAuth?: boolean;
+  includeQuoteSample?: boolean;
+  softKisAuth?: boolean;
+  timingTrace?: StartTimingTrace;
   env?: EnvMap;
 }): Promise<PaperTradingPreflight & { account?: { id: string; masked: string } }> {
   const env = input.env ?? process.env;
   let retryAfterMs: number | undefined;
+  const includeQuoteSample = input.includeQuoteSample !== false;
+  const softKisAuth = input.softKisAuth === true;
+  const trace = input.timingTrace;
 
   // 0. Live approved RDS — block auto-trading ON before any KIS/account work.
-  const rdsLive = await verifyApprovedRdsLive(env);
+  const rdsLive = await (trace
+    ? trace.measure("rds_ping", () => verifyApprovedRdsLiveCached(env, { budgetMs: 5_000 })).then((r) => r.value)
+    : verifyApprovedRdsLiveCached(env, { budgetMs: 5_000 }));
   if (!rdsLive.ok) {
     const base = evaluatePaperTradingPreflight({
       userId: input.userId,
@@ -957,7 +978,11 @@ async function executePaperTradingPreflightService(input: {
     undefined;
 
   if (input.probeKisAuth !== false && credentialOk && client) {
-    const auth = await probeKisAuth(client);
+    const auth = await (trace
+      ? trace
+          .measure("kis_auth", () => probeKisAuth(client, { soft: softKisAuth }), softKisAuth ? "soft" : "balance")
+          .then((r) => r.value)
+      : probeKisAuth(client, { soft: softKisAuth }));
     kisAuthStatus = auth.status;
     if (auth.retryAfterMs) retryAfterMs = auth.retryAfterMs;
   } else if (credentialOk && client instanceof KisClient && client.hasCachedAccessToken()) {
@@ -995,19 +1020,30 @@ async function executePaperTradingPreflightService(input: {
       reconUnhealthy;
     if (needsSync) {
       try {
-        // Invalidate process boot so awaitAccountStartupSync actually re-runs.
-        markScopeStartupSyncDone(account.id, false);
-        boot = await awaitAccountStartupSync(
-          account.id,
-          { mutateStore: input.mutateStore },
-          client,
-        );
-        if (input.getState) {
-          state = await input.getState();
-        } else {
-          state = await input.mutateStore(async (current) => current);
+        // Only invalidate boot when ledger is unhealthy or sync never completed.
+        // Do not clear a healthy boot — that forces a redundant multi-minute sync.
+        if (
+          reconUnhealthy ||
+          !state?.startupSync ||
+          state.startupSync.status !== "HEALTHY"
+        ) {
+          markScopeStartupSyncDone(account.id, false);
         }
-        boot = isScopeStartupSyncDone(account.id);
+        const syncFn = async () => {
+          boot = await awaitAccountStartupSync(
+            account.id,
+            { mutateStore: input.mutateStore! },
+            client,
+          );
+          if (input.getState) {
+            state = await input.getState();
+          } else {
+            state = await input.mutateStore!(async (current) => current);
+          }
+          boot = isScopeStartupSyncDone(account.id);
+        };
+        if (trace) await trace.measure("startup_sync", syncFn, reconUnhealthy ? "force-recon" : "boot");
+        else await syncFn();
 
         // Clear stale AppKey/credential hard halt after successful auth + sync path.
         if (
@@ -1044,10 +1080,19 @@ async function executePaperTradingPreflightService(input: {
       });
     }
 
-    // Quote sample is diagnostic only (off-hours may fail) — never required for ON.
-    if (state && boot && state.startupSync?.status === "HEALTHY") {
+    // Quote sample is diagnostic only — never required for ON save (order path enforces quotes).
+    if (
+      includeQuoteSample &&
+      state &&
+      boot &&
+      state.startupSync?.status === "HEALTHY"
+    ) {
       try {
-        state = await ensureFreshQuoteSample(state, client, input.mutateStore);
+        const quoteFn = async () => {
+          state = await ensureFreshQuoteSample(state!, client, input.mutateStore);
+        };
+        if (trace) await trace.measure("quote_sample", quoteFn);
+        else await quoteFn();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isKisRateLimitMessage(msg)) {
@@ -1112,6 +1157,8 @@ export async function runPaperTradingPreflightForUser(input: {
   /** Optional fresh read after shared Startup Sync (preferred over identity mutate). */
   getState?: () => Promise<AppState>;
   refreshIfNeeded?: boolean;
+  includeQuoteSample?: boolean;
+  softKisAuth?: boolean;
 }): Promise<PaperTradingPreflight & { account?: { id: string; masked: string } }> {
   return runPaperTradingPreflightService({
     userId: input.userId,
@@ -1123,6 +1170,8 @@ export async function runPaperTradingPreflightForUser(input: {
     kisClient: input.kisClient,
     mutateStore: input.mutateStore,
     refreshIfNeeded: input.refreshIfNeeded,
+    includeQuoteSample: input.includeQuoteSample,
+    softKisAuth: input.softKisAuth,
   });
 }
 

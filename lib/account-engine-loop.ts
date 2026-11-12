@@ -98,28 +98,62 @@ export async function awaitAccountStartupSync(
   const promise = (async () => {
     let healthy = false;
     let rateLimited = false;
-    await store.mutateStore(async (state) => {
-      const marked = {
+    // Mark SYNCING under a short store lock — do NOT hold the lock across KIS network I/O.
+    // Use flags-mode persist so we do not wait on a full ledger project just to flip status.
+    const marked = await store.mutateStore(
+      async (state) => ({
         ...state,
         startupSync: {
           ...(state.startupSync ?? emptyStartupSync()),
           status: "SYNCING" as const,
           message: "Account process boot — fresh KIS PAPER Startup Sync",
         },
-      };
-      const result = await runPaperStartupSync(marked, kisClient);
-      healthy = result.ok && result.state.startupSync?.status === "HEALTHY";
-      const err = result.error ?? result.state.startupSync?.message ?? "";
-      rateLimited = /초당|EGW00201|rate/i.test(err);
-      if (!result.ok) {
-        console.error(`[account-worker:${brokerAccountId}] startup sync FAILED:`, result.error);
-      } else {
-        console.info(
-          `[account-worker:${brokerAccountId}] startup sync HEALTHY orphaned=${result.state.startupSync?.orphanedOrders ?? 0}`,
-        );
-      }
-      return result.state;
-    });
+      }),
+      { projectMode: "flags" },
+    );
+
+    let result: Awaited<ReturnType<typeof runPaperStartupSync>>;
+    try {
+      result = await runPaperStartupSync(marked, kisClient);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      rateLimited = /초당|EGW00201|rate/i.test(msg);
+      console.error(`[account-worker:${brokerAccountId}] startup sync FAILED:`, msg);
+      await store.mutateStore(
+        async (state) => ({
+          ...state,
+          startupSync: {
+            ...(state.startupSync ?? emptyStartupSync()),
+            status: "FAILED" as const,
+            message: msg.slice(0, 300),
+          },
+        }),
+        { projectMode: "flags" },
+      );
+      g.__accountStartupNextAttemptAt?.set(
+        brokerAccountId,
+        Date.now() + (rateLimited ? 30_000 : 10_000),
+      );
+      return;
+    }
+
+    healthy = result.ok && result.state.startupSync?.status === "HEALTHY";
+    const err = result.error ?? result.state.startupSync?.message ?? "";
+    rateLimited = /초당|EGW00201|rate/i.test(err);
+    if (!result.ok) {
+      console.error(`[account-worker:${brokerAccountId}] startup sync FAILED:`, result.error);
+    } else {
+      console.info(
+        `[account-worker:${brokerAccountId}] startup sync HEALTHY orphaned=${result.state.startupSync?.orphanedOrders ?? 0}`,
+      );
+    }
+
+    // Apply sync book under lock; preserve concurrent settings (e.g. user turned OFF).
+    await store.mutateStore(async (state) => ({
+      ...result.state,
+      settings: state.settings,
+    }));
+
     if (healthy) {
       markScopeStartupSyncDone(brokerAccountId, true);
       markProcessBootStartupVerified(true);

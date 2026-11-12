@@ -14,7 +14,11 @@ import { JsonStateRepository } from "@/src/persistence/json-state-repository";
 import { hydratePersistedState, toPublic as bootstrapToPublic } from "@/lib/store";
 import { mirrorAfterJsonSave, resolveMirrorLedger } from "@/src/db/mirror";
 import { isDatabaseLedgerAuthority, persistenceMode } from "@/src/db/config";
-import { DatabaseLedgerError, persistTradingLedger } from "@/src/db/persist";
+import {
+  DatabaseLedgerError,
+  persistTradingLedger,
+  persistUserExecutionSettingsFlags,
+} from "@/src/db/persist";
 import { reconstituteAppStateFromLedger } from "@/src/db/reconstitute-state";
 import { isPaperTestHarness } from "@/src/risk/order-policy";
 import { isNodeTestProcess } from "@/src/runtime/test-process";
@@ -41,7 +45,10 @@ export type TradingStateStore = {
   toPublic(state: AppState, ruleConfig: RuleConfigFile): PublicState;
   mutateStore(
     fn: (state: AppState) => AppState | Promise<AppState>,
-    mutateOpts?: { durable?: boolean; projectMode?: "tick" | "full" },
+    mutateOpts?: {
+      durable?: boolean;
+      projectMode?: "tick" | "full" | "flags";
+    },
   ): Promise<AppState>;
   persistStateNow(state: AppState): Promise<void>;
   tickAndGet(
@@ -183,7 +190,7 @@ export function createTradingStateStore(opts: {
     state: AppState;
     /** Order/intent path — must not be coalesced away or reported success for another snapshot. */
     durable: boolean;
-    projectMode: "tick" | "full";
+    projectMode: "tick" | "full" | "flags";
   };
 
   let persistInflight: Promise<void> | null = null;
@@ -205,7 +212,19 @@ export function createTradingStateStore(opts: {
       recordWorkerProgress(brokerAccountId, { stage: "persist_start", tickId });
     }
     try {
-      if (dbAuthority) {
+      // Settings ON/OFF fast path — RDS trading_account_state flags only.
+      // Avoids waiting behind a multi-second full ledger project.
+      if (job.projectMode === "flags" && dbAuthority && brokerAccountId) {
+        await persistUserExecutionSettingsFlags(next, brokerAccountId);
+        try {
+          await repository.save(next);
+        } catch (err) {
+          console.error(
+            "[trading-state-store] JSON cache save failed after flags persist:",
+            err instanceof Error ? err.message : err,
+          );
+        }
+      } else if (dbAuthority) {
         // DB first — throw on failure so callers (KisBroker pre-submit persist) do not order.
         // Durable order path uses full projection; worker ticks use tick mode.
         await persistTradingLedger(
@@ -214,7 +233,7 @@ export function createTradingStateStore(opts: {
           {
             brokerAccountId,
             ruleConfig: opts.getRuleConfig?.(),
-            projectMode: job.projectMode,
+            projectMode: job.projectMode === "full" ? "full" : "tick",
             txOpts: brokerAccountId
               ? {
                   onStage: (stage) => {
@@ -249,7 +268,7 @@ export function createTradingStateStore(opts: {
         await mirrorAfterJsonSave(next, process.env, {
           brokerAccountId,
           ruleConfig: opts.getRuleConfig?.(),
-          projectMode: job.projectMode,
+          projectMode: job.projectMode === "full" ? "full" : "tick",
         });
       }
       if (brokerAccountId) {
@@ -283,7 +302,7 @@ export function createTradingStateStore(opts: {
 
   async function saveState(
     state: AppState,
-    saveOpts: { durable?: boolean; projectMode?: "tick" | "full" } = {},
+    saveOpts: { durable?: boolean; projectMode?: "tick" | "full" | "flags" } = {},
   ): Promise<void> {
     if (opts.skipPersistUnderTest && isNodeTestProcess()) return;
     const durable = saveOpts.durable === true;
@@ -347,13 +366,43 @@ export function createTradingStateStore(opts: {
       return toPublicWithRules(state, ruleConfig, getKisClient, brokerAccountId);
     },
     async mutateStore(fn, mutateOpts = {}) {
+      const durable = mutateOpts.durable === true;
+      const mode = mutateOpts.projectMode ?? (durable ? "full" : "tick");
+
+      // Flags path: keep withStore critical section short (JSON only), then RDS flags
+      // outside so ON/OFF is not blocked behind a multi-second ledger project.
+      if (mode === "flags") {
+        const next = await withStore(async (state) => {
+          const updated = await fn(state);
+          updated.updatedAt = new Date().toISOString();
+          if (!(opts.skipPersistUnderTest && isNodeTestProcess())) {
+            try {
+              await repository.save(updated);
+            } catch (err) {
+              console.error(
+                "[trading-state-store] flags JSON save failed:",
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+          return updated;
+        });
+        if (brokerAccountId && !(opts.skipPersistUnderTest && isNodeTestProcess())) {
+          // Authoritative ON/OFF for workers. Skip immediate full-ledger coalesce —
+          // a concurrent tick project would supersede the flags generation and
+          // surface "Settings persist superseded". The next worker tick projects
+          // the book while trading_account_state already carries the flag.
+          await persistUserExecutionSettingsFlags(next, brokerAccountId);
+        }
+        return next;
+      }
+
       return withStore(async (state) => {
         const next = await fn(state);
         next.updatedAt = new Date().toISOString();
-        const durable = mutateOpts.durable === true;
         await saveState(next, {
           durable,
-          projectMode: mutateOpts.projectMode ?? (durable ? "full" : "tick"),
+          projectMode: mode,
         });
         return next;
       });
@@ -372,13 +421,16 @@ export function createTradingStateStore(opts: {
         recordWorkerProgress(brokerAccountId, { stage: "tick_start", tickId });
       }
       try {
-        const next = await store.mutateStore((state) =>
+        // Compute next state under the store lock, then persist OUTSIDE so
+        // settings ON/OFF (flags path) is not blocked for tens of seconds.
+        const next = await withStore(async (state) =>
           tickState(state, new Date(), {
             ...tickOpts.tickDeps,
             ruleConfig: tickOpts.tickDeps?.ruleConfig ?? ruleConfig,
             kisClient: tickOpts.tickDeps?.kisClient ?? getKisClient?.(),
           }),
         );
+        await saveState(next, { durable: false, projectMode: "tick" });
         if (brokerAccountId) {
           recordWorkerProgress(brokerAccountId, {
             stage: "tick_done",

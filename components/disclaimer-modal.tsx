@@ -17,11 +17,14 @@ export function DisclaimerModal({
   onOpenChange,
   onAccept,
   confirmLabel = "동의하고 실행",
+  progressLabel,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onAccept: () => void | Promise<void>;
   confirmLabel?: string;
+  /** Live status while start job runs (e.g. 장부 대사 중). */
+  progressLabel?: string | null;
 }) {
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -68,12 +71,17 @@ export function DisclaimerModal({
           />
           <span>위 내용을 읽었고, 모든 투자 판단과 결과에 대한 책임이 본인에게 있음에 동의합니다.</span>
         </label>
+        {busy && progressLabel ? (
+          <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground" aria-live="polite">
+            {progressLabel}
+          </p>
+        ) : null}
         <DialogFooter>
           <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
             취소
           </Button>
           <Button disabled={!checked || busy} onClick={() => void confirm()}>
-            {busy ? "확인 중…" : confirmLabel}
+            {busy ? progressLabel || "확인 중…" : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -11,6 +11,27 @@ export type ApiErrorPayload = {
   checks?: Record<string, string>;
   retryAfterMs?: number;
   readyForPaperAutoTrading?: boolean;
+  firstFailureStage?: string | null;
+  firstFailureReason?: string | null;
+};
+
+export type AutoTradingStartPoll = {
+  requestId: string;
+  status: "queued" | "running" | "reconciling" | "completed" | "failed" | "cancelled" | "idle";
+  uiStatus: string;
+  stage?: string;
+  message?: string;
+  totalMs?: number | null;
+  byStage?: Record<string, number>;
+  autoTradingOnInRds?: boolean | null;
+  firstFailureStage?: string | null;
+  firstFailureReason?: string | null;
+  blockers?: ApiErrorPayload["blockers"];
+  checks?: Record<string, string>;
+  error?: string;
+  pollUrl?: string;
+  reused?: boolean;
+  asyncStart?: boolean;
 };
 
 export class ApiError extends Error {
@@ -71,9 +92,82 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       checks: data.checks,
       retryAfterMs: data.retryAfterMs,
       readyForPaperAutoTrading: data.readyForPaperAutoTrading,
+      firstFailureStage: data.firstFailureStage,
+      firstFailureReason: data.firstFailureReason,
     });
   }
   return data;
+}
+
+/**
+ * Enqueue async PAPER auto-trading start and poll until terminal status.
+ * onProgress receives uiStatus strings like "장부 대사 중".
+ */
+export async function startAutoTradingAsync(opts: {
+  disclaimerAccepted?: boolean;
+  onProgress?: (poll: AutoTradingStartPoll) => void;
+  signal?: AbortSignal;
+  pollMs?: number;
+  timeoutMs?: number;
+}): Promise<AutoTradingStartPoll> {
+  const pollMs = opts.pollMs ?? 750;
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const started = Date.now();
+
+  const enqueue = await fetch("/api/auto-trading/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ disclaimerAccepted: opts.disclaimerAccepted !== false }),
+    signal: opts.signal,
+  });
+  const enqueueText = await enqueue.text();
+  let poll = JSON.parse(enqueueText || "{}") as AutoTradingStartPoll;
+  if (!enqueue.ok && enqueue.status !== 202) {
+    throw new ApiError(poll.error || poll.message || "시작 요청에 실패했습니다.", enqueue.status, poll);
+  }
+  opts.onProgress?.(poll);
+
+  while (
+    poll.status === "queued" ||
+    poll.status === "running" ||
+    poll.status === "reconciling"
+  ) {
+    if (opts.signal?.aborted) {
+      throw new ApiError("시작 요청이 취소되었습니다.", 499);
+    }
+    if (Date.now() - started > timeoutMs) {
+      // Soft timeout: re-check server once more, then surface failure without assuming ON.
+      const last = await api<AutoTradingStartPoll>(
+        `/api/auto-trading/start?requestId=${encodeURIComponent(poll.requestId)}`,
+      );
+      opts.onProgress?.(last);
+      if (last.status === "completed" && last.autoTradingOnInRds) return last;
+      throw new ApiError(
+        last.message || "시작 응답이 지연되어 서버 상태를 다시 확인해 주세요.",
+        408,
+        last,
+      );
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+    poll = await api<AutoTradingStartPoll>(
+      `/api/auto-trading/start?requestId=${encodeURIComponent(poll.requestId)}`,
+    );
+    opts.onProgress?.(poll);
+  }
+
+  if (poll.status === "completed" && poll.autoTradingOnInRds) return poll;
+  if (poll.status === "cancelled") {
+    throw new ApiError(poll.message || "시작이 취소되었습니다.", 409, poll);
+  }
+  throw new ApiError(
+    poll.firstFailureReason || poll.message || poll.error || "자동매매를 시작하지 못했습니다.",
+    409,
+    {
+      ...poll,
+      errorCode: "PAPER_PREFLIGHT_BLOCKED",
+      message: poll.message,
+    },
+  );
 }
 
 export function useTrading(initialState: PublicState) {

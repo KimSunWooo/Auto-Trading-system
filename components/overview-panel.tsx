@@ -16,7 +16,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Change, Price, Sparkline } from "@/components/price";
-import { ApiError, api, formatPreflightBlockers } from "@/hooks/use-trading";
+import {
+  ApiError,
+  api,
+  formatPreflightBlockers,
+  startAutoTradingAsync,
+  type AutoTradingStartPoll,
+} from "@/hooks/use-trading";
 import { formatPct, formatSeoul, formatWon } from "@/lib/format";
 import { dashboardStats, ruleCardModel, ruleDisplayName } from "@/lib/dashboard";
 import { DisclaimerModal } from "@/components/disclaimer-modal";
@@ -80,6 +86,34 @@ export function OverviewPanel({
   const rules = state.ruleConfig?.rules ?? [];
   const [disclaimerOpen, setDisclaimerOpen] = useState(false);
   const [autoTradingSubmitting, setAutoTradingSubmitting] = useState(false);
+  const [startProgress, setStartProgress] = useState<string | null>(null);
+
+  async function refreshStateAfterStart() {
+    const next = await api<PublicState>("/api/state");
+    onState(next);
+    return next;
+  }
+
+  function handleStartProgress(poll: AutoTradingStartPoll) {
+    setStartProgress(poll.uiStatus || poll.message || "시작 중…");
+  }
+
+  async function enableAutoTradingWithProgress(disclaimerAccepted: boolean) {
+    const result = await startAutoTradingAsync({
+      disclaimerAccepted,
+      onProgress: handleStartProgress,
+    });
+    if (!result.autoTradingOnInRds) {
+      // Server finished without confirmed RDS ON — verify before claiming success.
+      const verified = await refreshStateAfterStart();
+      if (!verified.settings.autoTrading) {
+        throw new ApiError("서버에 자동매매 ON이 확인되지 않았습니다.", 409, result);
+      }
+    } else {
+      await refreshStateAfterStart();
+    }
+    return result;
+  }
 
   async function setAutoTrading(autoTrading: boolean) {
     if (autoTradingSubmitting) return;
@@ -88,16 +122,28 @@ export function OverviewPanel({
       return;
     }
     setAutoTradingSubmitting(true);
+    setStartProgress(autoTrading ? "시작 중…" : null);
     try {
-      onState(
-        await api<PublicState>("/api/settings", {
-          method: "PATCH",
-          body: JSON.stringify({ autoTrading }),
-        }),
-      );
-      toast.success(autoTrading ? "자동 실행을 켰습니다." : "자동 실행을 멈췄습니다.");
+      if (autoTrading) {
+        await enableAutoTradingWithProgress(true);
+        toast.success("자동 실행을 켰습니다.");
+      } else {
+        onState(
+          await api<PublicState>("/api/settings", {
+            method: "PATCH",
+            body: JSON.stringify({ autoTrading: false }),
+          }),
+        );
+        toast.success("자동 실행을 멈췄습니다.");
+      }
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      if (err instanceof ApiError && (err.status === 409 || err.status === 408)) {
+        // After timeout/loss, re-read server — may already be ON or still OFF.
+        try {
+          await refreshStateAfterStart();
+        } catch {
+          /* ignore */
+        }
         const rateLimited = err.payload?.blockers?.some((b) =>
           typeof b === "string" ? b.includes("RATE") : b.code === "KIS_RATE_LIMITED",
         );
@@ -112,22 +158,24 @@ export function OverviewPanel({
       }
     } finally {
       setAutoTradingSubmitting(false);
+      setStartProgress(null);
     }
   }
 
   async function acceptAndStart() {
     if (autoTradingSubmitting) return;
     setAutoTradingSubmitting(true);
+    setStartProgress("시작 중…");
     try {
-      onState(
-        await api<PublicState>("/api/settings", {
-          method: "PATCH",
-          body: JSON.stringify({ disclaimerAccepted: true, autoTrading: true }),
-        }),
-      );
+      await enableAutoTradingWithProgress(true);
       toast.success("이용에 동의하고 자동 실행을 켰습니다.");
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      try {
+        await refreshStateAfterStart();
+      } catch {
+        /* ignore */
+      }
+      if (err instanceof ApiError && (err.status === 409 || err.status === 408)) {
         const rateLimited = err.payload?.blockers?.some((b) =>
           typeof b === "string" ? b.includes("RATE") : b.code === "KIS_RATE_LIMITED",
         );
@@ -143,6 +191,7 @@ export function OverviewPanel({
       throw err;
     } finally {
       setAutoTradingSubmitting(false);
+      setStartProgress(null);
     }
   }
 
@@ -367,6 +416,7 @@ export function OverviewPanel({
         open={disclaimerOpen}
         onOpenChange={setDisclaimerOpen}
         confirmLabel="동의하고 자동매매 시작"
+        progressLabel={startProgress}
         onAccept={acceptAndStart}
       />
 
