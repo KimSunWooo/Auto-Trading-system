@@ -267,17 +267,36 @@ export function useTrading(initialState: PublicState) {
   const [state, setState] = useState<PublicState>(initialState);
   const [error, setError] = useState<string | null>(null);
   const tickAllowedRef = useRef(initialState.runtime?.httpTickAllowed !== false);
+  const visibleRef = useRef(true);
 
-  const load = useCallback(async (tick = false) => {
+  const load = useCallback(async (mode: "full" | "dashboard" | "tick" = "full") => {
     try {
-      const allowTick = tick && tickAllowedRef.current;
-      const next = allowTick
-        ? await api<PublicState>("/api/tick", { method: "POST" })
-        : await api<PublicState>("/api/state");
+      if (mode === "tick" && tickAllowedRef.current) {
+        const next = await api<PublicState>("/api/tick", { method: "POST" });
+        if (next.runtime) tickAllowedRef.current = next.runtime.httpTickAllowed !== false;
+        setState(next);
+        setError(null);
+        return;
+      }
+      // Auto-refresh uses slim dashboard view — full book stays on /api/state.
+      const path = mode === "dashboard" ? "/api/state?view=dashboard" : "/api/state";
+      const next = await api<PublicState>(path);
       if (next.runtime) {
         tickAllowedRef.current = next.runtime.httpTickAllowed !== false;
       }
-      setState(next);
+      setState((prev) => {
+        // Preserve tab-local arrays when a slim dashboard poll returns empties.
+        if (mode === "dashboard") {
+          return {
+            ...next,
+            orders: next.orders?.length ? next.orders : prev.orders,
+            intents: next.intents?.length ? next.intents : prev.intents,
+            conditions: next.conditions?.length ? next.conditions : prev.conditions,
+            dcaPlans: next.dcaPlans?.length ? next.dcaPlans : prev.dcaPlans,
+          };
+        }
+        return next;
+      });
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "시세를 불러오지 못했습니다.");
@@ -285,12 +304,25 @@ export function useTrading(initialState: PublicState) {
   }, []);
 
   useEffect(() => {
+    const onVis = () => {
+      visibleRef.current = document.visibilityState === "visible";
+    };
+    onVis();
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  useEffect(() => {
     let polling = false;
+    // Dashboard refresh: read-only summary. Do not POST /api/tick every few seconds —
+    // workers own ticks; HTTP ticks amplify queue + DB contention across tabs.
     const id = window.setInterval(() => {
-      if (polling) return;
+      if (polling || !visibleRef.current) return;
       polling = true;
-      void load(true).finally(() => { polling = false; });
-    }, 2500);
+      void load("dashboard").finally(() => {
+        polling = false;
+      });
+    }, 5_000);
     return () => window.clearInterval(id);
   }, [load]);
 

@@ -3,30 +3,37 @@ import { persistenceMode } from "@/src/db/config";
 import { resolveMirrorLedger } from "@/src/db/mirror";
 import type { EnvMap } from "@/src/runtime/trading-mode";
 
+function ledgerModes(env: EnvMap) {
+  const mode = persistenceMode(env);
+  return mode === "mirror" || mode === "database";
+}
+
 export async function getBuyHistory(filter: HistoryFilter = {}, env: EnvMap = process.env) {
-  if (persistenceMode(env) !== "mirror") {
+  if (!ledgerModes(env)) {
     return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "json" as const };
   }
   const ledger = await resolveMirrorLedger(env);
   if (!ledger) {
-    return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "json" as const };
+    return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "unavailable" as const };
   }
-  return ledger.transaction((tx) => tx.listBuyHistory(filter));
+  const page = await ledger.transaction((tx) => tx.listBuyHistory(filter));
+  return { ...page, mode: persistenceMode(env) };
 }
 
 export async function getTradeHistory(filter: HistoryFilter = {}, env: EnvMap = process.env) {
-  if (persistenceMode(env) !== "mirror") {
+  if (!ledgerModes(env)) {
     return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "json" as const };
   }
   const ledger = await resolveMirrorLedger(env);
   if (!ledger) {
-    return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "json" as const };
+    return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "unavailable" as const };
   }
-  return ledger.transaction((tx) => tx.listTrades(filter));
+  const page = await ledger.transaction((tx) => tx.listTrades(filter));
+  return { ...page, mode: persistenceMode(env) };
 }
 
 export async function getTradeById(id: string, env: EnvMap = process.env) {
-  if (persistenceMode(env) !== "mirror") return null;
+  if (!ledgerModes(env)) return null;
   const ledger = await resolveMirrorLedger(env);
   if (!ledger) return null;
   return ledger.transaction(async (tx) => {
@@ -45,12 +52,13 @@ export async function getTradeById(id: string, env: EnvMap = process.env) {
 }
 
 export async function getDbPositions(filter: HistoryFilter = {}, env: EnvMap = process.env) {
-  if (persistenceMode(env) !== "mirror") {
+  if (!ledgerModes(env)) {
     return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "json" as const };
   }
   const ledger = await resolveMirrorLedger(env);
   if (!ledger) {
-    return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "json" as const };
+    return { items: [], nextCursor: null, limit: Math.min(100, filter.limit ?? 50), mode: "unavailable" as const };
   }
-  return ledger.transaction((tx) => tx.listCurrentPositions(filter));
+  const page = await ledger.transaction((tx) => tx.listCurrentPositions(filter));
+  return { ...page, mode: persistenceMode(env) };
 }

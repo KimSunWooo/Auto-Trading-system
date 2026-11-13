@@ -129,8 +129,15 @@ export function createTradingStateStore(opts: {
   const brokerAccountId = opts.brokerAccountId ?? brokerAccountIdFromStatePath(absolute);
   let queue: Promise<unknown> = Promise.resolve();
   let getKisClient = opts.getKisClient;
+  /**
+   * In-process book cache — avoids re-running full RDS reconstitution on every
+   * dashboard /api/state poll. Invalidated only when this store mutates or an
+   * explicit reloadFromLedger is requested. Order/recon paths still mutateStore
+   * and therefore refresh this snapshot.
+   */
+  let memoryState: AppState | null = null;
 
-  async function loadState(): Promise<AppState> {
+  async function loadStateFromDiskAndLedger(): Promise<AppState> {
     const loaded = await repository.load();
     // DB ledger mode: orders/intents/positions/fills come from DB. JSON is a
     // cache for settings/quotes — never let a stale JSON book overwrite newer DB rows.
@@ -169,6 +176,17 @@ export function createTradingStateStore(opts: {
       return hydratePersistedState(loaded);
     }
     return hydratePersistedState(loaded);
+  }
+
+  async function loadState(): Promise<AppState> {
+    if (memoryState) return memoryState;
+    memoryState = await loadStateFromDiskAndLedger();
+    return memoryState;
+  }
+
+  function remember(state: AppState): AppState {
+    memoryState = state;
+    return state;
   }
 
   function mergePersistedControlledRun(incoming: AppState): AppState {
@@ -387,7 +405,7 @@ export function createTradingStateStore(opts: {
               );
             }
           }
-          return updated;
+          return remember(updated);
         });
         if (brokerAccountId && !(opts.skipPersistUnderTest && isNodeTestProcess())) {
           // Authoritative ON/OFF for workers. Skip immediate full-ledger coalesce —
@@ -408,12 +426,13 @@ export function createTradingStateStore(opts: {
           durable,
           projectMode: mode,
         });
-        return next;
+        return remember(next);
       });
     },
     async persistStateNow(state) {
       // Durable: caller must observe DB commit of this book before broker submit.
       // Never succeed because a different coalesce snapshot flushed.
+      remember(state);
       await saveState(state, { durable: true, projectMode: "full" });
     },
     async tickAndGet(ruleConfig, tickOpts = {}) {
@@ -428,11 +447,13 @@ export function createTradingStateStore(opts: {
         // Compute next state under the store lock, then persist OUTSIDE so
         // settings ON/OFF (flags path) is not blocked for tens of seconds.
         const next = await withStore(async (state) =>
-          tickState(state, new Date(), {
-            ...tickOpts.tickDeps,
-            ruleConfig: tickOpts.tickDeps?.ruleConfig ?? ruleConfig,
-            kisClient: tickOpts.tickDeps?.kisClient ?? getKisClient?.(),
-          }),
+          remember(
+            tickState(state, new Date(), {
+              ...tickOpts.tickDeps,
+              ruleConfig: tickOpts.tickDeps?.ruleConfig ?? ruleConfig,
+              kisClient: tickOpts.tickDeps?.kisClient ?? getKisClient?.(),
+            }),
+          ),
         );
         await saveState(next, { durable: false, projectMode: "tick" });
         if (brokerAccountId) {

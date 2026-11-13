@@ -32,6 +32,8 @@ export type AiTradeProposalV1 = {
   market: string;
   ticker: string;
   action: AiProposalAction;
+  expectedReturn?: number;
+  horizon?: string;
   confidence?: number;
   confidenceSource?: string;
   thesis?: { headline?: string; summary?: string };
@@ -66,6 +68,12 @@ function isIso(value: unknown): value is string {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function asFiniteDecimal(value: unknown): number | undefined {
+  const decimal = typeof value === "string" && /^[+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value.trim())
+    ? Number(value) : value;
+  return typeof decimal === "number" && Number.isFinite(decimal) ? decimal : undefined;
 }
 
 /**
@@ -165,6 +173,8 @@ export function validateAiTradeProposalV1(
     market,
     ticker,
     action,
+    expectedReturn: asFiniteDecimal(body.expectedReturn),
+    horizon: asString(body.horizon) ?? undefined,
     confidence: typeof confidence === "number" && confidence >= 0 && confidence <= 1 ? confidence : undefined,
     confidenceSource: asString(body.confidenceSource) ?? undefined,
     thesis: thesis && typeof thesis === "object"

@@ -210,6 +210,14 @@ export function OverviewPanel({
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+        <a
+          href="/reports/trades"
+          className="rounded-md border px-3 py-1.5 font-medium hover:bg-accent"
+        >
+          거래 리포트
+        </a>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="총 자산" value={formatWon(stats.equity)} hint="현금 + 보유주식 평가" />
         <Stat
@@ -218,7 +226,11 @@ export function OverviewPanel({
           hint={`시작 대비 ${formatPct(stats.pnlPct)}`}
           tone={pnl}
         />
-        <Stat label="당일 매매" value={`${stats.tradesToday}건`} hint="오늘 체결된 주문" />
+        <Stat
+          label="당일 매매"
+          value={`${stats.tradesToday}건`}
+          hint="오늘 체결된 주문 · 거래 리포트에서 실현손익 확인"
+        />
         <Stat
           label="당일 승률"
           value={stats.winRatePct == null ? "—" : `${stats.winRatePct.toFixed(0)}%`}
