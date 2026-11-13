@@ -126,7 +126,11 @@ async function buildScopeForAccount(
 
 /** Authenticated USER path — never bootstrap fallback. */
 export async function resolveCurrentTradingRuntime(): Promise<ResolvedTradingRuntime> {
-  const user = await requireUser();
+  return resolveTradingRuntimeForAuthenticatedUser(await requireUser());
+}
+
+/** The caller has already verified the current request's session. */
+export async function resolveTradingRuntimeForAuthenticatedUser(user: AuthUser): Promise<ResolvedTradingRuntime> {
   try {
     const account = await findDefaultPaperAccount(user.id);
     if (!account) throw new AccountNotConnectedError();

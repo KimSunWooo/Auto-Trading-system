@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { KisClient, mapKisDailyCcldRow, resetKisTokenCacheForTest } from "./kis-client";
 import { getKisConfig, KIS_HOSTS, KIS_LIVE_CONFIRM_VALUE, KIS_TR } from "./kis-config";
+import { listKisQueryTelemetry, resetKisQueryTelemetryForTest } from "@/src/runtime/kis-query-telemetry";
 
 function jsonResponse(body: unknown): Response {
   return {
@@ -136,6 +137,23 @@ function realClient(fetchImpl: typeof fetch) {
     fetchImpl,
   );
 }
+
+test("PAPER delay response records TR, category and code without account credentials", async () => {
+  resetKisTokenCacheForTest();
+  resetKisQueryTelemetryForTest();
+  const client = paperClient(async (input) => String(input).includes("tokenP")
+    ? jsonResponse({ access_token: "paper-token-value", expires_in: 86_400 })
+    : jsonResponse({ rt_cd: "1", msg_cd: "APBK9999", msg1: "모의투자 서비스가 지연되고 있습니다." }));
+  await assert.rejects(client.inquireOpenOrders(), /모의투자 서비스가 지연/);
+  const rows = listKisQueryTelemetry();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.category, "open_orders");
+  assert.equal(rows[0]?.trId, KIS_TR.dailyCcld.paper);
+  assert.equal(rows[0]?.httpStatus, 200);
+  assert.equal(rows[0]?.msgCd, "APBK9999");
+  assert.equal(rows[0]?.ok, false);
+  assert.doesNotMatch(JSON.stringify(rows), /11111111|paper-key|paper-secret|paper-token-value/);
+});
 
 test("PAPER open orders uses domestic inquire-daily-ccld with VTTC0081R and CCLD_DVSN=02", async () => {
   resetKisTokenCacheForTest();

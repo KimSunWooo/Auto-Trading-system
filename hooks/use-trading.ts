@@ -285,8 +285,11 @@ export function useTrading(initialState: PublicState) {
   }, []);
 
   useEffect(() => {
+    let polling = false;
     const id = window.setInterval(() => {
-      void load(true);
+      if (polling) return;
+      polling = true;
+      void load(true).finally(() => { polling = false; });
     }, 2500);
     return () => window.clearInterval(id);
   }, [load]);

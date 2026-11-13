@@ -40,6 +40,7 @@ import { HARD_LIMITS } from "@/src/risk/limits";
 import { BrokerRejectError, IndeterminateOrderError } from "@/src/risk/errors";
 import { allowLiveTrading, realKisOrdersLocked, tradingMode } from "@/src/runtime/trading-mode";
 import { noteKisHttp } from "@/src/runtime/kis-http-audit";
+import { classifyKisQueryError, recordKisQueryTelemetry, type KisQueryCategory } from "@/src/runtime/kis-query-telemetry";
 
 export type KisPrice = {
   ticker: string;
@@ -290,6 +291,19 @@ export const KIS_READ_RATE_LIMIT_MAX_ATTEMPTS = 2;
 
 export function isKisRateLimitMessage(message: string): boolean {
   return /초당|EGW00201|rate.?limit|거래건수|EGW00133/i.test(message);
+}
+
+function paperQueryCategory(url: string): KisQueryCategory {
+  const { pathname, searchParams } = new URL(url);
+  switch (pathname.split("/").pop()) {
+    case "inquire-price": return "quote";
+    case "inquire-daily-itemchartprice": return "daily_closes";
+    case "inquire-balance": return "balance";
+    case "inquire-psbl-order": return "psbl_order";
+    case "inquire-daily-ccld":
+      return searchParams.get("CCLD_DVSN") === "02" ? "open_orders" : "daily_ccld";
+    default: return "other";
+  }
 }
 
 export class KisRateLimitError extends Error {
@@ -1224,6 +1238,38 @@ export class KisClient implements KisApi {
   ): Promise<Record<string, unknown>> {
     noteKisHttp(url, method);
     const run = async () => {
+      const started = performance.now();
+      const observe = (status?: number, code?: unknown, error?: string) => {
+        if (this.config.environment !== "paper") return;
+        const rawCode = String(code ?? "");
+        const msgCd = /^[A-Z]{2,5}\d{4,8}$/.test(rawCode) ? rawCode : undefined;
+        const metadata = {
+          at: new Date().toISOString(),
+          trId: init.headers.tr_id,
+          latencyMs: Math.round(performance.now() - started),
+          httpStatus: status,
+          msgCd,
+        };
+        const read = method === "GET" && kind === "query";
+        if (error && /모의투자\s*서비스.*지연/.test(error)) {
+          console.warn("[kis-paper] VTS response delayed", {
+            ...metadata,
+            kind,
+            category: read ? paperQueryCategory(url) : undefined,
+          });
+        }
+        if (!read) return;
+        const timeout = /timeout|aborted/i.test(error ?? "");
+        const rateLimited = status === 429 || isKisRateLimitMessage(`${msgCd ?? ""} ${error ?? ""}`);
+        recordKisQueryTelemetry({
+          ...metadata,
+          category: paperQueryCategory(url),
+          timeout,
+          rateLimited,
+          ok: error === undefined,
+          errorClass: error === undefined ? undefined : classifyKisQueryError({ message: error, httpStatus: status, timeout, msgCd }),
+        });
+      };
       let res: Response;
       try {
         res = await this.fetchImpl(url, {
@@ -1233,17 +1279,22 @@ export class KisClient implements KisApi {
           signal: AbortSignal.timeout(timeoutMs),
         });
       } catch (err) {
-        throw this.wrapTransportError(err, kind);
+        const wrapped = this.wrapTransportError(err, kind);
+        observe(undefined, undefined, wrapped.message);
+        throw wrapped;
       }
       const text = await res.text();
       let json: Record<string, unknown> = {};
       try {
         json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
       } catch {
-        throw this.httpFailure(kind, res.status, "KIS 응답이 JSON이 아닙니다.");
+        const error = this.httpFailure(kind, res.status, "KIS 응답이 JSON이 아닙니다.");
+        observe(res.status, undefined, error.message);
+        throw error;
       }
       const rt = json.rt_cd;
       const message = String(json.msg1 ?? json.error_description ?? json.msg_cd ?? `KIS HTTP ${res.status}`);
+      observe(res.status, json.msg_cd, !res.ok || (rt !== undefined && String(rt) !== "0") ? message : undefined);
       if (!res.ok) {
         if (String(json.msg_cd ?? "").includes("EGW00123")) this.clearAccessToken();
         throw this.httpFailure(kind, res.status, message);

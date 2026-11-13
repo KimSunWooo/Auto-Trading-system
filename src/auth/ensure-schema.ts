@@ -7,15 +7,35 @@ import { loadDbConnection } from "@/src/db/config";
 import { decryptPaperCredentials, paperPhysicalAccountFingerprint } from "@/src/auth/crypto";
 import { DUPLICATE_ACTIVE_PAPER_PHYSICAL_ACCOUNT } from "@/src/runtime/paper-physical-account";
 
-export async function ensureAuthSchema(): Promise<void> {
+const schemaChecks = globalThis as typeof globalThis & {
+  __miraeAuthSchemaCheck?: { target: string; ready: Promise<void> };
+};
+
+export function ensureAuthSchema(): Promise<void> {
   const cfg = loadDbConnection();
-  if (!cfg) throw new Error("DATABASE_URL not configured");
+  if (!cfg) return Promise.reject(new Error("DATABASE_URL not configured"));
+  const target = JSON.stringify([cfg.host, cfg.port, cfg.database, cfg.user, cfg.ssl]);
+  const existing = schemaChecks.__miraeAuthSchemaCheck;
+  if (existing?.target === target) return existing.ready;
+
+  const ready = prepareAuthSchema(cfg).catch((err: unknown) => {
+    if (schemaChecks.__miraeAuthSchemaCheck?.ready === ready) {
+      delete schemaChecks.__miraeAuthSchemaCheck;
+    }
+    throw err;
+  });
+  schemaChecks.__miraeAuthSchemaCheck = { target, ready };
+  return ready;
+}
+
+async function prepareAuthSchema(cfg: NonNullable<ReturnType<typeof loadDbConnection>>): Promise<void> {
   const conn = await mysql.createConnection({
     host: cfg.host,
     port: cfg.port,
     user: cfg.user,
     password: cfg.password,
     database: cfg.database,
+    connectTimeout: 5_000,
     ssl: cfg.ssl ? { rejectUnauthorized: false } : undefined,
   });
   try {

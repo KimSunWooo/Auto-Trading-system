@@ -1,7 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
-import { formatSeoulTime, formatWon } from "@/lib/format";
+import { formatSeoul, formatSeoulTime, formatWon } from "@/lib/format";
 import type { PublicState } from "@/lib/types";
 
 function tone(ok: boolean): "secondary" | "destructive" {
@@ -63,8 +63,8 @@ export function RuntimeStatusStrip({ state }: { state: PublicState }) {
         </div>
         <div className="text-[11px] text-muted-foreground">
           {runtime.lastError ? (
-            <span className="text-destructive">
-              오류 {runtime.lastErrorAt ? formatSeoulTime(runtime.lastErrorAt) : ""} ·{" "}
+            <span className={runtime.ordersAllowed && runtime.risk === "normal" ? undefined : "text-destructive"}>
+              최근 오류 {runtime.lastErrorAt ? `${formatSeoul(runtime.lastErrorAt)} KST` : ""} ·{" "}
               {runtime.lastError}
             </span>
           ) : (

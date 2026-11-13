@@ -41,13 +41,8 @@ function expiresMysql(secFromNow: number): string {
     .replace("T", " ");
 }
 
-let schemaReady: Promise<void> | null = null;
 async function readyDb() {
-  if (!schemaReady) schemaReady = ensureAuthSchema().catch((err) => {
-    schemaReady = null;
-    throw err;
-  });
-  await schemaReady;
+  await ensureAuthSchema();
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL not configured");
   return db;
