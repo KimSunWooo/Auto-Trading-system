@@ -34,6 +34,11 @@ import {
 } from "@/src/brokers/kis-config";
 import { buildRuntimePublic } from "@/src/runtime/status";
 import type { KisApi } from "@/src/brokers/kis-client";
+import {
+  applyExecutionAuthority,
+  executionAuthorityBlocksTrading,
+  readExecutionAuthorityFromRds,
+} from "@/src/runtime/execution-authority";
 
 export type TradingStateStore = {
   readonly statePath: string;
@@ -378,6 +383,10 @@ export function createTradingStateStore(opts: {
     },
     getState: () => withStore((s) => s),
     async getPublicState(ruleConfig) {
+      // Dashboard poll path: serve the in-process book cache (quotes/equity).
+      // Execution ON/OFF authority for orders is refreshed on worker tickAndGet;
+      // flags mutateStore remembers only after RDS commit so uncommitted ON
+      // never lands in this cache.
       return withStore((state) =>
         toPublicWithRules(state, ruleConfig, getKisClient, brokerAccountId),
       );
@@ -392,7 +401,9 @@ export function createTradingStateStore(opts: {
       // Flags path: keep withStore critical section short (JSON only), then RDS flags
       // outside so ON/OFF is not blocked behind a multi-second ledger project.
       if (mode === "flags") {
+        let prior: AppState | null = null;
         const next = await withStore(async (state) => {
+          prior = state;
           const updated = await fn(state);
           updated.updatedAt = new Date().toISOString();
           if (!(opts.skipPersistUnderTest && isNodeTestProcess())) {
@@ -405,16 +416,21 @@ export function createTradingStateStore(opts: {
               );
             }
           }
-          return remember(updated);
+          // Do not remember ON/OFF until RDS upsert commits — avoids uncertain ON.
+          return updated;
         });
         if (brokerAccountId && !(opts.skipPersistUnderTest && isNodeTestProcess())) {
-          // Authoritative ON/OFF for workers. Skip immediate full-ledger coalesce —
-          // a concurrent tick project would supersede the flags generation and
-          // surface "Settings persist superseded". The next worker tick projects
-          // the book while trading_account_state already carries the flag.
-          await persistUserExecutionSettingsFlags(next, brokerAccountId, process.env, {
-            isAllowed: mutateOpts.isAllowed,
-          });
+          try {
+            await persistUserExecutionSettingsFlags(next, brokerAccountId, process.env, {
+              isAllowed: mutateOpts.isAllowed,
+            });
+            remember(next);
+          } catch (err) {
+            if (prior) remember(prior);
+            throw err;
+          }
+        } else {
+          remember(next);
         }
         return next;
       }
@@ -444,17 +460,33 @@ export function createTradingStateStore(opts: {
         recordWorkerProgress(brokerAccountId, { stage: "tick_start", tickId });
       }
       try {
-        // Compute next state under the store lock, then persist OUTSIDE so
-        // settings ON/OFF (flags path) is not blocked for tens of seconds.
-        const next = await withStore(async (state) =>
-          remember(
-            tickState(state, new Date(), {
+        // Worker order authority: committed RDS flags (+ blocking-order probe),
+        // not the dashboard book cache alone.
+        const authority = brokerAccountId
+          ? await readExecutionAuthorityFromRds(brokerAccountId)
+          : null;
+        const authorityBlock = authority ? executionAuthorityBlocksTrading(authority) : null;
+        const next = await withStore(async (state) => {
+          const synced =
+            authority?.source === "rds" ? applyExecutionAuthority(state, authority) : state;
+          return remember(
+            await tickState(synced, new Date(), {
               ...tickOpts.tickDeps,
               ruleConfig: tickOpts.tickDeps?.ruleConfig ?? ruleConfig,
               kisClient: tickOpts.tickDeps?.kisClient ?? getKisClient?.(),
+              executionAuthorityOk:
+                authority && authority.source !== "skipped"
+                  ? authorityBlock
+                    ? false
+                    : true
+                  : tickOpts.tickDeps?.executionAuthorityOk,
+              executionAuthorityBlockReason:
+                authority && authority.source !== "skipped"
+                  ? (authorityBlock ?? tickOpts.tickDeps?.executionAuthorityBlockReason)
+                  : tickOpts.tickDeps?.executionAuthorityBlockReason,
             }),
-          ),
-        );
+          );
+        });
         await saveState(next, { durable: false, projectMode: "tick" });
         if (brokerAccountId) {
           recordWorkerProgress(brokerAccountId, {

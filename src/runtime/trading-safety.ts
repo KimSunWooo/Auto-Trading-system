@@ -13,4 +13,10 @@ export type TradingSafetyContext = {
    * Bootstrap path: omit → holdsWorkerLock() legacy.
    */
   workerLockPath?: string;
+  /**
+   * When false, Worker must not place orders (RDS execution authority unread).
+   * Omit on paths that do not consult RDS (unit tests / JSON mode).
+   */
+  executionAuthorityOk?: boolean;
+  executionAuthorityBlockReason?: string;
 };

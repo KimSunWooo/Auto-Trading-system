@@ -509,6 +509,9 @@ export type TickRuntimeDeps = {
   quoteHub?: RealtimeQuoteHub | null;
   /** Consumer id for shared-hub subscription ownership (brokerAccountId). */
   quoteConsumerId?: string;
+  /** When false, block new orders (RDS execution authority unread). */
+  executionAuthorityOk?: boolean;
+  executionAuthorityBlockReason?: string;
 };
 
 export async function tickState(
@@ -531,13 +534,17 @@ export async function tickState(
   const safety = {
     startupSyncVerified: deps.startupSyncVerified,
     workerLockPath: deps.workerLockPath,
+    executionAuthorityOk: deps.executionAuthorityOk,
+    executionAuthorityBlockReason: deps.executionAuthorityBlockReason,
   };
   const brokerOpts: CreateBrokerOpts = {
     kisClient,
     persistState: deps.persistState,
     quoteHub,
     safety:
-      deps.startupSyncVerified !== undefined || deps.workerLockPath
+      deps.startupSyncVerified !== undefined ||
+      deps.workerLockPath ||
+      deps.executionAuthorityOk !== undefined
         ? safety
         : undefined,
   };

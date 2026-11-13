@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { getDb, getMysqlPool, type AppDb } from "@/src/db/client";
 import type { Ledger, LedgerSession } from "@/src/db/ledger";
@@ -427,6 +427,30 @@ export class MysqlSession implements LedgerSession {
       .from(schema.orders)
       .where(eq(schema.orders.brokerAccountId, accountId));
     return rows.map(mapOrder);
+  }
+
+  async hasBlockingOpenOrders(accountId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({
+        status: schema.orders.status,
+        brokerOrderNo: schema.orders.brokerOrderNo,
+      })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.brokerAccountId, accountId),
+          or(
+            eq(schema.orders.status, "UNKNOWN"),
+            eq(schema.orders.status, "unknown"),
+            and(
+              or(eq(schema.orders.status, "PENDING"), eq(schema.orders.status, "pending")),
+              sql`(${schema.orders.brokerOrderNo} is null or ${schema.orders.brokerOrderNo} = '')`,
+            ),
+          ),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
   }
 
   async lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined> {

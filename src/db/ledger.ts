@@ -48,6 +48,8 @@ export type LedgerSession = {
     brokerOrderDate?: string | null,
   ): Promise<OrderRow | undefined>;
   listOrdersByAccount(accountId: string): Promise<OrderRow[]>;
+  /** True when UNKNOWN or PENDING-without-ODNO parents exist (order gate). */
+  hasBlockingOpenOrders(accountId: string): Promise<boolean>;
   lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined>;
   appendOrderEvent(row: OrderEventRow): Promise<void>;
   insertExecution(row: ExecutionRow): Promise<{ row: ExecutionRow; inserted: boolean }>;
@@ -408,6 +410,16 @@ export class MemorySession implements LedgerSession {
 
   async listOrdersByAccount(accountId: string): Promise<OrderRow[]> {
     return [...this.state.orders.values()].filter((item) => item.brokerAccountId === accountId);
+  }
+
+  async hasBlockingOpenOrders(accountId: string): Promise<boolean> {
+    return [...this.state.orders.values()].some((item) => {
+      if (item.brokerAccountId !== accountId) return false;
+      const status = String(item.status ?? "").toUpperCase();
+      if (status === "UNKNOWN") return true;
+      if (status === "PENDING" && !item.brokerOrderNo) return true;
+      return false;
+    });
   }
 
   async lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined> {

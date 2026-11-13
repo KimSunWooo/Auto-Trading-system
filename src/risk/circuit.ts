@@ -32,6 +32,12 @@ export function tradingBlocked(
 ): string | null {
   const safetyBlock = safetyBlocksTrading(state);
   if (safetyBlock) return safetyBlock;
+  if (safety?.executionAuthorityOk === false) {
+    return (
+      safety.executionAuthorityBlockReason ??
+      "RDS 실행 설정을 확인할 수 없어 신규 주문을 차단합니다."
+    );
+  }
   const startup = startupSyncBlocksTrading(state, process.env, {
     bootVerified: safety?.startupSyncVerified,
   });
