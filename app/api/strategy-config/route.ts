@@ -90,13 +90,14 @@ export async function PUT(request: Request) {
       if (invalid) throw new Error(invalid);
       const config = bumpVersion(current, parsed);
 
-      // Durable ledger first (rules+allocations); then strategy file (rules SoT).
+      // Durable ledger first with validated config (trading_rules then allocations);
+      // strategy file commits only after DB success — never leave disk ahead of RDS.
       const state = await rt.store.mutateStore(
         (currentState) => {
           const synced = syncAllocationsToRules(currentState, config.rules);
           return ensureUniverseQuotes(synced);
         },
-        { durable: true, projectMode: "full" },
+        { durable: true, projectMode: "full", ruleConfig: config },
       );
       try {
         rt.rules.commit(config);
@@ -147,7 +148,7 @@ export async function PATCH(request: Request) {
             const synced = syncAllocationsToRules(currentState, config.rules);
             return ensureUniverseQuotes(synced);
           },
-          { durable: true, projectMode: "full" },
+          { durable: true, projectMode: "full", ruleConfig: config },
         );
         rt.rules.commit(config);
         return Response.json({
@@ -172,7 +173,7 @@ export async function PATCH(request: Request) {
           const synced = syncAllocationsToRules(currentState, config.rules);
           return ensureUniverseQuotes(synced);
         },
-        { durable: true, projectMode: "full" },
+        { durable: true, projectMode: "full", ruleConfig: config },
       );
       try {
         rt.rules.commit(config);

@@ -1302,6 +1302,17 @@ export class MysqlLedger implements Ledger {
       ]);
       return result;
     } catch (err) {
+      try {
+        const { formatMysqlErrorForLog } = await import("@/src/db/mysql-error");
+        const detail = formatMysqlErrorForLog(err);
+        if (detail) {
+          console.error(
+            `[mysql-ledger] transaction failed ${detail} msg=${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } catch {
+        /* logging must not mask the original error */
+      }
       // Timeout/stale: destroy so a late Promise.race loser cannot commit on a released conn.
       if (err instanceof LedgerTxTimeoutError || err instanceof LedgerTxStaleError) {
         const timedOutDuringCommit = err instanceof LedgerTxTimeoutError && finishing;

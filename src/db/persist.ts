@@ -21,11 +21,12 @@ import {
   persistGenerationIsCurrent,
   persistScopeKey,
 } from "@/src/db/ledger-tx";
+import { formatMysqlErrorForLog } from "@/src/db/mysql-error";
 
 export class DatabaseLedgerError extends Error {
   readonly code = "DATABASE_LEDGER_FAILED";
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = "DatabaseLedgerError";
   }
 }
@@ -77,13 +78,17 @@ export async function persistTradingLedger(
     recordMirrorSuccess();
   } catch (err) {
     const message = err instanceof Error ? err.message : "ledger persist failed";
+    const mysqlDetail = formatMysqlErrorForLog(err);
+    if (mysqlDetail) {
+      console.error(`[persistTradingLedger] ${message} ${mysqlDetail}`);
+    }
     if (err instanceof LedgerCommitUncertainError) {
       recordMirrorDegraded(`LEDGER_COMMIT_UNCERTAIN: ${message}`);
     } else {
       recordMirrorDegraded(message);
     }
     if (required) {
-      throw new DatabaseLedgerError(message);
+      throw new DatabaseLedgerError(message, { cause: err });
     }
   }
 }

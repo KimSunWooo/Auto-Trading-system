@@ -39,6 +39,7 @@ import {
   executionAuthorityBlocksTrading,
   readExecutionAuthorityFromRds,
 } from "@/src/runtime/execution-authority";
+import { formatMysqlErrorForLog } from "@/src/db/mysql-error";
 
 export type TradingStateStore = {
   readonly statePath: string;
@@ -55,6 +56,12 @@ export type TradingStateStore = {
       projectMode?: "tick" | "full" | "flags";
       /** Flags path only — OFF cancel gate checked inside RDS upsert. */
       isAllowed?: () => boolean;
+      /**
+       * Validated RuleConfigFile for this persist (strategy PUT/PATCH).
+       * Must be passed so trading_rules upsert sees new rule keys before
+       * rule_allocations in the same transaction — not the on-disk file yet.
+       */
+      ruleConfig?: RuleConfigFile;
     },
   ): Promise<AppState>;
   persistStateNow(state: AppState): Promise<void>;
@@ -216,6 +223,8 @@ export function createTradingStateStore(opts: {
     /** Order/intent path — must not be coalesced away or reported success for another snapshot. */
     durable: boolean;
     projectMode: "tick" | "full" | "flags";
+    /** When set, projector uses this config instead of getRuleConfig() disk cache. */
+    ruleConfig?: RuleConfigFile;
   };
 
   let persistInflight: Promise<void> | null = null;
@@ -252,12 +261,15 @@ export function createTradingStateStore(opts: {
       } else if (dbAuthority) {
         // DB first — throw on failure so callers (KisBroker pre-submit persist) do not order.
         // Durable order path uses full projection; worker ticks use tick mode.
+        // Prefer job.ruleConfig (validated in-memory) so trading_rules land before
+        // rule_allocations in the same TX — disk strategy file may still be old.
+        const ruleConfig = job.ruleConfig ?? opts.getRuleConfig?.();
         await persistTradingLedger(
           next,
           { ...process.env, PERSISTENCE_MODE: "database" },
           {
             brokerAccountId,
-            ruleConfig: opts.getRuleConfig?.(),
+            ruleConfig,
             projectMode: job.projectMode === "full" ? "full" : "tick",
             txOpts: brokerAccountId
               ? {
@@ -292,7 +304,7 @@ export function createTradingStateStore(opts: {
         await repository.save(next);
         await mirrorAfterJsonSave(next, process.env, {
           brokerAccountId,
-          ruleConfig: opts.getRuleConfig?.(),
+          ruleConfig: job.ruleConfig ?? opts.getRuleConfig?.(),
           projectMode: job.projectMode === "full" ? "full" : "tick",
         });
       }
@@ -311,14 +323,15 @@ export function createTradingStateStore(opts: {
     } catch (err) {
       if (brokerAccountId) {
         const persistMs = Date.now() - persistStarted;
+        const mysqlDetail = formatMysqlErrorForLog(err);
         recordWorkerProgress(brokerAccountId, {
           stage: "persist_failed",
           tickId,
           persistMs,
           lastError: err instanceof Error ? err.message : "ledger persist failed",
         });
-        console.info(
-          `[ledger-persist] account=${brokerAccountId.slice(0, 8)} tickId=${tickId} stage=persist_failed persistMs=${persistMs} err=${err instanceof Error ? err.message : "ledger persist failed"}`,
+        console.error(
+          `[ledger-persist] account=${brokerAccountId.slice(0, 8)} tickId=${tickId} stage=persist_failed persistMs=${persistMs} err=${err instanceof Error ? err.message : "ledger persist failed"}${mysqlDetail ? ` ${mysqlDetail}` : ""}`,
         );
       }
       throw err;
@@ -327,7 +340,11 @@ export function createTradingStateStore(opts: {
 
   async function saveState(
     state: AppState,
-    saveOpts: { durable?: boolean; projectMode?: "tick" | "full" | "flags" } = {},
+    saveOpts: {
+      durable?: boolean;
+      projectMode?: "tick" | "full" | "flags";
+      ruleConfig?: RuleConfigFile;
+    } = {},
   ): Promise<void> {
     if (opts.skipPersistUnderTest && isNodeTestProcess()) return;
     const durable = saveOpts.durable === true;
@@ -335,6 +352,7 @@ export function createTradingStateStore(opts: {
       state: mergePersistedControlledRun(state),
       durable,
       projectMode: saveOpts.projectMode ?? (durable ? "full" : "tick"),
+      ruleConfig: saveOpts.ruleConfig,
     };
     if (durable) {
       durableQueue.push(job);
@@ -441,6 +459,7 @@ export function createTradingStateStore(opts: {
         await saveState(next, {
           durable,
           projectMode: mode,
+          ruleConfig: mutateOpts.ruleConfig,
         });
         return remember(next);
       });
