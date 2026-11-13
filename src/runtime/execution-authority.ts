@@ -20,9 +20,15 @@ export type ExecutionAuthority = {
   error?: string;
 };
 
+export type ReadExecutionAuthorityOpts = {
+  /** Skip these local order ids (this submit's Intent) so they cannot self-block. */
+  excludeLocalOrderIds?: string[];
+};
+
 export async function readExecutionAuthorityFromRds(
   brokerAccountId: string,
   env: EnvMap = process.env,
+  opts: ReadExecutionAuthorityOpts = {},
 ): Promise<ExecutionAuthority> {
   if (!isDatabaseLedgerAuthority(env)) {
     return {
@@ -50,7 +56,9 @@ export async function readExecutionAuthorityFromRds(
     return await ledger.transaction(async (tx) => {
       const [row, hasUnresolvedOrderRisk] = await Promise.all([
         tx.getTradingAccountState(brokerAccountId),
-        tx.hasBlockingOpenOrders(brokerAccountId),
+        tx.hasBlockingOpenOrders(brokerAccountId, {
+          excludeLocalOrderIds: opts.excludeLocalOrderIds,
+        }),
       ]);
       if (!row) {
         return {
@@ -136,6 +144,19 @@ export function executionAuthorityBlocksTrading(authority: ExecutionAuthority): 
   }
   if (authority.source === "rds" && authority.hasUnresolvedOrderRisk) {
     return "RDS에 미확인·미완료 주문이 있어 신규 주문을 차단합니다.";
+  }
+  return null;
+}
+
+/**
+ * Pre-KIS gate for automatic orders (rule/condition/dca).
+ * OFF / unread RDS / unresolved foreign Intent → do not POST.
+ */
+export function autoOrderSubmitBlockReason(authority: ExecutionAuthority): string | null {
+  const unreadOrRisk = executionAuthorityBlocksTrading(authority);
+  if (unreadOrRisk) return unreadOrRisk;
+  if (authority.source === "rds" && authority.autoTrading === false) {
+    return "자동매매가 OFF라 주문을 전송하지 않습니다.";
   }
   return null;
 }

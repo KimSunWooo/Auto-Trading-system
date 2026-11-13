@@ -391,6 +391,7 @@ export class OrderManager {
       this.box.current = patchIntent(this.box.current, intentId, {
         status: "rejected",
         orderId: patched.order?.id,
+        reason,
       });
     }
     const fill = patched.order

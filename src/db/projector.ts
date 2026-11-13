@@ -338,13 +338,13 @@ export async function projectAppState(
       state.lastEngineAt != null && Number.isFinite(state.lastEngineAt)
         ? toMysqlUtc(state.lastEngineAt)
         : (prevState?.lastEngineAt ?? null);
-    // Re-read flags immediately before write so a concurrent Settings OFF
-    // commit is not overwritten by a stale in-flight tick book.
+    // Re-read flags immediately before write. Execution ON/OFF is owned by
+    // persistUserExecutionSettingsFlags — never let a stale tick/full/Intent
+    // book snapshot resurrect ON (or flip a newer OFF) during projectAppState.
     const latestFlags = (await tx.getTradingAccountState(brokerAccount.id)) ?? prevState;
-    const autoTradingEnabled =
-      tick && latestFlags && !latestFlags.autoTradingEnabled
-        ? false
-        : Boolean(state.settings.autoTrading);
+    const autoTradingEnabled = latestFlags
+      ? Boolean(latestFlags.autoTradingEnabled)
+      : Boolean(state.settings.autoTrading);
     await tx.upsertTradingAccountState({
       brokerAccountId: brokerAccount.id,
       autoTradingEnabled,
@@ -364,6 +364,7 @@ export async function projectAppState(
       state,
       brokerAccount.userId || user?.id || bootstrapUserId,
       brokerAccount.id,
+      { projectedAutoTradingEnabled: autoTradingEnabled },
     );
 
     if (!tick) {
@@ -801,6 +802,7 @@ async function writeAudits(
   state: AppState,
   userId: string,
   accountId: string,
+  projected?: { projectedAutoTradingEnabled: boolean },
 ) {
   const write = async (action: string, before: unknown, after: unknown) => {
     await tx.insertAudit({
@@ -814,11 +816,15 @@ async function writeAudits(
       afterDataJson: after,
     });
   };
-  if (prev && prev.autoTradingEnabled !== Boolean(state.settings.autoTrading)) {
+  // Audit only when the projected autoTrading flag actually changes — never
+  // invent ENABLE/DISABLE from a stale AppState that did not win the write.
+  const nextAuto =
+    projected?.projectedAutoTradingEnabled ?? Boolean(state.settings.autoTrading);
+  if (prev && prev.autoTradingEnabled !== nextAuto) {
     await write(
-      state.settings.autoTrading ? "AUTO_TRADING_ENABLED" : "AUTO_TRADING_DISABLED",
+      nextAuto ? "AUTO_TRADING_ENABLED" : "AUTO_TRADING_DISABLED",
       { autoTradingEnabled: prev.autoTradingEnabled },
-      { autoTradingEnabled: state.settings.autoTrading },
+      { autoTradingEnabled: nextAuto },
     );
   }
   if (prev && prev.liquidating !== Boolean(state.settings.liquidating) && state.settings.liquidating) {

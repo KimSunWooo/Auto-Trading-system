@@ -48,8 +48,15 @@ export type LedgerSession = {
     brokerOrderDate?: string | null,
   ): Promise<OrderRow | undefined>;
   listOrdersByAccount(accountId: string): Promise<OrderRow[]>;
-  /** True when UNKNOWN or PENDING-without-ODNO parents exist (order gate). */
-  hasBlockingOpenOrders(accountId: string): Promise<boolean>;
+  /**
+   * True when UNKNOWN or PENDING-without-ODNO parents exist (order gate).
+   * `excludeLocalOrderIds` skips this submit's own Intent row so it cannot
+   * self-block the pre-KIS authority check.
+   */
+  hasBlockingOpenOrders(
+    accountId: string,
+    opts?: { excludeLocalOrderIds?: string[] },
+  ): Promise<boolean>;
   lastOrderEvent(orderId: string): Promise<OrderEventRow | undefined>;
   appendOrderEvent(row: OrderEventRow): Promise<void>;
   insertExecution(row: ExecutionRow): Promise<{ row: ExecutionRow; inserted: boolean }>;
@@ -412,9 +419,14 @@ export class MemorySession implements LedgerSession {
     return [...this.state.orders.values()].filter((item) => item.brokerAccountId === accountId);
   }
 
-  async hasBlockingOpenOrders(accountId: string): Promise<boolean> {
+  async hasBlockingOpenOrders(
+    accountId: string,
+    opts?: { excludeLocalOrderIds?: string[] },
+  ): Promise<boolean> {
+    const exclude = new Set(opts?.excludeLocalOrderIds ?? []);
     return [...this.state.orders.values()].some((item) => {
       if (item.brokerAccountId !== accountId) return false;
+      if (exclude.has(item.localOrderId)) return false;
       const status = String(item.status ?? "").toUpperCase();
       if (status === "UNKNOWN") return true;
       if (status === "PENDING" && !item.brokerOrderNo) return true;

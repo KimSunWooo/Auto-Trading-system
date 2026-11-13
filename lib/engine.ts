@@ -512,6 +512,8 @@ export type TickRuntimeDeps = {
   /** When false, block new orders (RDS execution authority unread). */
   executionAuthorityOk?: boolean;
   executionAuthorityBlockReason?: string;
+  /** Account id for pre-KIS RDS authority checks. */
+  brokerAccountId?: string;
 };
 
 export async function tickState(
@@ -536,6 +538,7 @@ export async function tickState(
     workerLockPath: deps.workerLockPath,
     executionAuthorityOk: deps.executionAuthorityOk,
     executionAuthorityBlockReason: deps.executionAuthorityBlockReason,
+    brokerAccountId: deps.brokerAccountId,
   };
   const brokerOpts: CreateBrokerOpts = {
     kisClient,
@@ -544,7 +547,8 @@ export async function tickState(
     safety:
       deps.startupSyncVerified !== undefined ||
       deps.workerLockPath ||
-      deps.executionAuthorityOk !== undefined
+      deps.executionAuthorityOk !== undefined ||
+      deps.brokerAccountId !== undefined
         ? safety
         : undefined,
   };

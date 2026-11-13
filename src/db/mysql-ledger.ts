@@ -1,4 +1,4 @@
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, notInArray, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { getDb, getMysqlPool, type AppDb } from "@/src/db/client";
 import type { Ledger, LedgerSession } from "@/src/db/ledger";
@@ -429,7 +429,11 @@ export class MysqlSession implements LedgerSession {
     return rows.map(mapOrder);
   }
 
-  async hasBlockingOpenOrders(accountId: string): Promise<boolean> {
+  async hasBlockingOpenOrders(
+    accountId: string,
+    opts?: { excludeLocalOrderIds?: string[] },
+  ): Promise<boolean> {
+    const exclude = (opts?.excludeLocalOrderIds ?? []).filter(Boolean);
     const rows = await this.db
       .select({
         status: schema.orders.status,
@@ -439,6 +443,9 @@ export class MysqlSession implements LedgerSession {
       .where(
         and(
           eq(schema.orders.brokerAccountId, accountId),
+          exclude.length > 0
+            ? notInArray(schema.orders.localOrderId, exclude)
+            : undefined,
           or(
             eq(schema.orders.status, "UNKNOWN"),
             eq(schema.orders.status, "unknown"),

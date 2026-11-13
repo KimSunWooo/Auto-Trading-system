@@ -37,6 +37,11 @@ import { isFreshKisQuote, isMockOrSeedQuote } from "@/src/runtime/quote-policy";
 import type { RealtimeQuoteHub } from "@/src/market-data/kis-realtime-quote-hub";
 import { brokerQuoteFromSnapshot } from "@/src/market-data/ws-quote-feed";
 import { DatabaseLedgerError, assertDatabaseLedgerReadyForOrders } from "@/src/db/persist";
+import {
+  autoOrderSubmitBlockReason,
+  readExecutionAuthorityFromRds,
+} from "@/src/runtime/execution-authority";
+import { isDatabaseLedgerAuthority } from "@/src/db/config";
 
 /**
  * 한국투자증권 Open API adapter.
@@ -357,13 +362,18 @@ export class KisBroker implements IBroker {
         throw err;
       }
       try {
-        const placed = await this.client.orderCash({
-          ticker,
-          side: "buy",
-          qty,
-          ordDvsn,
-          price: ordDvsn === "limit" ? price : 0,
-        });
+        const placed = await this.client.orderCash(
+          {
+            ticker,
+            side: "buy",
+            qty,
+            ordDvsn,
+            price: ordDvsn === "limit" ? price : 0,
+          },
+          {
+            beforeSubmit: () => this.assertAutoSubmitStillAllowed(pending.id, "buy"),
+          },
+        );
         const working = orders.ackWorking(
           pending.id,
           placed.orderNo,
@@ -456,13 +466,18 @@ export class KisBroker implements IBroker {
         throw err;
       }
       try {
-        const placed = await this.client.orderCash({
-          ticker,
-          side: "sell",
-          qty,
-          ordDvsn,
-          price: ordDvsn === "limit" ? price : 0,
-        });
+        const placed = await this.client.orderCash(
+          {
+            ticker,
+            side: "sell",
+            qty,
+            ordDvsn,
+            price: ordDvsn === "limit" ? price : 0,
+          },
+          {
+            beforeSubmit: () => this.assertAutoSubmitStillAllowed(pending.id, "sell"),
+          },
+        );
         const working = orders.ackWorking(
           pending.id,
           placed.orderNo,
@@ -504,6 +519,45 @@ export class KisBroker implements IBroker {
       }
     } catch (err) {
       return this.fail(ticker, "sell", err, price);
+    }
+  }
+
+  /** Auto sources re-check committed RDS flags after REST queue, before HTTP POST. */
+  private isAutoOrderSource(): boolean {
+    return this.source === "rule" || this.source === "condition" || this.source === "dca";
+  }
+
+  private shouldRecheckAuthorityBeforeSubmit(side: "buy" | "sell"): boolean {
+    if (!this.isAutoOrderSource()) return false;
+    if (this.box.current.settings.liquidating && side === "sell") return false;
+    return true;
+  }
+
+  /**
+   * Invoked after PAPER REST queue grant and before the KIS order HTTP POST.
+   * Throws BrokerRejectError so the pending Intent is closed without UNKNOWN.
+   */
+  private async assertAutoSubmitStillAllowed(
+    localOrderId: string,
+    side: "buy" | "sell",
+  ): Promise<void> {
+    if (!this.shouldRecheckAuthorityBeforeSubmit(side)) return;
+    if (!isDatabaseLedgerAuthority()) return;
+    const accountId = this.safety?.brokerAccountId;
+    // Account workers always pass brokerAccountId. Bootstrap/unit paths without
+    // an id keep tick-time gates only (cannot read per-account RDS flags).
+    if (!accountId) return;
+    const authority = await readExecutionAuthorityFromRds(accountId, process.env, {
+      excludeLocalOrderIds: [localOrderId],
+    });
+    const block = autoOrderSubmitBlockReason(authority);
+    if (block) throw new BrokerRejectError(block);
+    // Keep in-process settings aligned with committed OFF for subsequent gates.
+    if (authority.source === "rds" && authority.autoTrading === false) {
+      this.box.current = {
+        ...this.box.current,
+        settings: { ...this.box.current.settings, autoTrading: false },
+      };
     }
   }
 

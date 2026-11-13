@@ -19,4 +19,6 @@ export type TradingSafetyContext = {
    */
   executionAuthorityOk?: boolean;
   executionAuthorityBlockReason?: string;
+  /** Account-scoped RDS authority reads (pre-KIS auto-order gate). */
+  brokerAccountId?: string;
 };

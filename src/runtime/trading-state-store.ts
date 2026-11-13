@@ -474,6 +474,7 @@ export function createTradingStateStore(opts: {
               ...tickOpts.tickDeps,
               ruleConfig: tickOpts.tickDeps?.ruleConfig ?? ruleConfig,
               kisClient: tickOpts.tickDeps?.kisClient ?? getKisClient?.(),
+              brokerAccountId: tickOpts.tickDeps?.brokerAccountId ?? brokerAccountId,
               executionAuthorityOk:
                 authority && authority.source !== "skipped"
                   ? authorityBlock

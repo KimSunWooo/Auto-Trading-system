@@ -183,7 +183,10 @@ export interface KisApi {
   inquireOpenOrders(): Promise<KisDayOrder[]>;
   inquireBalance(): Promise<KisAccountBalance>;
   inquirePsblOrder?(input: { ticker: string; price: number }): Promise<KisPsblOrder>;
-  orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }>;
+  orderCash(
+    order: KisCashOrder,
+    opts?: { beforeSubmit?: () => Promise<void> },
+  ): Promise<{ orderNo: string; krxOrgNo: string }>;
   cancelOrder(order: KisCancelOrder): Promise<void>;
 }
 
@@ -488,7 +491,10 @@ export class KisClient implements KisApi {
     return bars.map((b) => b.close);
   }
 
-  async orderCash(order: KisCashOrder): Promise<{ orderNo: string; krxOrgNo: string }> {
+  async orderCash(
+    order: KisCashOrder,
+    opts?: { beforeSubmit?: () => Promise<void> },
+  ): Promise<{ orderNo: string; krxOrgNo: string }> {
     this.assertConfigured();
     this.assertRealOrdersAllowed();
     if (order.qty < 1) {
@@ -516,6 +522,8 @@ export class KisClient implements KisApi {
       body,
       timeoutMs: HARD_LIMITS.orderTimeoutMs,
       kind: "order",
+      // Runs after PAPER REST queue grant, before the HTTP POST.
+      beforeSubmit: opts?.beforeSubmit,
     });
     const out = (json.output ?? {}) as Record<string, unknown>;
     const orderNo = String(out.ODNO ?? json.odno ?? "").trim();
@@ -1199,6 +1207,7 @@ export class KisClient implements KisApi {
       hashkey?: string;
       timeoutMs?: number;
       kind?: "query" | "order";
+      beforeSubmit?: () => Promise<void>;
     },
   ) {
     const token = await this.getAccessToken();
@@ -1226,6 +1235,7 @@ export class KisClient implements KisApi {
       },
       opts.timeoutMs ?? HARD_LIMITS.quoteTimeoutMs,
       opts.kind ?? "query",
+      opts.beforeSubmit,
     );
   }
 
@@ -1235,6 +1245,7 @@ export class KisClient implements KisApi {
     init: { headers: Record<string, string>; body?: string },
     timeoutMs: number,
     kind: "query" | "order" = "query",
+    beforeSubmit?: () => Promise<void>,
   ): Promise<Record<string, unknown>> {
     noteKisHttp(url, method);
     const run = async () => {
@@ -1310,13 +1321,17 @@ export class KisClient implements KisApi {
     // PAPER: serialize + pace. Waiting for a scheduler slot is NOT an HTTP retry.
     // Orders still POST exactly once after the slot is granted.
     // Query-only bounded retry on explicit KIS rate-limit responses.
+    const runAfterPreflight = async () => {
+      if (kind === "order" && beforeSubmit) await beforeSubmit();
+      return run();
+    };
     if (this.config.environment === "paper") {
       return this.pacePaperRest(kind, async () => {
         const maxAttempts = kind === "query" ? KIS_READ_RATE_LIMIT_MAX_ATTEMPTS : 1;
         let lastErr: unknown;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           try {
-            return await run();
+            return await runAfterPreflight();
           } catch (err) {
             lastErr = err;
             const msg = err instanceof Error ? err.message : String(err);
@@ -1334,7 +1349,7 @@ export class KisClient implements KisApi {
         throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
       });
     }
-    return this.slot(run);
+    return this.slot(runAfterPreflight);
   }
 
   /**

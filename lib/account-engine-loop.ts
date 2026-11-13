@@ -279,6 +279,7 @@ async function tickOneAccount(
           workerLockPath: rt.scope.lockPath,
           quoteHub: rt.scope.quoteHub,
           quoteConsumerId: rt.scope.brokerAccountId,
+          brokerAccountId: account.id,
         },
       });
     } finally {

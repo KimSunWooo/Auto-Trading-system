@@ -49,6 +49,8 @@ npm run dev                  # http://127.0.0.1:43147
 
 `PERSISTENCE_MODE=database` 권장. **DB는 AWS RDS만 사용**합니다. 로컬 docker MySQL(`127.0.0.1:3307`)은 쓰지 않습니다. JSON은 캐시일 뿐 거래 장부 SoT가 아니다.
 
+로컬에서 본인 PAPER로 매일 ON/OFF·체결 확인하는 절차·첫 장중 추적표: [`docs/LOCAL_DAILY_USE.md`](docs/LOCAL_DAILY_USE.md).
+
 ### 계정 복구 · 사용자별 KIS 계좌
 
 - 로그인 화면에서 **아이디 찾기** / **비밀번호 재설정**을 지원합니다. 등록 여부와 관계없이 동일한 접수 메시지를 반환하며, 이메일·IP 기준 요청 제한이 있습니다.

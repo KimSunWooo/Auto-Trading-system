@@ -112,7 +112,8 @@ function fakeClient(orderCashCalls: { n: number }) {
     async inquireBalance() {
       return { cash: 10_000_000, d2Cash: 10_000_000, holdings: [] };
     },
-    async orderCash() {
+    async orderCash(_order: unknown, opts?: { beforeSubmit?: () => Promise<void> }) {
+      if (opts?.beforeSubmit) await opts.beforeSubmit();
       orderCashCalls.n += 1;
       return { orderNo: "ODNO-OK-1", krxOrgNo: "x" };
     },
